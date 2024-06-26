@@ -108,6 +108,32 @@ def load_datetime_tz(time_str):
     return timestamp
 
 
+def dump_backup_ids(ids):
+    """
+    Dump a list of backup IDs to disk as a string.
+
+    :param list[str]|None ids: list of backup IDs, if any
+    :return str|None: the dumped string.
+    """
+    if ids:
+        return ",".join(ids)
+    else:
+        return None
+
+
+def load_backup_ids(string):
+    """
+    Load a list of backup IDs from disk as a :class:`list`.
+
+    :param string: the string to be loaded as a list.
+    :return list[str]|None: the list of backup IDs, if any.
+    """
+    if string:
+        return string.split(",")
+    else:
+        return None
+
+
 class Field(object):
     def __init__(self, name, dump=None, load=None, default=None, doc=None):
         """
@@ -497,6 +523,14 @@ class BackupInfo(FieldListFile):
         "snapshots_info", load=load_snapshots_info, dump=output_snapshots_info
     )
 
+    summarize_wal = Field("summarize_wal")
+    parent_backup_id = Field("parent_backup_id")
+    children_backup_ids = Field(
+        "children_backup_ids",
+        dump=dump_backup_ids,
+        load=load_backup_ids,
+    )
+
     __slots__ = "backup_id", "backup_version"
 
     _hide_if_null = ("backup_name", "snapshots_info")
@@ -790,3 +824,112 @@ class LocalBackupInfo(BackupInfo):
             if not os.path.exists(dir_name):
                 os.makedirs(dir_name)
         super(LocalBackupInfo, self).save(filename=filename, file_object=file_object)
+
+    def get_backup_manifest_path(self):
+        """
+        Get the full path to the backup manifest file
+
+        :return str: the full path to the backup manifest file.
+        """
+        return os.path.join(self.get_data_directory(), "backup_manifest")
+
+    def get_parent_backup_info(self):
+        """
+        If the backup has a parent (incremental backup), build the LocalBackupInfo
+        object for the parent backup and return it.
+        if the parent backup does not exist or its status is `EMPTY`, return None.
+
+        :return LocalBackupInfo|None: the parent backup info object,
+            or None if it does not exist or is empty.
+        """
+        if self.parent_backup_id:
+            backup_info = LocalBackupInfo(
+                self.server,
+                backup_id=self.parent_backup_id,
+            )
+
+            if backup_info.status != BackupInfo.EMPTY:
+                return backup_info
+
+        return None
+
+    def get_child_backup_info(self, child_backup_id):
+        """
+        Allow to retrieve a specific child of the current incremental backup,
+        if there are any.
+
+        If the child backup exists, the LocalBackupInfo object for it is returned.
+        If does not exist or its status is `EMPTY`, return None
+
+        :param str child_backup_id: the ID of the child backup to retrieve
+
+        :return LocalBackupInfo|None: the child backup info object,
+            or None if it does not exist or is empty.
+        """
+        if self.children_backup_ids:
+            if child_backup_id in self.children_backup_ids:
+                backup_info = LocalBackupInfo(
+                    self.server,
+                    backup_id=child_backup_id,
+                )
+
+                if backup_info.status != BackupInfo.EMPTY:
+                    return backup_info
+
+        return None
+
+    def walk_backups_tree(self):
+        """
+        Walk through all the children backups of the current backup.
+
+        .. note::
+            The objects are returned with a bottom-up approach, including all children
+            backups plus the caller backup.
+
+        :yield: a generator of :class:`LocalBackupInfo` objects for each backup, walking
+           from the leaves to self.
+        """
+
+        if self.children_backup_ids:
+            for child_backup_id in self.children_backup_ids:
+                backup_info = LocalBackupInfo(
+                    self.server,
+                    backup_id=child_backup_id,
+                )
+                yield from backup_info.walk_backups_tree()
+        yield self
+
+    def walk_to_root(self):
+        """
+        Walk through all the parent backups of the current backup.
+
+        :yield: a generator of :class:`LocalBackupInfo` objects for each parent backup.
+        """
+
+        backup_info = self.get_parent_backup_info()
+        while backup_info:
+            yield backup_info
+            backup_info = backup_info.get_parent_backup_info()
+
+    def is_full_and_eligible_for_incremental(self):
+        """
+        Used to filter out backups that have a parent backup id and are not
+        considered as FULL backups.
+
+        .. note::
+            Only consider backups which are eligible for Postgres core
+            incremental backups:
+
+            * backup_method = ``postgres``
+            * summarize_wal = ``on``
+            * parent_backup_id = ``None``
+
+        :return bool: True if it's a full backup or False if not.
+        """
+        if (
+            self.backup_manager.config.backup_method == "postgres"
+            and self.summarize_wal == "on"
+            and not self.parent_backup_id
+        ):
+            return True
+        return False

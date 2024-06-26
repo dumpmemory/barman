@@ -24,11 +24,12 @@ import os
 import mock
 import pytest
 from dateutil import tz
-from mock import Mock, PropertyMock, patch
+from mock import Mock, PropertyMock, patch, call
 
 from barman.backup_executor import (
     ExclusiveBackupStrategy,
     PostgresBackupExecutor,
+    PostgresBackupStrategy,
     RsyncBackupExecutor,
     SnapshotBackupExecutor,
 )
@@ -589,7 +590,8 @@ class TestStrategy(object):
         """
         # Build a backup_manager using a mocked server
         server = build_mocked_server(
-            main_conf={"backup_options": BackupOptions.EXCLUSIVE_BACKUP}
+            main_conf={"backup_options": BackupOptions.EXCLUSIVE_BACKUP},
+            pg_version=170000,
         )
         backup_manager = build_backup_manager(server=server)
 
@@ -614,7 +616,6 @@ class TestStrategy(object):
             "file_offset": 11845848,
             "timestamp": start_time,
         }
-
         # Build a test empty backup info
         backup_info = LocalBackupInfo(server=backup_manager.server, backup_id="fake_id")
 
@@ -644,7 +645,8 @@ class TestStrategy(object):
         # Test: start concurrent backup
         # Build a backup_manager using a mocked server
         server = build_mocked_server(
-            main_conf={"backup_options": BackupOptions.CONCURRENT_BACKUP}
+            main_conf={"backup_options": BackupOptions.CONCURRENT_BACKUP},
+            pg_version=170000,
         )
         backup_manager = build_backup_manager(server=server)
         # Simulate old Postgres version
@@ -664,7 +666,8 @@ class TestStrategy(object):
         # Test: start concurrent backup
         # Build a backup_manager using a mocked server
         server = build_mocked_server(
-            main_conf={"backup_options": BackupOptions.CONCURRENT_BACKUP}
+            main_conf={"backup_options": BackupOptions.CONCURRENT_BACKUP},
+            pg_version=90600,  # this is a postgres 9.6
         )
         backup_manager = build_backup_manager(server=server)
         # Mock server.get_pg_setting('data_directory') call
@@ -678,9 +681,6 @@ class TestStrategy(object):
         # Mock server.get_pg_tablespaces() call
         tablespaces = [Tablespace._make(("test_tbs", 1234, "/tbs/test"))]
         server.postgres.get_tablespaces.return_value = tablespaces
-        # this is a postgres 9.6
-        server.postgres.server_version = 90600
-
         # Mock call to new api method
         start_time = datetime.datetime.now()
         server.postgres.start_concurrent_backup.return_value = {
@@ -761,13 +761,12 @@ class TestStrategy(object):
         """
         # Build a backup info and configure the mocks
         server = build_mocked_server(
-            main_conf={"backup_options": BackupOptions.CONCURRENT_BACKUP}
+            main_conf={"backup_options": BackupOptions.CONCURRENT_BACKUP},
+            pg_version=90600,  # This is a postgres 9.6
         )
         backup_manager = build_backup_manager(server=server)
 
         stop_time = datetime.datetime.now()
-        # This is a pg 9.6
-        server.postgres.server_version = 90600
         # Mock stop backup call for the new api method
         start_time = datetime.datetime.now(tz.tzlocal()).replace(microsecond=0)
         server.postgres.stop_concurrent_backup.return_value = {
@@ -831,6 +830,45 @@ class TestStrategy(object):
         else:
             assert check_result.status is True
 
+    @pytest.mark.parametrize(
+        ("server_version", "expected_value"),
+        [(160000, None), (170000, "on")],
+    )
+    def test__pg_get_metadata(self, server_version, expected_value):
+        # Given a PostgreSQL connection of the specified version
+        mock_postgres = mock.Mock()
+        mock_postgres.server_version = server_version
+        # Mock postgres server.get_setting() call
+        mock_postgres.get_setting.side_effect = [
+            "data_directory",
+            expected_value,
+        ]
+
+        # Mock postgres server.get_configuration_files() call
+        mock_postgres.get_configuration_files.return_value = dict(
+            config_file="/etc/postgresql.conf",
+            hba_file="/pg/pg_hba.conf",
+            ident_file="/pg/pg_ident.conf",
+        )
+        # Mock postgres server.get_tablespaces() call
+        tablespaces = [Tablespace._make(("test_tbs", 1234, "/tbs/test"))]
+        mock_postgres.get_tablespaces.return_value = tablespaces
+
+        strategy = PostgresBackupStrategy(mock_postgres, "test server")
+        backup_info = build_test_backup_info()
+        strategy._pg_get_metadata(backup_info)
+
+        mock_postgres.get_tablespaces.assert_called_once()
+        mock_postgres.get_configuration_files.assert_called_once()
+        if mock_postgres.server_version < 170000:
+            mock_postgres.get_setting.assert_called_once_with("data_directory")
+            assert backup_info.summarize_wal is None
+        else:
+            calls = [call("data_directory"), call("summarize_wal")]
+            assert mock_postgres.get_setting.call_count == 2
+            mock_postgres.get_setting.assert_has_calls(calls, any_order=False)
+            assert backup_info.summarize_wal == "on"
+
 
 class TestPostgresBackupExecutor(object):
     """
@@ -881,6 +919,7 @@ class TestPostgresBackupExecutor(object):
             begin_offset=28,
             copy_stats=dict(copy_time=100, total_time=105),
         )
+        backup_manager.server.postgres.server_version = backup_info.version
         current_xlog_timestamp = datetime.datetime(2015, 10, 26, 14, 38)
         backup_manager.server.postgres.current_xlog_info = dict(
             location="0/12000090",
@@ -1097,6 +1136,7 @@ class TestPostgresBackupExecutor(object):
                 compression=None,
                 err_handler=mock.ANY,
                 out_handler=mock.ANY,
+                parent_backup_manifest_path=None,
             ),
             mock.call()(),
         ]
@@ -1135,6 +1175,7 @@ class TestPostgresBackupExecutor(object):
                 compression=None,
                 err_handler=mock.ANY,
                 out_handler=mock.ANY,
+                parent_backup_manifest_path=None,
             ),
             mock.call()(),
         ]
@@ -1172,6 +1213,7 @@ class TestPostgresBackupExecutor(object):
                 compression=None,
                 err_handler=mock.ANY,
                 out_handler=mock.ANY,
+                parent_backup_manifest_path=None,
             ),
             mock.call()(),
         ]
@@ -1204,6 +1246,7 @@ class TestPostgresBackupExecutor(object):
                 compression=None,
                 err_handler=mock.ANY,
                 out_handler=mock.ANY,
+                parent_backup_manifest_path=None,
             ),
             mock.call()(),
         ]
@@ -1217,6 +1260,51 @@ class TestPostgresBackupExecutor(object):
         )
         with pytest.raises(DataTransferFailure):
             backup_manager.executor.backup_copy(backup_info)
+
+        # Check incremental backups with Postgres 17 onward
+        remote_mock.reset_mock()
+        pg_basebackup_mock.reset_mock()
+        pg_basebackup_mock.return_value.side_effect = None
+        backup_manager.executor._remote_status = None
+        remote_mock.return_value = {
+            "pg_basebackup_version": "17",
+            "pg_basebackup_path": "/fake/path",
+            "pg_basebackup_bwlimit": True,
+        }
+        backup_manager.executor.config.immediate_checkpoint = True
+        backup_manager.executor.config.streaming_conninfo = "fake=connstring"
+        mock_parent_backup_info = Mock()
+        mock_parent_backup_info.get_backup_manifest_path.return_value = "/SOME/MANIFEST"
+        with patch("barman.infofile.LocalBackupInfo.get_parent_backup_info") as mock_gp:
+            mock_gp.return_value = mock_parent_backup_info
+            backup_manager.executor.backup_copy(backup_info)
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == ""
+        # Check that expected parameter was passed to pg_basebackup to identify
+        # the parent backup
+        assert pg_basebackup_mock.mock_calls == [
+            mock.call.make_logging_handler(logging.INFO),
+            mock.call(
+                connection=mock.ANY,
+                version="17",
+                app_name="barman_streaming_backup",
+                destination=mock.ANY,
+                command="/fake/path",
+                tbs_mapping=mock.ANY,
+                bwlimit=1,
+                immediate=True,
+                retry_times=0,
+                retry_sleep=30,
+                retry_handler=mock.ANY,
+                path=mock.ANY,
+                compression=None,
+                err_handler=mock.ANY,
+                out_handler=mock.ANY,
+                parent_backup_manifest_path="/SOME/MANIFEST",
+            ),
+            mock.call()(),
+        ]
 
     def test_postgres_start_backup(self):
         """

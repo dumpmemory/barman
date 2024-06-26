@@ -33,6 +33,7 @@ import barman.utils
 from barman.annotations import KeepManager
 from barman.config import BackupOptions
 from barman.exceptions import (
+    BackupException,
     CompressionIncompatibility,
     RecoveryInvalidTargetException,
     CommandFailedException,
@@ -823,6 +824,181 @@ class TestBackup(object):
 
         # THEN backup name is None in the backup_info
         assert backup_info.backup_name is None
+
+    @patch("barman.backup.LocalBackupInfo.save")
+    @patch("barman.backup.output")
+    def test_backup_without_parent_backup_id(
+        self,
+        _mock_output,
+        _mock_backup_info_save,
+    ):
+        """
+        Verify that information about parent and children are not updated when no parent
+        backup ID is specified.
+        """
+        # GIVEN a backup manager
+        backup_manager = build_backup_manager()
+        backup_manager.executor.backup = Mock()
+        backup_manager.executor.copy_start_time = datetime.now()
+
+        # WHEN a backup is taken with no parent backup ID
+        backup_info = backup_manager.backup()
+
+        # THEN parent backup ID is None in the backup_info
+        assert backup_info.parent_backup_id is None
+
+    @patch("barman.backup.LocalBackupInfo.save")
+    @patch("barman.backup.output")
+    def test_backup_with_parent_backup_id(
+        self,
+        _mock_output,
+        _mock_backup_info_save,
+    ):
+        """
+        Verify that information about parent and children are updated when a parent
+        backup ID is specified.
+        """
+        # GIVEN a backup manager
+        backup_manager = build_backup_manager()
+        backup_manager.executor.backup = Mock()
+        backup_manager.executor.copy_start_time = datetime.now()
+
+        # WHEN a backup is taken with a parent backup ID which contains no children
+        with patch("barman.infofile.LocalBackupInfo.get_parent_backup_info") as mock:
+            mock.return_value.children_backup_ids = None
+            backup_info = backup_manager.backup(
+                parent_backup_id="SOME_PARENT_BACKUP_ID",
+            )
+
+        # THEN parent backup ID is filled in the backup_info
+        assert backup_info.parent_backup_id == "SOME_PARENT_BACKUP_ID"
+
+        # AND children backup IDs is set in the parent backup_info
+        assert mock.return_value.children_backup_ids == [backup_info.backup_id]
+
+        # WHEN a backup is taken with a parent backup ID which contains a child
+        with patch("barman.infofile.LocalBackupInfo.get_parent_backup_info") as mock:
+            mock.return_value.children_backup_ids = ["SOME_CHILD_BACKUP_ID"]
+            backup_info = backup_manager.backup(
+                parent_backup_id="SOME_PARENT_BACKUP_ID",
+            )
+
+        # THEN parent backup ID is filled in the backup_info
+        assert backup_info.parent_backup_id == "SOME_PARENT_BACKUP_ID"
+
+        # AND children backup IDs is set in the parent backup_info
+        assert mock.return_value.children_backup_ids == [
+            "SOME_CHILD_BACKUP_ID",
+            backup_info.backup_id,
+        ]
+
+    @patch("barman.backup.BackupManager._validate_incremental_backup_configs")
+    def test_validate_backup_args(self, mock_validate_incremental):
+        """
+        Test the validate_backup_args method, ensuring that validations are passed
+        correctly to all responsible methods according to the parameters received.
+        """
+        backup_manager = build_backup_manager(global_conf={"backup_method": "postgres"})
+
+        # incremental backup validation is skipped when no parent backup is present
+        incremental_kwargs = {}
+        backup_manager.validate_backup_args(**incremental_kwargs)
+        mock_validate_incremental.assert_not_called()
+
+        # incremental backup validation is called when a parent backup is present
+        mock_validate_incremental.reset_mock()
+        incremental_kwargs = {"parent_backup_id": Mock()}
+        backup_manager.validate_backup_args(**incremental_kwargs)
+        mock_validate_incremental.assert_called_once()
+
+    def test_validate_incremental_backup_configs_pg_version(self):
+        """
+        Test Postgres incremental backup validations for Postgres
+        server version
+        """
+        backup_manager = build_backup_manager(global_conf={"backup_method": "postgres"})
+
+        # mock the postgres object to set server version
+        mock_postgres = Mock()
+        backup_manager.executor.server.postgres = mock_postgres
+
+        # mock enabled summarize_wal option
+        backup_manager.executor.server.postgres.get_setting.side_effect = ["on"]
+
+        # ensure no exception is raised when Postgres version >= 17
+        mock_postgres.configure_mock(server_version=180500)
+        backup_manager._validate_incremental_backup_configs()
+
+        # ensure BackupException is raised when Postgres version is < 17
+        mock_postgres.configure_mock(server_version=160000)
+        with pytest.raises(BackupException):
+            backup_manager._validate_incremental_backup_configs()
+
+    def test_validate_incremental_backup_configs_summarize_wal(self):
+        """
+        Test that summarize_wal is enabled on Postgres incremental backup
+        """
+        backup_manager = build_backup_manager(global_conf={"backup_method": "postgres"})
+
+        # mock the postgres object to set server version
+        mock_postgres = Mock()
+        backup_manager.executor.server.postgres = mock_postgres
+        mock_postgres.configure_mock(server_version=170000)
+
+        # change the behavior of get_setting("summarize_wal") function call
+        backup_manager.executor.server.postgres.get_setting.side_effect = [
+            None,
+            "off",
+            "on",
+        ]
+
+        err_msg = "'summarize_wal' option has to be enabled in the Postgres server "
+        "to perform an incremental backup using the Postgres backup method"
+
+        # ensure incremental backup with summarize_wal disabled raises exception
+        with pytest.raises(BackupException, match=err_msg):
+            backup_manager._validate_incremental_backup_configs()
+        with pytest.raises(BackupException, match=err_msg):
+            backup_manager._validate_incremental_backup_configs()
+        # no exception is raised when summarize_wal is on
+        backup_manager._validate_incremental_backup_configs()
+
+    @patch("barman.backup.BackupManager.get_available_backups")
+    def test_get_last_full_backup_id(self, get_available_backups):
+        """
+        Test that the function returns the correct last full backup
+        """
+        backup_manager = build_backup_manager(global_conf={"backup_method": "postgres"})
+
+        available_backups = {
+            "20241010T120000": "20241009T131000",
+            "20241010T131000": None,
+            "20241010T140202": "20241010T131000",
+            "20241010T150000": "20241010T140202",
+            "20241010T160000": None,
+            "20241010T180000": "20241010T160000",
+            "20241011T180000": None,
+            "20241012T180000": "20241011T180000",
+            "20241013T180000": "20241012T180000",
+        }
+
+        backups = dict(
+            (
+                bkp_id,
+                build_test_backup_info(
+                    server=backup_manager.server,
+                    backup_id=bkp_id,
+                    parent_backup_id=par_bkp_id,
+                    summarize_wal="on",
+                ),
+            )
+            for bkp_id, par_bkp_id in available_backups.items()
+        )
+        get_available_backups.return_value = backups
+
+        last_full_backup = backup_manager.get_last_full_backup_id()
+        get_available_backups.assert_called_once()
+        assert last_full_backup == "20241011T180000"
 
 
 class TestWalCleanup(object):

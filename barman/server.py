@@ -44,6 +44,7 @@ from barman.command_wrappers import BarmanSubProcess, Command, Rsync
 from barman.copy_controller import RsyncCopyController
 from barman.exceptions import (
     ArchiverFailure,
+    BackupException,
     BadXlogSegmentName,
     CommandFailedException,
     ConninfoException,
@@ -1589,7 +1590,7 @@ class Server(RemoteStatusMixin):
             output.error("Permission denied, unable to access '%s'" % e)
             return
 
-    def backup(self, wait=False, wait_timeout=None, backup_name=None):
+    def backup(self, wait=False, wait_timeout=None, backup_name=None, **kwargs):
         """
         Performs a backup for the server
         :param bool wait: wait for all the required WAL files to be archived
@@ -1598,12 +1599,16 @@ class Server(RemoteStatusMixin):
             before timing out
         :param str|None backup_name: a friendly name by which this backup can
             be referenced in the future
+        :kwparam str parent_backup_id: id of the parent backup when taking a
+            Postgres incremental backup
         """
         # The 'backup' command is not available on a passive node.
         # We assume that if we get here the node is not passive
         assert not self.passive_node
 
         try:
+            # validate arguments, raise BackupException if any error is found
+            self.backup_manager.validate_backup_args(**kwargs)
             # Default strategy for check in backup is CheckStrategy
             # This strategy does not print any output - it only logs checks
             strategy = CheckStrategy()
@@ -1616,6 +1621,9 @@ class Server(RemoteStatusMixin):
                 return
             # check required backup directories exist
             self._make_directories()
+        except BackupException as e:
+            output.error("failed to start backup: %s", force_str(e))
+            return
         except OSError as e:
             output.error("failed to create %s directory: %s", e.filename, e.strerror)
             return
@@ -1635,6 +1643,7 @@ class Server(RemoteStatusMixin):
                     wait=wait,
                     wait_timeout=wait_timeout,
                     name=backup_name,
+                    **kwargs,
                 )
 
             # Archive incoming WALs and update WAL catalogue
@@ -1682,10 +1691,22 @@ class Server(RemoteStatusMixin):
         Get the id of the latest/last backup in the catalog (if exists)
 
         :param status_filter: The status of the backup to return,
+            default to :attr:`BackupManager.DEFAULT_STATUS_FILTER`.
+        :return str|None: ID of the backup
+        """
+        return self.backup_manager.get_last_backup_id(status_filter)
+
+    def get_last_full_backup_id(
+        self, status_filter=BackupManager.DEFAULT_STATUS_FILTER
+    ):
+        """
+        Get the id of the latest/last FULL backup in the catalog (if exists)
+
+        :param status_filter: The status of the backup to return,
             default to DEFAULT_STATUS_FILTER.
         :return string|None: ID of the backup
         """
-        return self.backup_manager.get_last_backup_id(status_filter)
+        return self.backup_manager.get_last_full_backup_id(status_filter)
 
     def get_first_backup_id(self, status_filter=BackupManager.DEFAULT_STATUS_FILTER):
         """
@@ -1772,13 +1793,32 @@ class Server(RemoteStatusMixin):
         return self.backup_manager.get_next_backup(backup_id)
 
     def get_required_xlog_files(
-        self, backup, target_tli=None, target_time=None, target_xid=None
+        self,
+        backup,
+        target_tli=None,
+        target_time=None,
+        target_xid=None,
+        target_lsn=None,
     ):
         """
-        Get the xlog files required for a recovery
-        params: BackupInfo backup: a backup object
-        params: target_tli : target timeline
-        param: target_time: target time
+        Get the xlog files required for a recovery.
+
+        .. note::
+            *target_time* and *target_xid* are ignored by this method. As it can be very
+            expensive to parse WAL dumps to identify which WAL files are required to
+            honor the specific targets, we simply copy all WAL files up to the
+            calculated target timeline, so we make sure recovery will be able to finish
+            successfully (assuming the archived WALs honor the specified targets).
+
+            On the other hand, *target_tli* and *target_lsn* are easier to handle, so we
+            only copy the WALs required to reach the requested targets.
+
+        :param BackupInfo backup: a backup object
+        :param target_tli : target timeline, either a timeline ID or one of the keywords
+            supported by Postgres
+        :param target_time: target time, in epoch
+        :param target_xid: target transaction ID
+        :param target_lsn: target LSN
         """
         begin = backup.begin_wal
         end = backup.end_wal
@@ -1799,6 +1839,16 @@ class Server(RemoteStatusMixin):
         if not target_tli:
             target_tli, _, _ = xlog.decode_segment_name(end)
             calculated_target_tli = target_tli
+
+        # If a target LSN was specified, get the name of the last WAL file that is
+        # required for the recovery process
+        if target_lsn:
+            target_wal = xlog.location_to_xlogfile_name_offset(
+                target_lsn,
+                calculated_target_tli,
+                backup.xlog_segment_size,
+            )["file_name"]
+
         with self.xlogdb() as fxlogdb:
             for line in fxlogdb:
                 wal_info = WalFileInfo.from_xlogdb_line(line)
@@ -1815,7 +1865,7 @@ class Server(RemoteStatusMixin):
                 yield wal_info
                 if wal_info.name > end:
                     end = wal_info.name
-                    if target_time and wal_info.time > target_time:
+                    if target_lsn and wal_info.name >= target_wal:
                         break
             # return all the remaining history files
             for line in fxlogdb:

@@ -19,10 +19,10 @@
 from functools import partial
 import os
 import shutil
-import time
 from contextlib import closing
 
 import dateutil
+import dateutil.tz
 import mock
 import pytest
 from mock import MagicMock
@@ -389,7 +389,6 @@ class TestRecoveryExecutor(object):
             recovery_info, backup_info, dest.strpath, "", "", "", "", "", False, None
         )
         # Test with empty values (no PITR)
-        assert recovery_info["target_epoch"] is None
         assert recovery_info["target_datetime"] is None
         assert recovery_info["wal_dest"] == wal_dest.strpath
 
@@ -407,12 +406,27 @@ class TestRecoveryExecutor(object):
             None,
         )
         target_datetime = dateutil.parser.parse("2015-06-03 16:11:03.710380+02:00")
-        target_epoch = time.mktime(target_datetime.timetuple()) + (
-            target_datetime.microsecond / 1000000.0
-        )
 
         assert recovery_info["target_datetime"] == target_datetime
-        assert recovery_info["target_epoch"] == target_epoch
+        assert recovery_info["wal_dest"] == dest.join("barman_wal").strpath
+
+        # Test for PITR targets with implicit target time
+        executor._set_pitr_targets(
+            recovery_info,
+            backup_info,
+            dest.strpath,
+            "target_name",
+            "2015-06-03 16:11:03.71038",
+            "2",
+            None,
+            "",
+            False,
+            None,
+        )
+        target_datetime = dateutil.parser.parse("2015-06-03 16:11:03.710380")
+        target_datetime = target_datetime.replace(tzinfo=dateutil.tz.tzlocal())
+
+        assert recovery_info["target_datetime"] == target_datetime
         assert recovery_info["wal_dest"] == dest.join("barman_wal").strpath
 
         # Test for too early PITR target
@@ -706,6 +720,7 @@ class TestRecoveryExecutor(object):
             "tempdir": tmpdir.strpath,
             "results": {"changes": [], "warnings": []},
             "get_wal": False,
+            "target_datetime": "2015-06-03 16:11:03.71038+02",
         }
         backup_info = testing_helpers.build_test_backup_info()
         dest = tmpdir.mkdir("destination")
@@ -721,7 +736,7 @@ class TestRecoveryExecutor(object):
             True,
             "remote@command",
             "target_name",
-            "2015-06-03 16:11:03.71038+02",
+            "2015-06-03 16:11:03.71038",
             "2",
             "",
             "",
@@ -742,6 +757,9 @@ class TestRecoveryExecutor(object):
         assert "recovery_target_name" in recovery_conf
         assert "recovery_target" not in recovery_conf
         assert recovery_conf["recovery_end_command"] == "'rm -fr barman_wal'"
+        # what matters is the 'target_datetime', which always contain the target time
+        # with a time zone, even if the user specified no time zone through
+        # '--target-time'.
         assert recovery_conf["recovery_target_time"] == "'2015-06-03 16:11:03.71038+02'"
         assert recovery_conf["recovery_target_timeline"] == "2"
         assert recovery_conf["recovery_target_name"] == "'target_name'"
@@ -859,6 +877,7 @@ class TestRecoveryExecutor(object):
             "tempdir": tmpdir.strpath,
             "results": {"changes": [], "warnings": []},
             "get_wal": False,
+            "target_datetime": "2015-06-03 16:11:03.71038+02",
         }
         backup_info = testing_helpers.build_test_backup_info(
             version=120000,
@@ -876,7 +895,7 @@ class TestRecoveryExecutor(object):
             True,
             "remote@command",
             "target_name",
-            "2015-06-03 16:11:03.71038+02",
+            "2015-06-03 16:11:03.71038",
             "2",
             "",
             "",
@@ -900,6 +919,9 @@ class TestRecoveryExecutor(object):
         assert "recovery_target_name" in pg_auto_conf
         assert "recovery_target" in pg_auto_conf
         assert pg_auto_conf["recovery_end_command"] == "'rm -fr barman_wal'"
+        # what matters is the 'target_datetime', which always contain the target time
+        # with a time zone, even if the user specified no time zone through
+        # '--target-time'.
         assert pg_auto_conf["recovery_target_time"] == "'2015-06-03 16:11:03.71038+02'"
         assert pg_auto_conf["recovery_target_timeline"] == "2"
         assert pg_auto_conf["recovery_target_name"] == "'target_name'"
@@ -1293,7 +1315,6 @@ class TestRecoveryExecutor(object):
                     ),
                 ],
             },
-            "target_epoch": None,
             "configuration_files": ["postgresql.conf", "postgresql.auto.conf"],
             "target_datetime": None,
             "safe_horizon": None,
@@ -1342,7 +1363,6 @@ class TestRecoveryExecutor(object):
                     ),
                 ],
             },
-            "target_epoch": None,
             "configuration_files": ["postgresql.conf", "postgresql.auto.conf"],
             "target_datetime": None,
             "safe_horizon": None,

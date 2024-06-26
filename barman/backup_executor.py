@@ -574,6 +574,7 @@ class PostgresBackupExecutor(BackupExecutor):
 
         :param barman.infofile.LocalBackupInfo backup_info: backup information
         """
+
         # Make sure the destination directory exists, ensure the
         # right permissions to the destination dir
         backup_dest = backup_info.get_data_directory()
@@ -608,6 +609,13 @@ class PostgresBackupExecutor(BackupExecutor):
         # for the whole duration of the copy
         self.server.close()
 
+        # Find the backup_manifest file path of the parent backup in case
+        # it is an incremental backup
+        parent_backup_info = backup_info.get_parent_backup_info()
+        parent_backup_manifest_path = None
+        if parent_backup_info:
+            parent_backup_manifest_path = parent_backup_info.get_backup_manifest_path()
+
         pg_basebackup = PgBaseBackup(
             connection=self.server.streaming,
             destination=backup_dest,
@@ -624,6 +632,7 @@ class PostgresBackupExecutor(BackupExecutor):
             compression=self.backup_compression,
             err_handler=self._err_handler,
             out_handler=PgBaseBackup.make_logging_handler(logging.INFO),
+            parent_backup_manifest_path=parent_backup_manifest_path,
         )
 
         # Do the actual copy
@@ -1770,6 +1779,13 @@ class BackupStrategy(with_metaclass(ABCMeta, object)):
             for item in tablespaces:
                 msg = "\t%s, %s, %s" % (item.oid, item.name, item.location)
                 _logger.info(msg)
+
+        # Get summarize_wal information for incremental backups
+        # Postgres major version should be >= 17
+        backup_info.set_attribute("summarize_wal", None)
+        if self.postgres.server_version >= 170000:
+            summarize_wal = self.postgres.get_setting("summarize_wal")
+            backup_info.set_attribute("summarize_wal", summarize_wal)
 
     @staticmethod
     def _backup_info_from_start_location(backup_info, start_info):

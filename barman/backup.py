@@ -44,6 +44,7 @@ from barman.compression import CompressionManager
 from barman.config import BackupOptions
 from barman.exceptions import (
     AbortedRetryHookScript,
+    BackupException,
     CompressionIncompatibility,
     LockFileBusy,
     SshCommandException,
@@ -360,8 +361,8 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         Get the id of the latest/last backup in the catalog (if exists)
 
         :param status_filter: The status of the backup to return,
-            default to DEFAULT_STATUS_FILTER.
-        :return string|None: ID of the backup
+            default to :attr:`DEFAULT_STATUS_FILTER`.
+        :return str|None: ID of the backup
         """
         available_backups = self.get_available_backups(status_filter)
         if len(available_backups) == 0:
@@ -369,6 +370,29 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
 
         ids = sorted(available_backups.keys())
         return ids[-1]
+
+    def get_last_full_backup_id(self, status_filter=DEFAULT_STATUS_FILTER):
+        """
+        Get the id of the latest/last FULL backup in the catalog (if exists)
+
+        :param status_filter: The status of the backup to return,
+            default to :attr:`DEFAULT_STATUS_FILTER`.
+        :return str|None: ID of the backup
+        """
+        available_full_backups = list(
+            filter(
+                lambda backup: backup.is_full_and_eligible_for_incremental(),
+                self.get_available_backups(status_filter).values(),
+            )
+        )
+
+        if len(available_full_backups) == 0:
+            return None
+
+        backup_infos = sorted(
+            available_full_backups, key=lambda backup_info: backup_info.backup_id
+        )
+        return backup_infos[-1].backup_id
 
     def get_first_backup_id(self, status_filter=DEFAULT_STATUS_FILTER):
         """
@@ -584,13 +608,64 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
 
         return True
 
-    def backup(self, wait=False, wait_timeout=None, name=None):
+    def validate_backup_args(self, **kwargs):
+        """
+        Validate backup arguments and Postgres configurations. Arguments
+        might be syntactically correct but still be invalid if necessary
+        Postgres configurations are not met.
+
+        :kwparam str parent_backup_id: id of the parent backup when taking a
+            Postgres incremental backup
+        :raises BackupException: if a command argument is considered invalid
+        """
+        if "parent_backup_id" in kwargs:
+            self._validate_incremental_backup_configs(**kwargs)
+
+    def _validate_incremental_backup_configs(self, **kwargs):
+        """
+        Check required configurations for a Postgres incremental backup
+
+        :raises BackupException: if a required configuration is missing
+        """
+        if self.server.postgres.server_version < 170000:
+            raise BackupException(
+                "Postgres version 17 or greater is required for incremental backups "
+                "using the Postgres backup method"
+            )
+
+        if self.config.backup_method != "postgres":
+            raise BackupException(
+                "Backup using the `--incremental` flag is available only for "
+                "'backup_method = postgres'. Check Barman's documentation for "
+                "more help on this topic."
+            )
+
+        summarize_wal = self.server.postgres.get_setting("summarize_wal")
+        if summarize_wal != "on":
+            raise BackupException(
+                "'summarize_wal' option has to be enabled in the Postgres server "
+                "to perform an incremental backup using the Postgres backup method"
+            )
+
+        parent_backup_id = kwargs.get("parent_backup_id")
+        parent_backup_info = self.get_backup(parent_backup_id)
+
+        if parent_backup_info and parent_backup_info.summarize_wal != "on":
+            raise BackupException(
+                "The specified backup is not eligible as a parent for an "
+                "incremental backup because WAL summaries were not enabled "
+                "when that backup was taken."
+            )
+
+    def backup(self, wait=False, wait_timeout=None, name=None, **kwargs):
         """
         Performs a backup for the server
 
         :param bool wait: wait for all the required WAL files to be archived
         :param int|None wait_timeout:
         :param str|None name: the friendly name to be saved with this backup
+        :kwparam str parent_backup_id: id of the parent backup when taking a
+            Postgres incremental backup
         :return BackupInfo: the generated BackupInfo
         """
         _logger.debug("initialising backup information")
@@ -604,6 +679,11 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
                 backup_name=name,
             )
             backup_info.set_attribute("systemid", self.server.systemid)
+
+            backup_info.set_attribute(
+                "parent_backup_id",
+                kwargs.get("parent_backup_id"),
+            )
 
             backup_info.save()
             self.backup_cache_add(backup_info)
@@ -694,6 +774,22 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
 
         finally:
             if backup_info:
+                # IF is an incremental backup, we save here child backup info id
+                # inside the parent list of children. no matter if the backup
+                # is successful or not. This is needed to be able to retrieve
+                # also failed incremental backups for removal or other operations
+                # like show-backup.
+                parent_backup_info = backup_info.get_parent_backup_info()
+
+                if parent_backup_info:
+                    if parent_backup_info.children_backup_ids:
+                        parent_backup_info.children_backup_ids.append(  # type: ignore
+                            backup_info.backup_id
+                        )
+                    else:
+                        parent_backup_info.children_backup_ids = [backup_info.backup_id]
+                    parent_backup_info.save()
+
                 backup_info.save()
 
                 # Make sure we are not holding any PostgreSQL connection

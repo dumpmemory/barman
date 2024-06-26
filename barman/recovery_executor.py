@@ -30,7 +30,6 @@ import re
 import shutil
 import socket
 import tempfile
-import time
 from io import BytesIO
 
 import dateutil.parser
@@ -254,7 +253,11 @@ class RecoveryExecutor(object):
                 # Retrieve a list of required log files
                 required_xlog_files = tuple(
                     self.server.get_required_xlog_files(
-                        backup_info, target_tli, recovery_info["target_epoch"]
+                        backup_info,
+                        target_tli,
+                        None,
+                        None,
+                        target_lsn,
                     )
                 )
 
@@ -448,7 +451,6 @@ class RecoveryExecutor(object):
             is reached
         :param str|None target_action: recovery target action for PITR
         """
-        target_epoch = None
         target_datetime = None
 
         # Calculate the integer value of TLI if a keyword is provided
@@ -492,6 +494,12 @@ class RecoveryExecutor(object):
                         tzinfo=dateutil.tz.tzlocal()
                     )
 
+                    output.warning(
+                        "No time zone has been specified through '--target-time' "
+                        "command-line option. Barman assumed the same time zone from "
+                        "the Barman host.",
+                    )
+
                 # Check if the target time is reachable from the
                 # selected backup
                 if backup_info.end_time > target_datetime:
@@ -501,8 +509,6 @@ class RecoveryExecutor(object):
                         % (target_datetime, backup_info.end_time)
                     )
 
-                ms = target_datetime.microsecond / 1000000.0
-                target_epoch = time.mktime(target_datetime.timetuple()) + ms
                 targets["time"] = str(target_datetime)
             if target_xid:
                 targets["xid"] = str(target_xid)
@@ -572,7 +578,6 @@ class RecoveryExecutor(object):
                     "Can't enable recovery target action when PITR is not required"
                 )
 
-        recovery_info["target_epoch"] = target_epoch
         recovery_info["target_datetime"] = target_datetime
 
     def _retrieve_safe_horizon(self, recovery_info, backup_info, dest):
@@ -1048,7 +1053,19 @@ class RecoveryExecutor(object):
 
         # Writes recovery target
         if target_time:
-            recovery_conf_lines.append("recovery_target_time = '%s'" % target_time)
+            # 'target_time' is the value as it came from '--target-time' command-line
+            # option, which may be without a time zone. When writing the actual Postgres
+            # configuration we should use a value with an explicit time zone set, so we
+            # avoid hitting pitfalls. We use the 'target_datetime' which was prevously
+            # added to 'recovery_info'. It already handles the cases where the user
+            # specifies no time zone, and uses the Barman host time zone as a fallback.
+            # In short: if 'target_time' is present it means the user asked for a
+            # specific point in time, but we need a sanitized value to use in the
+            # Postgres configuration, so we use 'target_datetime'.
+            # See '_set_pitr_targets'.
+            recovery_conf_lines.append(
+                "recovery_target_time = '%s'" % recovery_info["target_datetime"],
+            )
         if target_xid:
             recovery_conf_lines.append("recovery_target_xid = '%s'" % target_xid)
         if target_lsn:

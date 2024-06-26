@@ -1,6 +1,6 @@
-% BARMAN-CLOUD-WAL-RESTORE(1) Barman User manuals | Version 3.10.0
+% BARMAN-CLOUD-WAL-RESTORE(1) Barman User manuals | Version 3.10.1
 % EnterpriseDB <https://www.enterprisedb.com>
-% January 24, 2024
+% June 12, 2024
 
 # NAME
 
@@ -30,6 +30,7 @@ usage: barman-cloud-wal-restore [-V] [--help] [-v | -q] [-t]
                                 [--profile AWS_PROFILE]
                                 [--read-timeout READ_TIMEOUT]
                                 [--azure-credential {azure-cli,managed-identity}]
+                                [--no-partial]
                                 source_url server_name wal_name wal_dest
 
 This script can be used as a `restore_command` to download WAL files
@@ -53,6 +54,7 @@ optional arguments:
   -t, --test            Test cloud connectivity and exit
   --cloud-provider {aws-s3,azure-blob-storage,google-cloud-storage}
                         The cloud provider to use as a storage backend
+  --no-partial          Do not download partial WAL files
 
 Extra options for the aws-s3 cloud provider:
   --endpoint-url ENDPOINT_URL

@@ -157,6 +157,7 @@ class TestCloudBackupShow(object):
             "begin_time": "Tue Jan 19 03:14:08 2038",
             "begin_wal": "000000010000000000000002",
             "begin_xlog": "0/2000028",
+            "children_backup_ids": None,
             "compression": None,
             "config_file": "/pgdata/location/postgresql.conf",
             "copy_stats": None,
@@ -170,6 +171,7 @@ class TestCloudBackupShow(object):
             "ident_file": "/pgdata/location/pg_ident.conf",
             "included_files": None,
             "mode": "concurrent",
+            "parent_backup_id": None,
             "pgdata": "/pgdata/location",
             "server_name": "main",
             "size": None,
@@ -213,6 +215,7 @@ class TestCloudBackupShow(object):
             "version": 150000,
             "xlog_segment_size": 16777216,
             "backup_id": "backup_id_1",
+            "summarize_wal": None,
         }
 
     @pytest.mark.parametrize("extra_args", [[], ["--format", "json"]])
