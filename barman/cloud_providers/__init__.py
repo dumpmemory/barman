@@ -16,6 +16,8 @@
 # You should have received a copy of the GNU General Public License
 # along with Barman.  If not, see <http://www.gnu.org/licenses/>
 
+from urllib.parse import urlparse
+
 from barman.exceptions import BarmanException, ConfigurationException
 
 
@@ -378,3 +380,80 @@ def snapshots_info_from_dict(snapshots_info):
             "Unsupported snapshot provider in backup info: %s"
             % snapshots_info["provider"]
         )
+
+
+def validate_s3_url(url):
+    """
+    Validate an S3 or S3-compatible URL.
+
+    :param str url: The URL to validate
+    :rtype: bool
+    :return: ``True`` if the URL is valid, ``False`` otherwise
+    """
+    parsed_url = urlparse(url)
+    if parsed_url.netloc == "" or parsed_url.scheme != "s3":
+        return False
+    return True
+
+
+def validate_google_cloud_url(url):
+    """
+    Validate a Google Cloud Storage URL.
+
+    :param str url: The URL to validate
+    :rtype: bool
+    :return: ``True`` if the URL is valid, ``False`` otherwise
+    """
+    # It must start with either the console URL or the gs:// scheme
+    GOOGLE_BASE_URL = "https://console.cloud.google.com/storage/browser/"
+    if not url.startswith(GOOGLE_BASE_URL) and not url.startswith("gs://"):
+        return False
+    gs_url = url.replace(GOOGLE_BASE_URL, "gs://")
+    parsed_url = urlparse(gs_url)
+    if not parsed_url.netloc:
+        # The bucket name is missing
+        return False
+    return True
+
+
+def validate_azure_blob_storage_url(url):
+    """
+    Validate an Azure Blob Storage URL.
+
+    :param str url: The URL to validate
+    :rtype: bool
+    :return: ``True`` if the URL is valid, ``False`` otherwise
+    """
+    # The URL must point to the Azure Blob Storage domain
+    AZURE_BLOB_STORAGE_DOMAIN = "blob.core.windows.net"
+    parsed_url = urlparse(url)
+    if parsed_url.netloc.endswith(AZURE_BLOB_STORAGE_DOMAIN):
+        try:
+            # try to get the bucket name
+            parsed_url.path.split("/")[1]
+            return True
+        except IndexError:
+            pass
+    return False
+
+
+def recognize_cloud_provider(url):
+    """
+    Check if the given URL is a valid cloud storage URL and return the corresponding
+    storage provider.
+
+    :param str url: The URL to validate
+    :rtype: string|None
+    :return: The storage provider, or None if the URL is invalid
+
+    .. note::
+        The strings follow the same naming used by ``barman-cloud-backup``.
+    """
+    if validate_s3_url(url):
+        return "aws-s3"
+    elif validate_google_cloud_url(url):
+        return "azure-blob-storage"
+    elif validate_azure_blob_storage_url(url):
+        return "google-cloud-storage"
+    else:
+        return None

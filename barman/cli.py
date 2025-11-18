@@ -39,6 +39,7 @@ from barman.config import (
     ConfigChangesProcessor,
     RecoveryOptions,
     parse_combine_mode,
+    parse_si_suffix,
     parse_staging_path,
 )
 from barman.exceptions import (
@@ -559,6 +560,18 @@ def backup_completer(prefix, parsed_args, **kwargs):
             default=None,
             type=check_non_negative,
         ),
+        argument(
+            "--cloud-staging-directory",
+            help="A staging directory when sending backups to a cloud destination",
+            type=parse_staging_path,
+        ),
+        argument(
+            "--cloud-staging-max-size",
+            help="Max size that `--cloud-staging-directory` can reach. "
+            "If this value is ever surparsed then the backup process is paused and "
+            "only resumed when enough space is available. Default is 30G.",
+            type=parse_si_suffix,
+        ),
     ]
 )
 def backup(args):
@@ -610,6 +623,11 @@ def backup(args):
             server.config.bandwidth_limit = args.bwlimit
         if args.check_timeout is not None:
             server.config.check_timeout = args.check_timeout
+        if args.cloud_staging_directory is not None:
+            server.config.cloud_staging_directory = args.cloud_staging_directory
+        if args.cloud_staging_max_size is not None:
+            server.config.cloud_staging_max_size = args.cloud_staging_max_size
+
         with closing(server):
             server.backup(
                 wait=args.wait,

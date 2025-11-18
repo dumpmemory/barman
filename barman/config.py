@@ -550,6 +550,24 @@ def parse_combine_mode(value):
     return value
 
 
+def parse_directory_or_cloud_provider(value):
+    """
+    Parse a string to a valid directory or cloud provider URL.
+
+    :param string|None value: value to validate
+    :raises ValueError: if the value is invalid
+    """
+    if value and "://" in value:
+        from barman.cloud_providers import recognize_cloud_provider
+
+        if recognize_cloud_provider(value) is None:
+            raise ValueError(
+                "The URL is not compatible with any of the supported cloud providers"
+            )
+
+    return value
+
+
 class BaseConfig(object):
     """
     Contains basic methods for handling configuration of Servers and Models.
@@ -640,6 +658,8 @@ class ServerConfig(BaseConfig):
         "basebackup_retry_times",
         "basebackups_directory",
         "check_timeout",
+        "cloud_staging_directory",
+        "cloud_staging_max_size",
         "cluster",
         "compression",
         "compression_level",
@@ -829,6 +849,8 @@ class ServerConfig(BaseConfig):
         "basebackup_retry_times": "0",
         "basebackups_directory": "%(backup_directory)s/base",
         "check_timeout": "30",
+        "cloud_staging_directory": "/tmp/barman/cloud-staging",
+        "cloud_staging_max_size": "30G",
         "cluster": "%(name)s",
         "compression_level": "medium",
         "disabled": "false",
@@ -886,9 +908,12 @@ class ServerConfig(BaseConfig):
         "backup_compression_workers": int,
         "backup_method": parse_backup_method,
         "backup_options": BackupOptions,
+        "basebackups_directory": parse_directory_or_cloud_provider,
         "basebackup_retry_sleep": int,
         "basebackup_retry_times": int,
         "check_timeout": int,
+        "cloud_staging_directory": parse_staging_path,
+        "cloud_staging_max_size": parse_si_suffix,
         "compression": parse_compression,
         "compression_level": parse_compression_level,
         "disabled": parse_boolean,
@@ -917,6 +942,7 @@ class ServerConfig(BaseConfig):
         "streaming_archiver": parse_boolean,
         "streaming_archiver_batch_size": int,
         "slot_name": parse_slot_name,
+        "wals_directory": parse_directory_or_cloud_provider,
         "worm_mode": parse_boolean,
     }
 
