@@ -65,6 +65,9 @@ from barman.cloud_providers import (
     CloudProviderOptionUnsupported,
     CloudProviderUnsupported,
     get_cloud_interface,
+    validate_azure_blob_storage_url,
+    validate_google_cloud_url,
+    validate_s3_url,
 )
 from barman.cloud_providers.aws_s3 import S3CloudInterface
 from barman.cloud_providers.azure_blob_storage import AzureCloudInterface
@@ -5010,3 +5013,51 @@ class TestS3ObjectLock(object):
         )
         # Verify datetime.now was called with the correct timezone
         mock_datetime.now.assert_called_once_with(retain_date.tzinfo)
+
+
+@pytest.mark.parametrize(
+    ("url", "is_valid"),
+    (
+        ("s3://my-bucket/my-object", True),
+        ("s3://another-bucket/path/to/object", True),
+        ("http://my-bucket/my-object", False),
+        ("s3:/my-bucket/my-object", False),
+        ("s3://", False),
+        ("s3://my-bucket", True),
+    ),
+)
+def test_validate_s3_url(url, is_valid):
+    """Test the ``validate_s3_url`` function."""
+    assert validate_s3_url(url) == is_valid
+
+
+@pytest.mark.parametrize(
+    ("url", "is_valid"),
+    (
+        ("https://console.cloud.google.com/storage/browser/my-bucket/my-object", True),
+        ("gs://my-bucket/my-object", True),
+        ("http://my-bucket/my-object", False),
+        ("gss://my-bucket/my-object", False),
+        ("gs:/my-bucket/my-object", False),
+        ("gs://", False),
+        ("gs://my-bucket", True),
+    ),
+)
+def test_validate_google_cloud_url(url, is_valid):
+    """Test the ``validate_google_cloud_url`` function."""
+    assert validate_google_cloud_url(url) == is_valid
+
+
+@pytest.mark.parametrize(
+    ("url", "is_valid"),
+    (
+        ("https://myaccount.blob.core.windows.net/mycontainer/myblob", True),
+        ("https://anotheraccount.blob.core.windows.net/container/blob", True),
+        ("https://myaccount.blob.core.windows.com/mycontainer/myblob", False),
+        ("https://myaccount.windows.core.net/", False),
+        ("https://myaccount.azure.com/container/blob", False),
+    ),
+)
+def test_validate_azure_blob_storage_url(url, is_valid):
+    """Test the ``validate_azure_blob_storage_url`` function."""
+    assert validate_azure_blob_storage_url(url) == is_valid
