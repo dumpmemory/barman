@@ -760,6 +760,89 @@ class PostgresBackupExecutor(BackupExecutor):
         )
 
 
+class CloudPostgresBackupExecutor(PostgresBackupExecutor):
+    """
+    Concrete class for backup via ``pg_basebackup`` with dynamic upload to cloud storage.
+
+    In this method backups are not fully stored locally and are instead uploaded to
+    the cloud storage as files are being copied from the Postgres server.
+
+    The complete process is as follows:
+
+    1. ``pg_basebackup`` is started as a subprocess directing its output to a
+        staging area (defined by :attr:`config.cloud_staging_directory`).
+    2. A thread is started to monitor the staging area size so that it never goes
+        over a limit (defined by :attr:`config.cloud_staging_max_size`). If that limit
+        is ever reached, the backup subprocess is stopped and only resumed when enough
+        space has been freed.
+    3. A thread is started to fetch “ready files”. Such files are those which are
+        already fully written and closed by the backup process. These files are put in
+        a “ready queue”.
+    4. Build the tarball. Receives ready files from the ready queue and appends them
+        to a tarball that is constantly being written. The tarball is written in
+        chunks, called "part files". Part files are written to disk in the staging area
+        and live there until uploaded to the cloud on step 5.
+    5. Multiple processes are started to upload part files to the cloud (the number of
+        processes is defined by :attr:`config.parallel_jobs`). Each file is deleted
+        after its upload is confirmed successful.
+
+    .. note::
+        The logic of steps 4 and 5 are not contained in this method, but in the
+        :class:`barman.cloud.CloudBackupUploader` class used here.
+    """
+
+    def __init__(self, backup_manager):
+        """
+        Constructor
+
+        :param barman.backup.BackupManager backup_manager: the BackupManager
+            assigned to the executor
+        """
+        super(CloudPostgresBackupExecutor, self).__init__(backup_manager)
+        self._ready_files_queue = None
+
+    def backup_copy(self, backup_info):
+        """
+        Perform the actual copy of the backup using ``pg_basebackup``.
+
+        For this executor, this means controlling the backup process, the building
+        of the tarball and its upload to the cloud storage.
+
+        In case of failure during the execution of the ``pg_basebackup`` command
+        or during the upload of files, a retry mechanism is triggered. If retrying
+        is unsuccessful, the method raises a :exec:`DataTransferFailure`, making sure
+        all the staged files are cleaned up.
+
+        :param barman.infofile.LocalBackupInfo backup_info: backup information
+
+        .. note::
+            In this method step 1 is performed and steps 2 to 5 are coordinated.
+            Read the class docstring for details.
+        """
+
+    def _monitor_staging_area(self):
+        """
+        Monitor the staging area size and pause/resume the backup process.
+
+        This method runs in a separate thread.
+
+        .. note::
+            In this method step 2 is performed. Read the class docstring for details.
+        """
+
+    def _fetch_ready_files(self):
+        """
+        Anayze the staging area for ready files and put them in the ready queue.
+
+        Ready files are those which are fully written and closed by ``pg_basebackup``.
+
+        This method runs in a separate thread.
+
+        .. note::
+            In this method step 3 is performed. Read the class docstring for details.
+        """
+
+
 class ExternalBackupExecutor(with_metaclass(ABCMeta, BackupExecutor)):
     """
     Abstract base class for non-postgres backup executors.

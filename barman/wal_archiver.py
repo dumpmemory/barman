@@ -420,6 +420,20 @@ class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):
             script.env_from_wal_info(wal_info, dst_file)
             script.run()
 
+    def _flush_to_disk(self, wal_info):
+        """
+        Flush the given WAL file to disk.
+        """
+        # This method will be called by the archive_wal method above when
+        # wals_directory points to a directory on a physical disk device.
+
+    def _send_to_cloud(self, wal_info):
+        """
+        Send the given WAL file to configured cloud storage.
+        """
+        # This method will be called by the archive_wal method above when
+        # wals_directory points to a cloud storage destination.
+
     @abstractmethod
     def get_next_batch(self):
         """
