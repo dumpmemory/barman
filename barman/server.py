@@ -41,6 +41,7 @@ import dateutil.tz
 import barman
 from barman import fs, output, xlog
 from barman.backup import BackupManager
+from barman.cloud_providers import recognize_cloud_provider
 from barman.command_wrappers import BarmanSubProcess, Command, Rsync
 from barman.compression import CustomCompressor
 from barman.copy_controller import RsyncCopyController
@@ -267,6 +268,8 @@ class Server(RemoteStatusMixin):
         self.enforce_retention_policies = False
         self.postgres = None
         self.streaming = None
+        self.wal_storage = None
+        self.backup_storage = None
         self.archivers = []
 
         # Postgres configuration is available only if node is not passive
@@ -597,6 +600,24 @@ class Server(RemoteStatusMixin):
         if self.streaming:
             self.streaming.close()
 
+    @property
+    def backup_cloud_provider(self):
+        return recognize_cloud_provider(self.config.basebackups_directory)
+
+    @property
+    def wal_cloud_provider(self):
+        return recognize_cloud_provider(self.config.wals_directory)
+
+    @property
+    def use_backup_cloud_storage(self):
+        """Whether the server is using cloud storage for backups"""
+        return bool(self.backup_cloud_provider)
+
+    @property
+    def use_wal_cloud_storage(self):
+        """Whether the server is using cloud storage for WALs"""
+        return bool(self.wal_cloud_provider)
+
     def check(self, check_strategy=__default_check_strategy):
         """
         Implements the 'server check' command and makes sure SSH and PostgreSQL
@@ -625,6 +646,8 @@ class Server(RemoteStatusMixin):
                 self.check_backup_validity(check_strategy)
                 # Check if encryption works
                 self.check_encryption(check_strategy)
+                # Check cloud storage configuration
+                self.check_cloud_storage_configuration(check_strategy)
                 # Check WAL archiving is happening
                 self.check_wal_validity(check_strategy)
                 # Executes the backup manager set of checks
@@ -1110,6 +1133,67 @@ class Server(RemoteStatusMixin):
                     "standby servers which share the same system identifier"
                 ),
             )
+
+    def check_cloud_storage_configuration(self, check_strategy):
+        """
+        Checks cloud storage configuration in case the backup destination
+        is a cloud storage.
+
+        :param CheckStrategy check_strategy: The strategy for the management
+            of the results of the various checks.
+        """
+        if not self.use_backup_cloud_storage and not self.use_wal_cloud_storage:
+            return
+
+        check_strategy.init_check("cloud storage configuration")
+
+        if self.use_backup_cloud_storage and self.config.backup_compression not in (
+            None,
+            "none",
+        ):
+            check_strategy.result(
+                self.config.name,
+                False,
+                hint="compression is not supported when the backup destination is a "
+                "cloud storage",
+            )
+            return
+        if self.use_wal_cloud_storage and self.config.compression:
+            check_strategy.result(
+                self.config.name,
+                False,
+                hint="compression is not supported when the WAL destination is a "
+                "cloud storage",
+            )
+            return
+        if self.use_backup_cloud_storage and self.config.encryption:
+            check_strategy.result(
+                self.config.name,
+                False,
+                hint="encryption is not supported when the backup destination is a "
+                "cloud storage",
+            )
+            return
+        if self.use_backup_cloud_storage and self.config.backup_method != "postgres":
+            check_strategy.result(
+                self.config.name,
+                False,
+                hint="cloud backup destination is only supported with "
+                "'backup_method = postgres'",
+            )
+            return
+        if (
+            self.use_backup_cloud_storage or self.use_wal_cloud_storage
+        ) and self.config.worm_mode:
+            check_strategy.result(
+                self.config.name,
+                False,
+                hint="WORM mode is not supported when the backup or WAL destination is "
+                "a cloud storage",
+            )
+            return
+
+        check_strategy.result(self.config.name, True)
 
     def _make_directories(self):
         """

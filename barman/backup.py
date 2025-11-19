@@ -36,13 +36,17 @@ import dateutil.tz
 from barman import output, xlog
 from barman.annotations import AnnotationManagerFile, KeepManager, KeepManagerMixin
 from barman.backup_executor import (
+    CloudPostgresBackupExecutor,
     PassiveBackupExecutor,
     PostgresBackupExecutor,
     RsyncBackupExecutor,
     SnapshotBackupExecutor,
 )
 from barman.backup_manifest import BackupManifest
-from barman.cloud_providers import get_snapshot_interface_from_backup_info
+from barman.cloud_providers import (
+    get_snapshot_interface_from_backup_info,
+    recognize_cloud_provider,
+)
 from barman.command_wrappers import PgVerifyBackup
 from barman.compression import CompressionManager
 from barman.config import BackupOptions, RecoveryOptions
@@ -106,7 +110,10 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             if server.passive_node:
                 self.executor = PassiveBackupExecutor(self)
             elif self.config.backup_method == "postgres":
-                self.executor = PostgresBackupExecutor(self)
+                if recognize_cloud_provider(self.config.basebackups_directory):
+                    self.executor = CloudPostgresBackupExecutor(self)
+                else:
+                    self.executor = PostgresBackupExecutor(self)
             elif self.config.backup_method == "local-rsync":
                 self.executor = RsyncBackupExecutor(self, local_mode=True)
             elif self.config.backup_method == "snapshot":
