@@ -1908,9 +1908,14 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         This function should check if pg_verifybackup is installed and run it against backup path
         should test if pg_verifybackup is installed locally
 
-
         :param backup_info: barman.infofile.LocalBackupInfo instance
         """
+        if self.server.use_backup_cloud_storage or self.server.use_wal_cloud_storage:
+            output.error(
+                "Backup verification is not supported for servers using cloud storage"
+            )
+            return
+
         output.info("Calling pg_verifybackup")
         # Test pg_verifybackup existence
         version_info = PgVerifyBackup.get_version_info(self.server.path)

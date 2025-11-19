@@ -3476,6 +3476,12 @@ class Server(RemoteStatusMixin):
             except FileNotFoundError:
                 pass
 
+        if self.use_wal_cloud_storage:
+            output.error(
+                "Rebuilding xlogdb is not supported for servers using cloud storage"
+            )
+            return
+
         root = self.config.wals_directory
         wal_count = label_count = history_count = 0
         # lock the xlogdb as we are about replacing it completely
