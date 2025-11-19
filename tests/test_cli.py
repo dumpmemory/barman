@@ -1645,6 +1645,7 @@ class TestCli(object):
             primary_ssh_command=None,
             disabled=False,
             barman_lock_directory="/path/to/lockdir",
+            basebackups_directory="/path/to/basebackups",
             backup_compression=None,
         )
         server = Server(mock_config)
@@ -2496,6 +2497,7 @@ class TestShowServersCli(object):
         mock_config.name = self.test_server_name
         mock_config.retention_policy = None
         mock_config.last_backup_maximum_age = None
+        mock_config.basebackups_directory = "/path/to/basebackups"
         yield mock_config
 
     @pytest.mark.parametrize(

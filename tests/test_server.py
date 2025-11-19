@@ -3898,6 +3898,101 @@ class TestServer(object):
             hint="encryption test succeeded",
         )
 
+    @pytest.mark.parametrize(
+        "backup_compression, compression, encryption, backup_method, worm_mode, hint",
+        [
+            (
+                "gzip",
+                None,
+                None,
+                "postgres",
+                "off",
+                "compression is not supported when the backup destination is a cloud storage",
+            ),
+            (
+                None,
+                "gzip",
+                None,
+                "postgres",
+                "off",
+                "compression is not supported when the WAL destination is a cloud storage",
+            ),
+            (
+                None,
+                None,
+                "gpg",
+                "postgres",
+                "off",
+                "encryption is not supported when the backup destination is a cloud storage",
+            ),
+            (
+                None,
+                None,
+                None,
+                "rsync",
+                "off",
+                "cloud backup destination is only supported with 'backup_method = postgres'",
+            ),
+            (
+                None,
+                None,
+                None,
+                "postgres",
+                True,
+                "WORM mode is not supported when the backup or WAL destination is a cloud storage",
+            ),
+            (
+                None,
+                None,
+                None,
+                "postgres",
+                "off",
+                None,
+            ),
+        ],
+    )
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=lambda: True)
+    @patch("barman.server.Server.use_backup_cloud_storage", new_callable=lambda: True)
+    def test_check_cloud_storage_configuration(
+        self,
+        _mock_use_backup_cloud,
+        _mock_use_wal_cloud,
+        backup_compression,
+        compression,
+        encryption,
+        backup_method,
+        worm_mode,
+        hint,
+    ):
+        mock_strategy = Mock()
+        server = build_real_server(
+            main_conf={
+                "backup_compression": backup_compression,
+                "compression": compression,
+                "encryption": encryption,
+                "backup_method": backup_method,
+                "worm_mode": worm_mode,
+            }
+        )
+        server.check_cloud_storage_configuration(mock_strategy)
+        mock_strategy.init_check.assert_called_once_with("cloud storage configuration")
+        if hint:
+            mock_strategy.result.assert_called_once_with(
+                server.config.name, False, hint=hint
+            )
+        else:
+            mock_strategy.result.assert_called_once_with(server.config.name, True)
+
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=lambda: False)
+    @patch("barman.server.Server.use_backup_cloud_storage", new_callable=lambda: False)
+    def test_check_cloud_storage_configuration_no_url_configured(
+        self, _mock_use_backup_cloud, use_wal_cloud
+    ):
+        mock_strategy = Mock()
+        server = build_real_server()
+        server.check_cloud_storage_configuration(mock_strategy)
+        mock_strategy.init_check.assert_not_called()
+
     def test_check_backup_validity_exceeds_minimum_size(self, server, capsys):
         backup = build_test_backup_info(
             server=server,
