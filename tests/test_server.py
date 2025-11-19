@@ -415,6 +415,19 @@ class TestServer(object):
             assert xlogdb_file.readline() == expected_line
             assert xlogdb_file.readline() == ""
 
+    @patch("barman.server.os.path.exists", return_value=True)
+    @patch("barman.server.output")
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=lambda: True)
+    def test_rebuild_xlogdb_not_supported_using_cloud(
+        self, _mock_wal_cloud, mock_output, mock_exists
+    ):
+        """Test rebuilding the xlogdb when compression is enabled"""
+        server = build_real_server()
+        server.rebuild_xlogdb()
+        mock_output.error.assert_called_once_with(
+            "Rebuilding xlogdb is not supported for servers using cloud storage"
+        )
+
     def test_get_wal_full_path(self, tmpdir):
         """
         Testing Server.get_wal_full_path() method

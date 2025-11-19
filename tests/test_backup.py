@@ -2568,6 +2568,8 @@ class TestVerifyBackup:
         backup_path = "/fake/path"
         pg_verify_backup_path = "/path/to/pg_verifybackup"
         backup_manager = build_backup_manager()
+        backup_manager.server.use_backup_cloud_storage = False
+        backup_manager.server.use_wal_cloud_storage = False
         mock_backup_info = Mock()
         mock_backup_info.get_data_directory.return_value = backup_path
 
@@ -2617,6 +2619,17 @@ class TestVerifyBackup:
         backup_manager.verify_backup(mock_backup_info)
 
         mock_pg_verify_backup_instance.get_output.assert_not_called()
+
+    @patch("barman.backup.output")
+    def test_verify_backup_not_supported_with_cloud(self, mock_output):
+        backup_manager = build_backup_manager()
+        mock_backup_info = Mock()
+        backup_manager.verify_backup(mock_backup_info)
+        backup_manager.server.use_backup_cloud_storage = True
+        backup_manager.server.use_wal_cloud_storage = True
+        mock_output.error.assert_called_once_with(
+            "Backup verification is not supported for servers using cloud storage"
+        )
 
 
 class TestSnapshotBackup(object):
