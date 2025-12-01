@@ -89,6 +89,310 @@ class WalArchiverQueue(list):
         self.run_size = len(self)
 
 
+class WalStorageStrategy(metaclass=ABCMeta):
+    """
+    Abstract base class for WAL storage strategies.
+
+    WAL storage strategies are used to effectively store WAL files in the
+    connfigured destination, be it local filesystem or cloud storage.
+    """
+
+    def __init__(self, backup_manager, server):
+        """
+        Constructor.
+
+        :param barman.backup_manager.BackupManager backup_manager: The backup manager
+        :param barman.server.Server server: The server
+        """
+        self.backup_manager = backup_manager
+        self.config = backup_manager.config
+        self.server = server
+
+    @abstractmethod
+    def save(self, compressor, encryption, wal_info):
+        """
+        Effectively persist a WAL file according to the configured destination.
+
+        :param compressor: the compressor for the file (if any)
+        :param None|Encryption encryption: the encryptor for the file (if any)
+        :param WalFileInfo wal_info: the WAL file is being processed
+        """
+
+    def _run_pre_archive_scripts(self, wal_info, src_file):
+        """
+        Run the pre-archive scripts.
+
+        :param WalFileInfo wal_info: the WAL file info object
+        :param str src_file: the source WAL file path
+        """
+        # Run the pre_archive_script if present
+        script = HookScriptRunner(self.backup_manager, "archive_script", "pre")
+        script.env_from_wal_info(wal_info, src_file)
+        script.run()
+
+        # Run the pre_archive_retry_script if present
+        retry_script = RetryHookScriptRunner(
+            self.backup_manager, "archive_retry_script", "pre"
+        )
+        retry_script.env_from_wal_info(wal_info, src_file)
+        retry_script.run()
+
+    def _run_post_archive_scripts(self, wal_info, dest_file, error):
+        """
+        Run the post-archive scripts.
+
+        :param WalFileInfo wal_info: the WAL file info object
+        :param str dest_file: the destination WAL file path
+        :param Exception|None error: the exception raised during
+            the archival process, if any
+        """
+        try:
+            retry_script = RetryHookScriptRunner(
+                self.backup_manager, "archive_retry_script", "post"
+            )
+            retry_script.env_from_wal_info(wal_info, dest_file, error)
+            retry_script.run()
+        except AbortedRetryHookScript as e:
+            # Ignore the ABORT_STOP as it is a post-hook operation
+            _logger.warning(
+                "Ignoring stop request after receiving "
+                "abort (exit code %d) from post-archive "
+                "retry hook script: %s",
+                e.hook.exit_status,
+                e.hook.script,
+            )
+
+        # Run the post_archive_script if present
+        script = HookScriptRunner(self.backup_manager, "archive_script", "post", error)
+        script.env_from_wal_info(wal_info, dest_file)
+        script.run()
+
+
+class LocalWalStorageStrategy(WalStorageStrategy):
+    """
+    WAL storage strategy for local filesystem storage.
+
+    .. note::
+        For now, this class is also responsible for encrypting and compressing files
+        before storing them, but in the future this responsibility should be moved
+        elsewhere, desirably in a shared component, so that strategies' only
+        responsibility is to actually persist files.
+    """
+
+    def __init__(self, backup_manager, server):
+        super(LocalWalStorageStrategy, self).__init__(backup_manager, server)
+        self.files_to_remove = []
+
+    def _check_duplicate(self, src_file, dst_file, wal_info):
+        """
+        Check if the destination WAL file already exists in local storage, and if so,
+        whether it is identical to the source file.
+
+        :param str src_file: the source WAL file path
+        :param str dst_file: the destination WAL file path
+        :param WalFileInfo wal_info: the WAL file info object
+        :raise DuplicateWalFile: if the destination file exists and is
+            different from the source file
+        :raise MatchingDuplicateWalFile: if the destination file exists and is
+            identical to the source file
+        """
+        if not os.path.exists(dst_file):
+            return
+
+        comp_manager = self.backup_manager.compression_manager
+        dst_info = self.backup_manager.get_wal_file_info(dst_file)
+        src_uncompressed = src_file
+        dst_uncompressed = dst_file
+        try:
+            # If the existing destination file is already encrypted, it can't be
+            # decrypted or uncompressed to perform any of the later comparisons
+            # (because we cannot assume the encryption passphrase is always
+            # available in the configuration).
+            if dst_info.encryption:
+                raise DuplicateWalFile(wal_info)
+            # If the existing file is already compressed, decompress it to a
+            # <dst_wal_path>.uncompressed file
+            if dst_info.compression is not None:
+                dst_uncompressed = dst_file + ".uncompressed"
+                comp_manager.get_compressor(dst_info.compression).decompress(
+                    dst_file, dst_uncompressed
+                )
+            # If the source file is already compressed (because the user
+            # compressed it manually with a script in the archive_command),
+            # then decompress it to a <src_wal_path>.uncompressed file
+            if wal_info.compression:
+                src_uncompressed = src_file + ".uncompressed"
+                comp_manager.get_compressor(wal_info.compression).decompress(
+                    src_file, src_uncompressed
+                )
+            # Directly compare files. When the files are identical raise a
+            # MatchingDuplicateWalFile exception, otherwise raise DuplicateWalFile
+            if filecmp.cmp(dst_uncompressed, src_uncompressed):
+                raise MatchingDuplicateWalFile(wal_info)
+            else:
+                raise DuplicateWalFile(wal_info)
+        finally:
+            if src_uncompressed != src_file:
+                os.unlink(src_uncompressed)
+            if dst_uncompressed != dst_file:
+                os.unlink(dst_uncompressed)
+
+    def _compress_file(self, compressor, src_file, dst_dir, wal_info):
+        """
+        Compress *src_file* to a "temp" file inside *dst_dir* and updates *wal_info*.
+
+        .. note::
+            The temporary compressed file will have the same name as the source file,
+            with a ".compressed" suffix appended. It's created on the assumption that
+            the caller will later remove the file or rename/move it to its final
+            destination.
+
+        :param compressor: the compressor to use
+        :param str src_file: the file to compress
+        :param str dst_dir: the directory where the compressed file will be created
+        :param WalFileInfo wal_info: the WAL file info object
+        :returns: the path to the compressed temporary file
+        """
+        tmp_file = "%s.compressed" % os.path.join(dst_dir, os.path.basename(src_file))
+        compressor.compress(src_file, tmp_file)
+        self.files_to_remove.append(src_file)
+        wal_info.compression = compressor.compression
+        return tmp_file
+
+    def _encrypt_file(self, encryption, src_file, dst_dir, wal_info):
+        """
+        Encrypt *src_file* to a "temp" file inside *dst_dir* and updates *wal_info*.
+
+        .. note::
+            The temporary encrypted file will have the same name as the source file,
+            with a ".gpg" suffix appended. It's created on the assumption that
+            the caller will later remove the file or rename/move it to its final
+            destination.
+
+        :param encryption: the encryptor to use
+        :param str src_file: the file to encrypt
+        :param str dst_dir: the directory where the encrypted file will be created
+        :param WalFileInfo wal_info: the WAL file info object
+        :returns: the path to the encrypted temporary file
+        """
+        # The encrypted file will have the .gpg extension
+        encrypted_file = encryption.encrypt(src_file, dst_dir)
+        self.files_to_remove.append(src_file)
+        wal_info.encryption = encryption.NAME
+        return encrypted_file
+
+    def _copy_stats(self, src_file, dst_file, wal_info):
+        """
+        Copy stats from *src_file* to *dst_file* and updates its *wal_info*.
+
+        This is used preserve the metadata of the original file after compression or
+        encryption, updating only the size in *wal_info* accordingly.
+
+        :param str src_file: the source WAL file path
+        :param str dst_file: the destination WAL file path
+        :param WalFileInfo wal_info: the WAL file info object
+        """
+        shutil.copystat(src_file, dst_file)
+        stat = os.stat(dst_file)
+        wal_info.size = stat.st_size
+
+    def _rename_or_copy_file(self, src_file, dst_file):
+        """
+        Rename or copy *src_file* to *dst_file*.
+
+        Rename is attempted first, and if it fails (because the source and
+        destination are on different filesystems), a copy is performed.
+
+        :param str src_file: the source file path
+        :param str dst_file: the destination file path
+        """
+        try:
+            os.rename(src_file, dst_file)
+        except OSError:
+            shutil.copy2(src_file, dst_file)
+            self.files_to_remove.append(src_file)
+
+    def _remove_intermediary_files(self):
+        """Remove any intermediary files created during the archival process"""
+        for file in self.files_to_remove:
+            try:
+                os.unlink(file)
+            except OSError as e:
+                _logger.warning("Could not remove intermediary file %s: %s", file, e)
+
+    def _fsync_contents(self, src_dir, dst_dir, dst_file):
+        """
+        Fsync the contents of source and destination directories and the
+        destination file.
+
+        :param str src_dir: the source directory path
+        :param str dst_dir: the destination directory path
+        :param str dst_file: the destination file path
+        """
+        # Fsync the destination file
+        fsync_file(dst_file)
+        # Fsync the source directory to ensure the removal of the original file
+        fsync_dir(src_dir)
+        # Fsync the target directory to ensure the presence of the new file
+        fsync_dir(dst_dir)
+
+    def save(self, compressor, encryption, wal_info):
+        """
+        Effectively persist a WAL file according to the configured destination.
+
+        Compression and encryption are applied, if requested.
+
+        :param compressor: the compressor for the file (if any)
+        :param None|Encryption encryption: the encryptor for the file (if any)
+        :param WalFileInfo wal_info: the WAL file is being processed
+        :raises DuplicateWalFile: if the destination file exists and is
+            different from the source file
+        :raises MatchingDuplicateWalFile: if the destination file exists and is
+            identical to the source file
+        """
+        src_file = wal_info.orig_filename
+        src_dir = os.path.dirname(src_file)
+        dst_file = wal_info.fullpath(self.server)
+        dst_dir = os.path.dirname(dst_file)
+        mkpath(dst_dir)
+
+        current_file = src_file
+        error = None
+        try:
+            self._run_pre_archive_scripts(wal_info, current_file)
+            self._check_duplicate(current_file, dst_file, wal_info)
+
+            if compressor and not wal_info.compression:
+                current_file = self._compress_file(
+                    compressor, current_file, dst_dir, wal_info
+                )
+            if encryption:
+                current_file = self._encrypt_file(
+                    encryption, current_file, dst_dir, wal_info
+                )
+
+            # Update stats, in case compression/encryption changed the current file
+            if src_file != current_file:
+                self._copy_stats(src_file, current_file, wal_info)
+
+            # Perform the real filesystem operation with the xlogdb lock taken
+            # This makes the operation atomic from the xlogdb's perspective
+            with self.server.xlogdb("a") as fxlogdb:
+                self._rename_or_copy_file(current_file, dst_file)
+                self._remove_intermediary_files()
+                self._fsync_contents(src_dir, dst_dir, dst_file)
+                # At this point the original file has been removed
+                wal_info.orig_filename = None
+                fxlogdb.write(wal_info.to_xlogdb_line())
+
+        except Exception as e:
+            error = e
+            raise
+
+        finally:
+            self._run_post_archive_scripts(wal_info, dst_file, error)
+
+
 class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):
     """
     Base class for WAL archiver objects
@@ -106,6 +410,12 @@ class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):
         self.server = backup_manager.server
         self.config = backup_manager.config
         self.name = name
+        if self.server.use_wal_cloud_storage:
+            self.storage_strategy = None  # TODO
+        else:
+            self.storage_strategy = LocalWalStorageStrategy(
+                self.backup_manager, self.server
+            )
         super(WalArchiver, self).__init__()
 
     def receive_wal(self, reset=False):
@@ -186,7 +496,7 @@ class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):
             )
             # Archive the WAL file
             try:
-                self.archive_wal(compressor, encryption, wal_info)
+                self.storage_strategy.save(compressor, encryption, wal_info)
             except MatchingDuplicateWalFile:
                 # We already have this file. Simply unlink the file.
                 os.unlink(wal_info.orig_filename)
@@ -258,181 +568,6 @@ class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):
                 self.server.move_wal_file_to_errors_directory(
                     error, basename, "unknown"
                 )
-
-    def archive_wal(self, compressor, encryption, wal_info):
-        """
-        Archive a WAL segment and update the wal_info object
-
-        :param compressor: the compressor for the file (if any)
-        :param None|Encryption encryption: the encryptor for the file (if any)
-        :param WalFileInfo wal_info: the WAL file is being processed
-        """
-        src_file = wal_info.orig_filename
-        src_dir = os.path.dirname(src_file)
-        dst_file = wal_info.fullpath(self.server)
-        tmp_file = dst_file + ".tmp"
-        dst_dir = os.path.dirname(dst_file)
-
-        comp_manager = self.backup_manager.compression_manager
-
-        error = None
-        try:
-            # Run the pre_archive_script if present.
-            script = HookScriptRunner(self.backup_manager, "archive_script", "pre")
-            script.env_from_wal_info(wal_info, src_file)
-            script.run()
-
-            # Run the pre_archive_retry_script if present.
-            retry_script = RetryHookScriptRunner(
-                self.backup_manager, "archive_retry_script", "pre"
-            )
-            retry_script.env_from_wal_info(wal_info, src_file)
-            retry_script.run()
-
-            # Check if destination already exists
-            if os.path.exists(dst_file):
-                dst_info = self.backup_manager.get_wal_file_info(dst_file)
-                src_uncompressed = src_file
-                dst_uncompressed = dst_file
-                try:
-                    # If the existing destination file is already encrypted, it can't be
-                    # decrypted or uncompressed to perform any of the later comparisons
-                    # (because we cannot assume the encryption passphrase is always
-                    # available in the configuration).
-                    if dst_info.encryption:
-                        raise DuplicateWalFile(wal_info)
-                    # If the existing file is already compressed, decompress it to a
-                    # <dst_wal_path>.uncompressed file
-                    if dst_info.compression is not None:
-                        dst_uncompressed = dst_file + ".uncompressed"
-                        comp_manager.get_compressor(dst_info.compression).decompress(
-                            dst_file, dst_uncompressed
-                        )
-                    # If the source file is already compressed (because the user
-                    # compressed it manually with a script in the archive_command),
-                    # then decompress it to a <src_wal_path>.uncompressed file
-                    if wal_info.compression:
-                        src_uncompressed = src_file + ".uncompressed"
-                        comp_manager.get_compressor(wal_info.compression).decompress(
-                            src_file, src_uncompressed
-                        )
-                    # Directly compare files.
-                    # When the files are identical
-                    # raise a MatchingDuplicateWalFile exception,
-                    # otherwise raise a DuplicateWalFile exception.
-                    if filecmp.cmp(dst_uncompressed, src_uncompressed):
-                        raise MatchingDuplicateWalFile(wal_info)
-                    else:
-                        raise DuplicateWalFile(wal_info)
-                finally:
-                    if src_uncompressed != src_file:
-                        os.unlink(src_uncompressed)
-                    if dst_uncompressed != dst_file:
-                        os.unlink(dst_uncompressed)
-
-            mkpath(dst_dir)
-
-            # List of intermediate files that will need to be removed after the archival
-            files_to_remove = []
-            # The current working file being touched
-            current_file = src_file
-            # If the bits of the file has changed e.g. due to compression or encryption
-            content_changed = False
-            # Compress the file if not already compressed
-            if compressor and not wal_info.compression:
-                compressor.compress(src_file, tmp_file)
-                files_to_remove.append(current_file)
-                current_file = tmp_file
-                content_changed = True
-                wal_info.compression = compressor.compression
-            # Encrypt the file
-            if encryption:
-                encrypted_file = encryption.encrypt(current_file, dst_dir)
-                files_to_remove.append(current_file)
-                current_file = encrypted_file
-                wal_info.encryption = encryption.NAME
-                content_changed = True
-
-            # Perform the real filesystem operation with the xlogdb lock taken.
-            # This makes the operation atomic from the xlogdb file POV
-            with self.server.xlogdb("a") as fxlogdb:
-                # If the content has changed, it means the file was either compressed
-                # or encrypted or both. In this case, we need to update its metadata
-                if content_changed:
-                    shutil.copystat(src_file, current_file)
-                    stat = os.stat(current_file)
-                    wal_info.size = stat.st_size
-
-                # Try to atomically rename the file. If successful, the renaming will
-                # be an atomic operation (this is a POSIX requirement).
-                try:
-                    os.rename(current_file, dst_file)
-                except OSError:
-                    # Source and destination are probably on different filesystems
-                    shutil.copy2(current_file, tmp_file)
-                    os.rename(tmp_file, dst_file)
-                finally:
-                    for file in files_to_remove:
-                        os.unlink(file)
-
-                # At this point the original file has been removed
-                wal_info.orig_filename = None
-                # Execute fsync() on the archived WAL file
-                fsync_file(dst_file)
-                # Execute fsync() on the archived WAL containing directory
-                fsync_dir(dst_dir)
-                # Execute fsync() also on the incoming directory
-                fsync_dir(src_dir)
-                # Updates the information of the WAL archive with
-                # the latest segments
-                fxlogdb.write(wal_info.to_xlogdb_line())
-                # flush and fsync for every line
-                fxlogdb.flush()
-                os.fsync(fxlogdb.fileno())
-
-        except Exception as e:
-            # In case of failure save the exception for the post scripts
-            error = e
-            raise
-
-        # Ensure the execution of the post_archive_retry_script and
-        # the post_archive_script
-        finally:
-            # Run the post_archive_retry_script if present.
-            try:
-                retry_script = RetryHookScriptRunner(
-                    self, "archive_retry_script", "post"
-                )
-                retry_script.env_from_wal_info(wal_info, dst_file, error)
-                retry_script.run()
-            except AbortedRetryHookScript as e:
-                # Ignore the ABORT_STOP as it is a post-hook operation
-                _logger.warning(
-                    "Ignoring stop request after receiving "
-                    "abort (exit code %d) from post-archive "
-                    "retry hook script: %s",
-                    e.hook.exit_status,
-                    e.hook.script,
-                )
-
-            # Run the post_archive_script if present.
-            script = HookScriptRunner(self, "archive_script", "post", error)
-            script.env_from_wal_info(wal_info, dst_file)
-            script.run()
-
-    def _flush_to_disk(self, wal_info):
-        """
-        Flush the given WAL file to disk.
-        """
-        # This method will be called by the archive_wal method above when
-        # wals_directory points to a directory on a physical disk device.
-
-    def _send_to_cloud(self, wal_info):
-        """
-        Send the given WAL file to configured cloud storage.
-        """
-        # This method will be called by the archive_wal method above when
-        # wals_directory points to a cloud storage destination.
 
     @abstractmethod
     def get_next_batch(self):
