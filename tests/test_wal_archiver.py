@@ -15,16 +15,15 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with Barman.  If not, see <http://www.gnu.org/licenses/>.
-import gzip
 import os
-import shutil
 
 import pytest
-from mock import ANY, MagicMock, patch
+from mock import ANY, MagicMock, call, patch
 from testing_helpers import build_backup_manager, build_test_backup_info, caplog_reset
 
 import barman.xlog
 from barman.exceptions import (
+    AbortedRetryHookScript,
     ArchiverFailure,
     CommandFailedException,
     DuplicateWalFile,
@@ -33,7 +32,13 @@ from barman.exceptions import (
 from barman.infofile import WalFileInfo
 from barman.process import ProcessInfo
 from barman.server import CheckOutputStrategy
-from barman.wal_archiver import FileWalArchiver, StreamingWalArchiver, WalArchiverQueue
+from barman.wal_archiver import (
+    FileWalArchiver,
+    LocalWalStorageStrategy,
+    StreamingWalArchiver,
+    WalArchiverQueue,
+    WalStorageStrategy,
+)
 
 
 # noinspection PyMethodMayBeStatic
@@ -156,12 +161,10 @@ class TestFileWalArchiver(object):
 
     @patch("os.unlink")
     @patch("barman.wal_archiver.FileWalArchiver.get_next_batch")
-    @patch("barman.wal_archiver.FileWalArchiver.archive_wal")
     @patch("datetime.datetime")
     def test_archive(
         self,
         datetime_mock,
-        archive_wal_mock,
         get_next_batch_mock,
         unlink_mock,
         capsys,
@@ -186,7 +189,9 @@ class TestFileWalArchiver(object):
         assert batch.total_size == 1
         assert batch.run_size == 1
         get_next_batch_mock.return_value = batch
-        archive_wal_mock.side_effect = DuplicateWalFile
+        archiver.storage_strategy = MagicMock(
+            save=MagicMock(side_effect=DuplicateWalFile)
+        )
         datetime_mock.utcnow.return_value.strftime.return_value = "test_time"
 
         archiver.archive(fxlogdb_mock)
@@ -202,14 +207,18 @@ class TestFileWalArchiver(object):
             "File moved to errors directory." % (wal_info.name, archiver.config.name)
         ) in caplog.text
 
-        archive_wal_mock.side_effect = MatchingDuplicateWalFile
+        archiver.storage_strategy = MagicMock(
+            save=MagicMock(side_effect=MatchingDuplicateWalFile)
+        )
         archiver.archive(fxlogdb_mock)
         unlink_mock.assert_called_with(wal_info.orig_filename)
 
         # Test batch errors
         caplog_reset(caplog)
         batch.errors = ["testfile_1", "testfile_2"]
-        archive_wal_mock.side_effect = DuplicateWalFile
+        archiver.storage_strategy = MagicMock(
+            save=MagicMock(side_effect=DuplicateWalFile)
+        )
         archiver.archive(fxlogdb_mock)
         out, err = capsys.readouterr()
 
@@ -245,9 +254,8 @@ class TestFileWalArchiver(object):
 
     @patch("os.fsync")
     @patch("barman.wal_archiver.FileWalArchiver.get_next_batch")
-    @patch("barman.wal_archiver.FileWalArchiver.archive_wal")
     def test_archive_batch(
-        self, archive_wal_mock, get_next_batch_mock, fsync_mock, caplog
+        self, get_next_batch_mock, fsync_mock, caplog
     ):
         """
         Test archive using batch limit
@@ -259,6 +267,7 @@ class TestFileWalArchiver(object):
         fxlogdb_mock = MagicMock()
         backup_manager = MagicMock()
         archiver = FileWalArchiver(backup_manager)
+        archiver.storage_strategy = MagicMock()
         archiver.config.name = "test_server"
 
         wal_info = WalFileInfo(name="test_wal_file")
@@ -317,9 +326,9 @@ class TestFileWalArchiver(object):
         wal_file.ensure()
         archive_dir.ensure(dir=True)
         xlog_db.ensure()
-        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db.open(
-            mode="a"
-        )
+        xlog_db_fileobj = xlog_db.open(mode="a")
+        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db_fileobj
+        backup_manager.server.use_wal_cloud_storage = False
         backup_manager.server.archivers = [FileWalArchiver(backup_manager)]
 
         backup_manager.archive_wal()
@@ -327,6 +336,7 @@ class TestFileWalArchiver(object):
             archive_dir.strpath, barman.xlog.hash_dir(wal_name), wal_name
         )
         # Check for the presence of the wal file in the wal catalog
+        xlog_db_fileobj.flush()
         with xlog_db.open() as f:
             line = str(f.readline())
             assert wal_name in line
@@ -346,209 +356,6 @@ class TestFileWalArchiver(object):
         registry.pop("gzip")
         registry.pop("pigz")
         return registry
-
-    def test_archive_wal(self, tmpdir):
-        """
-        Assert that WALs ar archvied correctly, mainly when dealing with duplication
-        and when using compression or encryption.
-        """
-        # Setup the test environment
-        backup_manager = build_backup_manager(
-            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
-        )
-
-        # Mock the compression and encryption manager
-        backup_manager.server.get_backup.return_value = None
-        backup_manager.compression_manager = MagicMock()
-        backup_manager.encryption_manager = MagicMock()
-        backup_manager.get_wal_file_info.side_effect = (
-            lambda filename: WalFileInfo.from_file(
-                filename,
-                compression_manager=backup_manager.compression_manager,
-                encryption_manager=backup_manager.encryption_manager,
-            )
-        )
-
-        # Mock an actual simple compressor so that we can test with real
-        # compression/decompression without relying on the compression classes
-        class Compressor:
-            compression = "some compression"
-
-            def compress(self, src, dst):
-                with open(src, "rb") as f_in, gzip.open(dst, "wb") as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-
-            def decompress(self, src, dst):
-                with gzip.open(src, "rb") as f_in, open(dst, "wb") as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-
-        class Encryption:
-            NAME = "some encryption"
-
-            def encrypt(self, filename, dest_dir):
-                filename = os.path.basename(filename) + ".gpg"
-                dest_filename = os.path.join(dest_dir, filename)
-                open(dest_filename, mode="w+").write("encrypted-content")
-                return dest_filename
-
-        mock_compressor = MagicMock(wraps=Compressor())
-        mock_encryption = MagicMock(wraps=Encryption())
-        backup_manager.compression_manager.get_compressor.return_value = mock_compressor
-        # Set up the required directories, incoming and archived
-        basedir = tmpdir.join("main")
-        incoming_dir = basedir.join("incoming")
-        archive_dir = basedir.join("wals")
-        archive_dir.ensure(dir=True)
-
-        # Create xlogdb and a test WAL file
-        xlog_db = archive_dir.join("xlog.db")
-        xlog_db.ensure()
-        wal_file = incoming_dir.join("000000010000000000000001")
-        wal_file.ensure()
-
-        # Mock the xlogdb to just open the file when requested
-        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db.open(
-            mode="a"
-        )
-
-        # Initialize the archiver
-        archiver = FileWalArchiver(backup_manager)
-        backup_manager.server.archivers = [archiver]
-
-        # Case 1: Test a basic archival process
-        wal_info = WalFileInfo.from_file(
-            wal_file.strpath,
-            backup_manager.compression_manager,
-            encryption_manager=backup_manager.encryption_manager,
-            encryption=None,
-        )
-        # Run the archiver
-        archiver.archive_wal(None, None, wal_info)
-        # Assert that the file as moved from incoming to the archive directory
-        assert not os.path.exists(wal_file.strpath)
-        assert os.path.exists(wal_info.fullpath(backup_manager.server))
-
-        backup_manager.encryption_manager.identify_encryption.return_value = None
-        # Case 2: Test that a duplicate file (name and content) raises the appropriate
-        # exception. The same file was already archived in case 1, so this is a duplicate
-        wal_file.ensure()
-        wal_info = WalFileInfo.from_file(
-            wal_file.strpath,
-            backup_manager.compression_manager,
-            encryption_manager=backup_manager.encryption_manager,
-            encryption=None,
-        )
-        with pytest.raises(MatchingDuplicateWalFile):
-            archiver.archive_wal(None, None, wal_info)
-
-        # Case 3: test that a duplicate file (only name is equal) raises the appropriate
-        # exception. The file name is the same but we modify the content for this case
-        wal_file.write("test")
-        wal_info = WalFileInfo.from_file(
-            wal_file.strpath,
-            backup_manager.compression_manager,
-            encryption_manager=backup_manager.encryption_manager,
-            compression=None,
-            encryption=None,
-        )
-        with pytest.raises(DuplicateWalFile):
-            archiver.archive_wal(None, None, wal_info)
-
-        # Case 4: Test that a duplicate file (name and content) raises the appropriate
-        # exception. This is the same incoming file used in case 3, but we compress it
-        # before trying to archive. It should decompress and see that's already archived
-        mock_compressor.compress(wal_file.strpath, wal_file.strpath)
-        wal_info = WalFileInfo.from_file(
-            wal_file.strpath,
-            backup_manager.compression_manager,
-            encryption_manager=backup_manager.encryption_manager,
-            encryption=None,
-        )
-        assert os.path.exists(wal_file.strpath)
-        with pytest.raises(MatchingDuplicateWalFile):
-            archiver.archive_wal(None, None, wal_info)
-
-        # Case 5: Test that a duplicate file (name and content) raises the appropriate
-        # exception. This is the same incoming file used in case 4. In this case, we
-        # are compressing the file already archived, so incoming is uncompressed and
-        # the archived is compressed. It should decompress the archived one and see
-        # that it's the same file trying to be archived
-        mock_compressor.compress(
-            wal_info.fullpath(backup_manager.server),
-            wal_info.fullpath(backup_manager.server),
-        )
-        wal_info = WalFileInfo.from_file(
-            wal_file.strpath,
-            backup_manager.compression_manager,
-            encryption_manager=backup_manager.encryption_manager,
-            compression="some compression",
-            encryption=None,
-        )
-        with pytest.raises(MatchingDuplicateWalFile):
-            archiver.archive_wal(None, None, wal_info)
-
-        # Reset the status of the incoming and WALs directory
-        # removing the files archived during the preceding tests
-        os.unlink(wal_info.fullpath(backup_manager.server))
-        os.unlink(wal_file.strpath)
-
-        # Case 6: Test the archival of a new WAL file using compression
-        wal_file.write("test")
-        wal_info = WalFileInfo.from_file(
-            wal_file.strpath,
-            backup_manager.compression_manager,
-            encryption_manager=backup_manager.encryption_manager,
-            compression=None,
-            encryption=None,
-        )
-        mock_compressor = MagicMock(wraps=Compressor())
-        archiver.archive_wal(mock_compressor, None, wal_info)
-        assert os.path.exists(wal_info.fullpath(backup_manager.server))
-        assert not os.path.exists(wal_file.strpath)
-        mock_compressor.compress.assert_called_once_with(
-            wal_file.strpath, "%s.tmp" % wal_info.fullpath(backup_manager.server)
-        )
-
-        backup_manager.encryption_manager.identify_encryption.return_value = "gpg"
-        # Case 7: Test the archival of a new WAL file using encryption
-        os.unlink(wal_info.fullpath(backup_manager.server))
-
-        wal_file.write("test")
-        wal_info = WalFileInfo.from_file(
-            wal_file.strpath,
-            backup_manager.compression_manager,
-            encryption_manager=backup_manager.encryption_manager,
-            compression=None,
-        )
-        archiver.archive_wal(None, mock_encryption, wal_info)
-        assert os.path.exists(wal_info.fullpath(backup_manager.server))
-        assert not os.path.exists(wal_file.strpath)
-        mock_encryption.encrypt.assert_called_once_with(
-            wal_file.strpath, os.path.dirname(wal_info.fullpath(backup_manager.server))
-        )
-
-        # Case 8: Test the archival of a new WAL file using compression and encryption
-        os.unlink(wal_info.fullpath(backup_manager.server))
-
-        wal_file.write("test")
-        wal_info = WalFileInfo.from_file(
-            wal_file.strpath,
-            backup_manager.compression_manager,
-            encryption_manager=backup_manager.encryption_manager,
-            compression=None,
-        )
-        mock_compressor = MagicMock(wraps=Compressor())
-        mock_encryption = MagicMock(wraps=Encryption())
-        archiver.archive_wal(mock_compressor, mock_encryption, wal_info)
-        assert os.path.exists(wal_info.fullpath(backup_manager.server))
-        assert not os.path.exists(wal_file.strpath)
-        mock_compressor.compress.assert_called_once_with(
-            wal_file.strpath, "%s.tmp" % wal_info.fullpath(backup_manager.server)
-        )
-        mock_encryption.encrypt.assert_called_once_with(
-            "%s.tmp" % wal_info.fullpath(backup_manager.server),
-            os.path.dirname(wal_info.fullpath(backup_manager.server)),
-        )
 
     # TODO: The following test should be splitted in two
     # the BackupManager part and the FileWalArchiver part
@@ -575,14 +382,15 @@ class TestFileWalArchiver(object):
         wal_file.ensure()
         archive_dir.ensure(dir=True)
         xlog_db.ensure()
-        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db.open(
-            mode="a"
-        )
+        xlog_db_fileobj = xlog_db.open(mode="a")
+        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db_fileobj
+        backup_manager.server.use_wal_cloud_storage = False
         backup_manager.server.archivers = [FileWalArchiver(backup_manager)]
 
         backup_manager.archive_wal()
 
         # Check that the WAL file is present inside the wal catalog
+        xlog_db_fileobj.flush()
         with xlog_db.open() as f:
             line = str(f.readline())
             assert wal_name in line
@@ -628,14 +436,15 @@ class TestFileWalArchiver(object):
         wal_file.ensure()
         archive_dir.ensure(dir=True)
         xlog_db.ensure()
-        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db.open(
-            mode="a"
-        )
+        xlog_db_fileobj = xlog_db.open(mode="a")
+        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db_fileobj
+        backup_manager.server.use_wal_cloud_storage = False
         backup_manager.server.archivers = [FileWalArchiver(backup_manager)]
 
         backup_manager.archive_wal()
 
         # Check that the WAL file is not present inside the wal catalog
+        xlog_db_fileobj.flush()
         with xlog_db.open() as f:
             line = str(f.readline())
             assert wal_name in line
@@ -682,14 +491,15 @@ class TestFileWalArchiver(object):
         wal_file.ensure()
         archive_dir.ensure(dir=True)
         xlog_db.ensure()
-        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db.open(
-            mode="a"
-        )
+        xlog_db_fileobj = xlog_db.open(mode="a")
+        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db_fileobj
+        backup_manager.server.use_wal_cloud_storage = False
         backup_manager.server.archivers = [FileWalArchiver(backup_manager)]
 
         backup_manager.archive_wal()
 
         # Check that the WAL file is present inside the wal catalog
+        xlog_db_fileobj.flush()
         with xlog_db.open() as f:
             line = str(f.readline())
             assert wal_name in line
@@ -1228,3 +1038,793 @@ class TestStreamingWalArchiver(object):
             "synchronous_standby_names": ["*"]
         }
         assert archiver._is_synchronous()
+
+
+class TestWalStorageStrategy:
+    """
+    Tests for the :class:`WalStorageStrategy` abstract class.
+
+    .. note::
+        As :class:`WalStorageStrategy` is an abstract class, we need to
+        patch the ``__abstractmethods__`` attribute in most tests to be able to
+        instantiate it.
+    """
+
+    @patch("barman.wal_archiver.RetryHookScriptRunner")
+    @patch("barman.wal_archiver.HookScriptRunner")
+    @patch(
+        "barman.wal_archiver.WalStorageStrategy.__abstractmethods__", new_callable=set
+    )
+    def test_run_pre_archive_scripts(self, _, mock_hook_script, mock_retry_hook_script):
+        """Test that the pre-archive scripts are run correctly when present"""
+        backup_manager = build_backup_manager(name="TestServer")
+        wal_storage = WalStorageStrategy(backup_manager, backup_manager.server)
+
+        # WHEN _run_pre_archive_scripts is called
+        arg_wal_info, arg_src_path = MagicMock(), "/mock/src/path"
+        wal_storage._run_pre_archive_scripts(arg_wal_info, arg_src_path)
+
+        # THEN the pre-archive hook script is instantiated and run correctly
+        mock_hook_script.assert_called_once_with(
+            backup_manager, "archive_script", "pre"
+        )
+        mock_hook_script.return_value.env_from_wal_info.assert_called_once_with(
+            arg_wal_info, arg_src_path
+        )
+        mock_hook_script.return_value.run.assert_called_once()
+
+        # AND the pre-archive retry hook script is instantiated and run correctly
+        mock_retry_hook_script.assert_called_once_with(
+            backup_manager, "archive_retry_script", "pre"
+        )
+        mock_retry_hook_script.return_value.env_from_wal_info.assert_called_once_with(
+            arg_wal_info, arg_src_path
+        )
+        mock_retry_hook_script.return_value.run.assert_called_once()
+
+    @patch("barman.wal_archiver.RetryHookScriptRunner")
+    @patch("barman.wal_archiver.HookScriptRunner")
+    @patch(
+        "barman.wal_archiver.WalStorageStrategy.__abstractmethods__", new_callable=set
+    )
+    def test_run_post_archive_scripts(
+        self, _, mock_hook_script, mock_retry_hook_script
+    ):
+        """Test that the post-archive scripts are run correctly when present"""
+        backup_manager = build_backup_manager(name="TestServer")
+        wal_storage = WalStorageStrategy(backup_manager, backup_manager.server)
+
+        # WHEN _run_post_archive_scripts is called
+        arg_wal_info, arg_src_path, arg_error = MagicMock(), "/mock/src/path", None
+        wal_storage._run_post_archive_scripts(arg_wal_info, arg_src_path, arg_error)
+
+        # THEN the post-archive retry hook script is instantiated and run correctly
+        mock_retry_hook_script.assert_called_once_with(
+            backup_manager, "archive_retry_script", "post"
+        )
+        mock_retry_hook_script.env_from_wal_info(arg_wal_info, arg_src_path, arg_error)
+        mock_retry_hook_script.run()
+
+        # AND the post-archive hook script is instantiated and run correctly
+        mock_hook_script.assert_called_once_with(
+            backup_manager, "archive_script", "post", arg_error
+        )
+        mock_hook_script.env_from_wal_info(arg_wal_info, arg_src_path)
+        mock_hook_script.run()
+
+    @patch("barman.wal_archiver._logger")
+    @patch("barman.wal_archiver.RetryHookScriptRunner")
+    @patch("barman.wal_archiver.HookScriptRunner")
+    @patch(
+        "barman.wal_archiver.WalStorageStrategy.__abstractmethods__", new_callable=set
+    )
+    def test_run_post_archive_scripts_with_error(
+        self, _, mock_hook_script, mock_retry_hook_script, mock_logger
+    ):
+        """
+        Test that the post-archive scripts are run correctly when an error occurred.
+
+        That hapens when the retry hook script raises an exec:`AbortedRetryHookScript`
+        exception.
+        """
+        backup_manager = build_backup_manager(name="TestServer")
+        wal_storage = WalStorageStrategy(backup_manager, backup_manager.server)
+
+        # Mock the retry hook script to raise AbortedRetryHookScript when run
+        mock_retry_hook_script.return_value.run.side_effect = AbortedRetryHookScript(
+            hook=mock_retry_hook_script.return_value
+        )
+
+        # WHEN _run_post_archive_scripts is called
+        arg_wal_info, arg_src_path, arg_error = MagicMock(), "/mock/src/path", None
+        wal_storage._run_post_archive_scripts(arg_wal_info, arg_src_path, arg_error)
+
+        # THEN the post-archive retry hook script is instantiated and run correctly
+        # AND the AbortedRetryHookScript exception is catched and logged
+        mock_retry_hook_script.assert_called_once_with(
+            backup_manager, "archive_retry_script", "post"
+        )
+        mock_retry_hook_script.return_value.env_from_wal_info.assert_called_once_with(
+            arg_wal_info, arg_src_path, arg_error
+        )
+        mock_retry_hook_script.return_value.run.assert_called_once()
+        mock_logger.warning.assert_called_once_with(
+            "Ignoring stop request after receiving "
+            "abort (exit code %d) from post-archive "
+            "retry hook script: %s",
+            mock_retry_hook_script.return_value.exit_status,
+            mock_retry_hook_script.return_value.script,
+        )
+
+        # AND the post-archive hook script is instantiated and run correctly
+        # regardless of the error in the previous retry hook script
+        mock_hook_script.assert_called_once_with(
+            backup_manager, "archive_script", "post", arg_error
+        )
+        mock_hook_script.env_from_wal_info(arg_wal_info, arg_src_path)
+        mock_hook_script.run()
+
+
+class TestLocalWalStorageStrategy:
+    """Tests for the :class:`LocalWalStorageStrategy` class"""
+
+    @patch("barman.wal_archiver.os.path.exists", return_value=False)
+    def test_check_duplicate_file_not_exists(self, _):
+        """
+        Test that no exception is raised when there is no duplicate file
+        at the destination path.
+        """
+        backup_manager = build_backup_manager(name="TestServer")
+        wal_storage = LocalWalStorageStrategy(backup_manager, backup_manager.server)
+        # WHEN _check_duplicate is called for a file that does not exist
+        arg_src, arg_dest, arg_wal_info = "/src/path", "/dest/path", MagicMock()
+        # THEN no exception is raised
+        wal_storage._check_duplicate(arg_src, arg_dest, arg_wal_info)
+
+    @patch("barman.wal_archiver.filecmp.cmp", return_value=False)
+    @patch("barman.wal_archiver.os.path.exists", return_value=True)
+    def test_check_duplicate_file_exists_with_different_content(self, _, mock_cmp):
+        """
+        Test that a exec:`DuplicateWalFile` exception is raised when a file
+        with different content exists at the destination path.
+        """
+        backup_manager = build_backup_manager(name="TestServer")
+        wal_storage = LocalWalStorageStrategy(backup_manager, backup_manager.server)
+        # Mock the get_wal_file_info to return a wal_info representing a destination
+        # file without compression and encryption as we're not testing that here
+        backup_manager.get_wal_file_info = MagicMock(
+            return_value=MagicMock(compression=None, encryption=None)
+        )
+        # Prepare the arguments for _check_duplicate
+        # Mock the src wal_info to represent a source file without compression and encryption
+        arg_src, arg_dest, arg_wal_info = (
+            "/src/path",
+            "/dest/path",
+            MagicMock(compression=None, encryption=None),
+        )
+
+        # WHEN _check_duplicate is called
+        # THEN a DuplicateWalFile exception is raised, as the contents are different
+        with pytest.raises(DuplicateWalFile):
+            wal_storage._check_duplicate(arg_src, arg_dest, arg_wal_info)
+            # Also assert that filecmp.cmp was called with the correct arguments
+            mock_cmp.assert_called_once_with(arg_src, arg_dest)
+
+    @patch("barman.wal_archiver.filecmp.cmp", return_value=True)
+    @patch("barman.wal_archiver.os.path.exists", return_value=True)
+    def test_check_duplicate_file_exists_with_same_content(self, _, mock_cmp):
+        """
+        Test that a exec:`MatchingDuplicateWalFile` exception is raised when a file
+        with the same content exists at the destination path.
+        """
+        backup_manager = build_backup_manager(name="TestServer")
+        wal_storage = LocalWalStorageStrategy(backup_manager, backup_manager.server)
+        # Mock the get_wal_file_info to return a wal_info representing a destination
+        # file without compression and encryption as we're not testing that here
+        backup_manager.get_wal_file_info = MagicMock(
+            return_value=MagicMock(compression=None, encryption=None)
+        )
+        # Prepare the arguments for _check_duplicate
+        # Mock the src wal_info to represent a source file without compression and encryption
+        arg_src, arg_dest, arg_wal_info = (
+            "/src/path",
+            "/dest/path",
+            MagicMock(compression=None, encryption=None),
+        )
+
+        # WHEN _check_duplicate is called
+        # THEN a MatchingDuplicateWalFile exception is raised, as the contents are the same
+        with pytest.raises(MatchingDuplicateWalFile):
+            wal_storage._check_duplicate(arg_src, arg_dest, arg_wal_info)
+            # Also assert that filecmp.cmp was called with the correct arguments
+            mock_cmp.assert_called_once_with(arg_src, arg_dest)
+
+    @patch("barman.wal_archiver.os.path.exists", return_value=True)
+    def test_check_duplicate_file_exists_with_encryption(self, _):
+        """
+        Test that a exec:`DuplicateWalFile` exception is raised when a file
+        with encryption exists at the destination path.
+        """
+        backup_manager = build_backup_manager(name="TestServer")
+        wal_storage = LocalWalStorageStrategy(backup_manager, backup_manager.server)
+        # Mock the get_wal_file_info to return a wal_info representing a destination
+        # file with encryption
+        backup_manager.get_wal_file_info = MagicMock(
+            return_value=MagicMock(compression=None, encryption="gpg")
+        )
+        # Mock the src wal_info to represent a source file with encryption
+        arg_src, arg_dest, arg_wal_info = (
+            "/src/path",
+            "/dest/path",
+            MagicMock(compression=None, encryption="gpg"),
+        )
+
+        # WHEN _check_duplicate is called
+        # THEN a DuplicateWalFile exception is raised, as we cannot compare encrypted files
+        with pytest.raises(DuplicateWalFile):
+            wal_storage._check_duplicate(arg_src, arg_dest, arg_wal_info)
+
+    @pytest.mark.parametrize("cmp_result", [True, False])
+    @patch("barman.wal_archiver.os.unlink")
+    @patch("barman.wal_archiver.filecmp.cmp")
+    @patch("barman.wal_archiver.os.path.exists", return_value=True)
+    def test_check_duplicate_file_exists_with_compression(
+        self, _, mock_unlink, mock_cmp, cmp_result
+    ):
+        """
+        Test that compressed files are decompressed correctly before comparison.
+
+        Note that the exact exception raised is not the focus here.
+        """
+        mock_cmp.return_value = cmp_result
+        backup_manager = build_backup_manager(name="TestServer")
+        backup_manager.compression_manager = MagicMock()
+        wal_storage = LocalWalStorageStrategy(backup_manager, backup_manager.server)
+        # Mock the get_wal_file_info to return a wal_info representing a destination
+        # file with compression
+        backup_manager.get_wal_file_info = MagicMock(
+            return_value=MagicMock(compression="gzip", encryption=None)
+        )
+        # Prepare the arguments for _check_duplicate
+        # Mock the src wal_info to represent a source file with compression
+        arg_src, arg_dest, arg_wal_info = (
+            "/src/path",
+            "/dest/path",
+            MagicMock(compression="gzip", encryption=None),
+        )
+        # Prepare the expected temporary uncompressed file paths
+        src_uncompressed, dest_uncompressed = "/src/uncompressed", "/dest/uncompressed"
+
+        # WHEN _check_duplicate is called
+        # THEN the appropriate exception is raised, according to the result of filecmp.cmp
+        # Note: we don't care about the exact exception raised here, the important part
+        # is ensuring that the decompression and comparison were done correctly
+        ex = MatchingDuplicateWalFile if cmp_result else DuplicateWalFile
+        with pytest.raises(ex):
+            wal_storage._check_duplicate(arg_src, arg_dest, arg_wal_info)
+            # AND the compressed src and dst files were decompressed correctly
+            backup_manager.compression_manager.get_compressor.return_value.decompress.assert_called_once_with(
+                arg_dest, dest_uncompressed
+            )
+            backup_manager.compression_manager.get_compressor.return_value.decompress.assert_called_once_with(
+                arg_dest, src_uncompressed
+            )
+            # AND filecmp.cmp was called with the correct arguments
+            mock_cmp.assert_called_once_with(src_uncompressed, dest_uncompressed)
+            # AND the temporary uncompressed files were removed
+            mock_unlink.assert_called_once_with(src_uncompressed)
+            mock_unlink.assert_called_once_with(dest_uncompressed)
+
+    def test_compress_file(self):
+        """
+        Test that :meth:`compress_file` correctly compresses and returns a file.
+        """
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), None
+        )
+        mock_compressor = MagicMock(compression="gzip")
+        mock_wal_info = MagicMock()
+
+        # WHEN _compress_file is called
+        result = wal_storage._compress_file(
+            mock_compressor, "/src/000000010000000000000001", "/dest/dir", mock_wal_info
+        )
+        # THEN the compressor's compress method is called with correct arguments
+        mock_compressor.compress.assert_called_once_with(
+            "/src/000000010000000000000001",
+            "/dest/dir/000000010000000000000001.compressed",
+        )
+        # AND the previous source file is appended to the removal list
+        assert wal_storage.files_to_remove == ["/src/000000010000000000000001"]
+        # AND the compression method is set in the wal_info object
+        assert mock_wal_info.compression == "gzip"
+        # AND the correct compressed file path is returned
+        assert result == "/dest/dir/000000010000000000000001.compressed"
+
+    def test_encrypt_file(self):
+        """
+        Test that :meth:`encrypt_file` correctly encrypts and returns a file.
+        """
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), None
+        )
+        mock_encryption = MagicMock(NAME="gpg")
+        mock_wal_info = MagicMock()
+
+        # WHEN _encrypt_file is called
+        result = wal_storage._encrypt_file(
+            mock_encryption,
+            "/src/000000010000000000000001",
+            "/dest/dir",
+            mock_wal_info,
+        )
+        # THEN the encryption's encrypt method is called with correct arguments
+        mock_encryption.encrypt.assert_called_once_with(
+            "/src/000000010000000000000001",
+            "/dest/dir",
+        )
+        # AND the previous source file is appended to the removal list
+        assert wal_storage.files_to_remove == ["/src/000000010000000000000001"]
+        # AND the encryption method is set in the wal_info object
+        assert mock_wal_info.encryption == "gpg"
+        # AND the encrypted file path is returned
+        assert result == mock_encryption.encrypt.return_value
+
+    @patch("barman.wal_archiver.os.stat")
+    @patch("barman.wal_archiver.shutil.copystat")
+    def test_copy_stats(self, mock_copystat, mock_stat):
+        """
+        Test that :meth:`copy_stats` correctly copies file stats from the source
+        file to the current file and updates the ``wal_info`` size stats.
+        """
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), None
+        )
+        mock_wal_info = MagicMock()
+        src_file, current_file = "/src/path/file1", "/dest/path/file2"
+
+        # WHEN _copy_stats is called
+        wal_storage._copy_stats(src_file, current_file, mock_wal_info)
+        # THEN the file stats are copied from the source to the current file
+        mock_copystat.assert_called_once_with(src_file, current_file)
+        # AND the wal_info size is updated with the size of the current file
+        mock_stat.assert_called_with(current_file)
+        assert mock_wal_info.size == mock_stat.return_value.st_size
+
+    @patch("barman.wal_archiver.fsync_dir")
+    @patch("barman.wal_archiver.fsync_file")
+    def test_fsync_contents(self, mock_fsync_file, mock_fsync_dir):
+        """
+        Test that :meth:`_fsync_contents` fsyncs the destination file
+        and the source and destination directories.
+        """
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), None
+        )
+        src_dir, dest_dir, dest_file = "/src/dir", "/dest/dir", "/dest/dir/walfile"
+
+        # WHEN _fsync_contents is called
+        wal_storage._fsync_contents(src_dir, dest_dir, dest_file)
+        # THEN the destination file is fsynced
+        mock_fsync_file.assert_called_once_with(dest_file)
+        # AND the src and dest directories is fsynced
+        mock_fsync_dir.assert_has_calls([call(src_dir), call(dest_dir)])
+
+    @patch("barman.wal_archiver.os.rename")
+    def test_rename_or_copy_file(self, mock_rename):
+        """
+        Test that :meth:`_rename_or_copy_file` correctly renames
+        the source file to the destination file when they are on the same filesystem.
+        """
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), None
+        )
+        file, dest_file = "/src/path/file1", "/dest/path/file2"
+        # WHEN _rename_or_copy_file is called
+        wal_storage._rename_or_copy_file(file, dest_file)
+        # THEN os.rename is called to move the file
+        mock_rename.assert_called_once_with(file, dest_file)
+
+    @patch("barman.wal_archiver.shutil.copy2")
+    @patch("barman.wal_archiver.os.rename", side_effect=OSError)
+    def test_rename_or_copy_file_different_fs(self, _, mock_copy2):
+        """
+        Test that :meth:`_rename_or_copy_file` correctly copies the source file
+        to the destination file when they are on different filesystems.
+        """
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), None
+        )
+        file, dest_file = "/src/path/file1", "/dest/path/file2"
+        # WHEN _rename_or_copy_file is called and os.rename raises OSError
+        wal_storage._rename_or_copy_file(file, dest_file)
+        # THEN shutil.copy2 is called to copy the file as a fallback
+        mock_copy2.assert_called_once_with(file, dest_file)
+        # AND the previous source file is appended to the removal list
+        assert wal_storage.files_to_remove == [file]
+
+    @patch("barman.wal_archiver.os.unlink")
+    def test_remove_intermediary_files(self, mock_unlink):
+        """
+        Test that :meth:`_remove_intermediary_files` correctly removes
+        all intermediary files listed in `files_to_remove`.
+        """
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), None
+        )
+        wal_storage.files_to_remove = [
+            "/path/to/tempfile1",
+            "/path/to/tempfile2",
+            "/path/to/tempfile3",
+        ]
+        # WHEN _remove_intermediary_files is called
+        wal_storage._remove_intermediary_files()
+        # THEN os.unlink is called for each file in the removal list
+        mock_unlink.assert_has_calls(
+            [
+                call("/path/to/tempfile1"),
+                call("/path/to/tempfile2"),
+                call("/path/to/tempfile3"),
+            ]
+        )
+
+    @patch("barman.wal_archiver.mkpath")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._run_pre_archive_scripts")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._check_duplicate")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._copy_stats")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._compress_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._encrypt_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._rename_or_copy_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._remove_intermediary_files")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._fsync_contents")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._run_post_archive_scripts")
+    def test_save(
+        self,
+        mock_run_post_scripts,
+        mock_fsync,
+        mock_remove,
+        mock_rename,
+        mock_encrypt,
+        mock_compress,
+        mock_copy_stats,
+        mock_check_duplicate,
+        mock_run_pre_scripts,
+        mock_mkpath,
+    ):
+        """
+        Test that :meth:`save` correctly manages the saving of a WAL file
+        (without compression or encryption).
+        """
+        # GIVEN a LocalWalStorageStrategy instance
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        # AND no compression nor encryption is requested
+        compressor, encryption = None, None
+        # AND a mock WalFileInfo object
+        mock_wal_info = MagicMock(
+            orig_filename="/src/path/000000010000000000000001",
+            fullpath=lambda x: "/server/wals/000000010000000000000001",
+            compression=None,
+            encryption=None,
+        )
+        # WHEN save is called
+        wal_storage.save(compressor, encryption, mock_wal_info)
+        # THEN ensure the destination directory is created
+        mock_mkpath.assert_called_once_with("/server/wals")
+        # AND the pre-archive scripts are run with correct arguments
+        mock_run_pre_scripts.assert_called_once_with(
+            mock_wal_info, "/src/path/000000010000000000000001"
+        )
+        # AND duplicate check is performed with correct arguments
+        mock_check_duplicate.assert_called_once_with(
+            "/src/path/000000010000000000000001",
+            "/server/wals/000000010000000000000001",
+            mock_wal_info,
+        )
+        # AND the xlogdb is opened for the save operation
+        wal_storage.server.xlogdb.assert_called_once_with("a")
+        wal_storage.server.xlogdb.return_value.__enter__.assert_called_once()
+        # AND the file is renamed to the destination
+        mock_rename.assert_called_once_with(
+            "/src/path/000000010000000000000001",
+            "/server/wals/000000010000000000000001",
+        )
+        # AND intermediary files are removed
+        mock_remove.assert_called_once()
+        # AND the contents are fsynced
+        mock_fsync.assert_called_once_with(
+            "/src/path", "/server/wals", "/server/wals/000000010000000000000001"
+        )
+        # AND the wal_info line is written to the opened xlogdb
+        wal_storage.server.xlogdb.return_value.__enter__.return_value.write.assert_called_once_with(
+            mock_wal_info.to_xlogdb_line.return_value
+        )
+        # AND finally the post-archive scripts are run with correct arguments
+        mock_run_post_scripts.assert_called_once_with(
+            mock_wal_info, "/server/wals/000000010000000000000001", None
+        )
+        # Lasly, ensure that no compression nor encryption were performed and, as
+        # a consequence, not stats were updated
+        mock_compress.assert_not_called()
+        mock_encrypt.assert_not_called()
+        mock_copy_stats.assert_not_called()
+
+    @patch("barman.wal_archiver.mkpath")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._run_pre_archive_scripts")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._check_duplicate")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._copy_stats")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._compress_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._encrypt_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._rename_or_copy_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._remove_intermediary_files")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._fsync_contents")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._run_post_archive_scripts")
+    def test_save_with_compression(
+        self,
+        mock_run_post_scripts,
+        mock_fsync,
+        mock_remove,
+        mock_rename,
+        mock_encrypt,
+        mock_compress,
+        mock_copy_stats,
+        mock_check_duplicate,
+        mock_run_pre_scripts,
+        mock_mkpath,
+    ):
+        """
+        Test that :meth:`save` correctly manages the saving of a WAL file
+        with compression but no encryption.
+        """
+        # GIVEN a LocalWalStorageStrategy instance
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        # AND compression as gzip and no encryption is requested
+        compressor, encryption = MagicMock(compression="gzip"), None
+        # AND a mock WalFileInfo object
+        mock_wal_info = MagicMock(
+            orig_filename="/src/path/000000010000000000000001",
+            fullpath=lambda x: "/server/wals/000000010000000000000001",
+            compression=None,
+            encryption=None,
+        )
+        # WHEN save is called
+        wal_storage.save(compressor, encryption, mock_wal_info)
+        # THEN ensure the destination directory is created
+        mock_mkpath.assert_called_once_with("/server/wals")
+        # AND the pre-archive scripts are run with correct arguments
+        mock_run_pre_scripts.assert_called_once_with(
+            mock_wal_info, "/src/path/000000010000000000000001"
+        )
+        # AND duplicate check is performed with correct arguments
+        mock_check_duplicate.assert_called_once_with(
+            "/src/path/000000010000000000000001",
+            "/server/wals/000000010000000000000001",
+            mock_wal_info,
+        )
+        # AND _compress_file is called to compress the file
+        mock_compress.assert_called_once_with(
+            compressor,
+            "/src/path/000000010000000000000001",
+            "/server/wals",
+            mock_wal_info
+        )
+        # AND the stats from the source file are updated to the compressed file
+        mock_copy_stats.assert_called_once_with(
+            "/src/path/000000010000000000000001",
+            mock_compress.return_value
+        )
+        # AND the xlogdb is opened for the save operation
+        wal_storage.server.xlogdb.assert_called_once_with("a")
+        wal_storage.server.xlogdb.return_value.__enter__.assert_called_once()
+        # AND the compressed file is renamed to the destination
+        mock_rename.assert_called_once_with(
+            mock_compress.return_value,
+            "/server/wals/000000010000000000000001",
+        )
+        # AND intermediary files are removed
+        mock_remove.assert_called_once()
+        # AND the contents are fsynced
+        mock_fsync.assert_called_once_with(
+            "/src/path", "/server/wals", "/server/wals/000000010000000000000001"
+        )
+        # AND the wal_info line is written to the opened xlogdb
+        wal_storage.server.xlogdb.return_value.__enter__.return_value.write.assert_called_once_with(
+            mock_wal_info.to_xlogdb_line.return_value
+        )
+        # AND finally the post-archive scripts are run with correct arguments
+        mock_run_post_scripts.assert_called_once_with(
+            mock_wal_info, "/server/wals/000000010000000000000001", None
+        )
+        # Lasly, ensure that no encryption was performed
+        mock_encrypt.assert_not_called()
+
+    @patch("barman.wal_archiver.mkpath")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._run_pre_archive_scripts")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._check_duplicate")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._copy_stats")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._compress_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._encrypt_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._rename_or_copy_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._remove_intermediary_files")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._fsync_contents")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._run_post_archive_scripts")
+    def test_save_with_encryption(
+        self,
+        mock_run_post_scripts,
+        mock_fsync,
+        mock_remove,
+        mock_rename,
+        mock_encrypt,
+        mock_compress,
+        mock_copy_stats,
+        mock_check_duplicate,
+        mock_run_pre_scripts,
+        mock_mkpath,
+    ):
+        """
+        Test that :meth:`save` correctly manages the saving of a WAL file
+        with encryption but no compression.
+        """
+        # GIVEN a LocalWalStorageStrategy instance
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        # AND no compression and encryption as gpg is requested
+        compressor, encryption = None, MagicMock(NAME="gpg")
+        # AND a mock WalFileInfo object
+        mock_wal_info = MagicMock(
+            orig_filename="/src/path/000000010000000000000001",
+            fullpath=lambda x: "/server/wals/000000010000000000000001",
+            compression=None,
+            encryption=None,
+        )
+        # WHEN save is called
+        wal_storage.save(compressor, encryption, mock_wal_info)
+        # THEN ensure the destination directory is created
+        mock_mkpath.assert_called_once_with("/server/wals")
+        # AND the pre-archive scripts are run with correct arguments
+        mock_run_pre_scripts.assert_called_once_with(
+            mock_wal_info, "/src/path/000000010000000000000001"
+        )
+        # AND duplicate check is performed with correct arguments
+        mock_check_duplicate.assert_called_once_with(
+            "/src/path/000000010000000000000001",
+            "/server/wals/000000010000000000000001",
+            mock_wal_info,
+        )
+        # AND _encrypt_file is called to encrypt the file
+        mock_encrypt.assert_called_once_with(
+            encryption,
+            "/src/path/000000010000000000000001",
+            "/server/wals",
+            mock_wal_info
+        )
+        # AND the stats from the source file are updated to the encrypted file
+        mock_copy_stats.assert_called_once_with(
+            "/src/path/000000010000000000000001",
+            mock_encrypt.return_value
+        )
+        # AND the xlogdb is opened for the save operation
+        wal_storage.server.xlogdb.assert_called_once_with("a")
+        wal_storage.server.xlogdb.return_value.__enter__.assert_called_once()
+        # AND the encrypted file is renamed to the destination
+        mock_rename.assert_called_once_with(
+            mock_encrypt.return_value,
+            "/server/wals/000000010000000000000001",
+        )
+        # AND intermediary files are removed
+        mock_remove.assert_called_once()
+        # AND the contents are fsynced
+        mock_fsync.assert_called_once_with(
+            "/src/path", "/server/wals", "/server/wals/000000010000000000000001"
+        )
+        # AND the wal_info line is written to the opened xlogdb
+        wal_storage.server.xlogdb.return_value.__enter__.return_value.write.assert_called_once_with(
+            mock_wal_info.to_xlogdb_line.return_value
+        )
+        # AND finally the post-archive scripts are run with correct arguments
+        mock_run_post_scripts.assert_called_once_with(
+            mock_wal_info, "/server/wals/000000010000000000000001", None
+        )
+        # Lasly, ensure that no compression was performed
+        mock_compress.assert_not_called()
+
+
+    @patch("barman.wal_archiver.mkpath")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._run_pre_archive_scripts")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._check_duplicate")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._copy_stats")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._compress_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._encrypt_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._rename_or_copy_file")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._remove_intermediary_files")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._fsync_contents")
+    @patch("barman.wal_archiver.LocalWalStorageStrategy._run_post_archive_scripts")
+    def test_save_with_compression_and_encryption(
+        self,
+        mock_run_post_scripts,
+        mock_fsync,
+        mock_remove,
+        mock_rename,
+        mock_encrypt,
+        mock_compress,
+        mock_copy_stats,
+        mock_check_duplicate,
+        mock_run_pre_scripts,
+        mock_mkpath,
+    ):
+        """
+        Test that :meth:`save` correctly manages the saving of a WAL file
+        with both compression and encryption.
+        """
+        # GIVEN a LocalWalStorageStrategy instance
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        # AND compression as gzip and encryption as gpg is requested
+        compressor, encryption = MagicMock(compression="gzip"), MagicMock(NAME="gpg")
+        # AND a mock WalFileInfo object
+        mock_wal_info = MagicMock(
+            orig_filename="/src/path/000000010000000000000001",
+            fullpath=lambda x: "/server/wals/000000010000000000000001",
+            compression=None,
+            encryption=None,
+        )
+        # WHEN save is called
+        wal_storage.save(compressor, encryption, mock_wal_info)
+        # THEN ensure the destination directory is created
+        mock_mkpath.assert_called_once_with("/server/wals")
+        # AND the pre-archive scripts are run with correct arguments
+        mock_run_pre_scripts.assert_called_once_with(
+            mock_wal_info, "/src/path/000000010000000000000001"
+        )
+        # AND duplicate check is performed with correct arguments
+        mock_check_duplicate.assert_called_once_with(
+            "/src/path/000000010000000000000001",
+            "/server/wals/000000010000000000000001",
+            mock_wal_info,
+        )
+        # AND _compress_file is called to compress the file
+        mock_compress.assert_called_once_with(
+            compressor,
+            "/src/path/000000010000000000000001",
+            "/server/wals",
+            mock_wal_info
+        )
+        # AND _encrypt_file is called to encrypt the compressed file
+        mock_encrypt.assert_called_once_with(
+            encryption,
+            mock_compress.return_value,
+            "/server/wals",
+            mock_wal_info
+        )
+        # AND the stats from the source file are updated to the compressed-encrypted file
+        mock_copy_stats.assert_called_once_with(
+            "/src/path/000000010000000000000001",
+            mock_encrypt.return_value
+        )
+        # AND the xlogdb is opened for the save operation
+        wal_storage.server.xlogdb.assert_called_once_with("a")
+        wal_storage.server.xlogdb.return_value.__enter__.assert_called_once()
+        # AND the compressed-encrypted file is renamed to the destination
+        mock_rename.assert_called_once_with(
+            mock_encrypt.return_value,
+            "/server/wals/000000010000000000000001",
+        )
+        # AND intermediary files are removed
+        mock_remove.assert_called_once()
+        # AND the contents are fsynced
+        mock_fsync.assert_called_once_with(
+            "/src/path", "/server/wals", "/server/wals/000000010000000000000001"
+        )
+        # AND the wal_info line is written to the opened xlogdb
+        wal_storage.server.xlogdb.return_value.__enter__.return_value.write.assert_called_once_with(
+            mock_wal_info.to_xlogdb_line.return_value
+        )
+        # AND finally the post-archive scripts are run with correct arguments
+        mock_run_post_scripts.assert_called_once_with(
+            mock_wal_info, "/server/wals/000000010000000000000001", None
+        )

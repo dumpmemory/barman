@@ -1646,6 +1646,7 @@ class TestCli(object):
             disabled=False,
             barman_lock_directory="/path/to/lockdir",
             basebackups_directory="/path/to/basebackups",
+            wals_directory="/path/to/wals",
             backup_compression=None,
         )
         server = Server(mock_config)
