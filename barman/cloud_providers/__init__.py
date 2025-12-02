@@ -34,6 +34,12 @@ class CloudProviderOptionUnsupported(BarmanException):
     """
 
 
+class ObjectKeyAlreadyExists(BarmanException):
+    """
+    Exception raised when trying to insert an object with a key that already exists
+    """
+
+
 def _update_kwargs(kwargs, config, args):
     """
     Helper which adds the attributes of config specified in args to the supplied
@@ -163,6 +169,38 @@ def get_cloud_interface(config):
     else:
         raise CloudProviderUnsupported(
             "Unsupported cloud provider: %s" % config.cloud_provider
+        )
+
+
+def get_cloud_interface_from_server_config(config, cloud_provider, base_url):
+    """
+    Factory function that creates a CloudInterface for the specified *cloud_provider*
+    based on the *base_url*.
+
+    :param barman.config.Config config: The barman configuration object for a
+        specific server.
+    :param str cloud_provider: The cloud provider to create the interface for.
+    :param str base_url: The base URL to use for the cloud interface.
+    :rtype: CloudInterface
+    :returns: A CloudInterface for the specified cloud_provider.
+    """
+    cloud_interface_kwargs = {"url": base_url, "jobs": config.parallel_jobs}
+
+    if cloud_provider == "aws-s3":
+        from barman.cloud_providers.aws_s3 import S3CloudInterface
+
+        return S3CloudInterface(**cloud_interface_kwargs)
+    elif cloud_provider == "azure-blob-storage":
+        from barman.cloud_providers.azure_blob_storage import AzureCloudInterface
+
+        return AzureCloudInterface(**cloud_interface_kwargs)
+    elif cloud_provider == "google-cloud-storage":
+        from barman.cloud_providers.google_cloud_storage import GoogleCloudInterface
+
+        return GoogleCloudInterface(**cloud_interface_kwargs)
+    else:
+        raise CloudProviderUnsupported(
+            "Unsupported cloud provider: %s" % cloud_provider
         )
 
 

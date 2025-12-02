@@ -41,7 +41,10 @@ import dateutil.tz
 import barman
 from barman import fs, output, xlog
 from barman.backup import BackupManager
-from barman.cloud_providers import recognize_cloud_provider
+from barman.cloud_providers import (
+    get_cloud_interface_from_server_config,
+    recognize_cloud_provider,
+)
 from barman.command_wrappers import BarmanSubProcess, Command, Rsync
 from barman.compression import CustomCompressor
 from barman.copy_controller import RsyncCopyController
@@ -625,6 +628,32 @@ class Server(RemoteStatusMixin):
     def use_wal_cloud_storage(self):
         """Whether the server is using cloud storage for WALs"""
         return bool(self.wal_cloud_provider)
+
+    def get_wal_cloud_interface(self):
+        """
+        Get the cloud interface for WAL storage.
+
+        :returns CloudInterface|None: the cloud interface object, if configured
+        """
+        cloud_provider = self.wal_cloud_provider
+        if not cloud_provider:
+            return None
+        return get_cloud_interface_from_server_config(
+            self.config, cloud_provider, self.config.wals_directory
+        )
+
+    def get_backup_cloud_interface(self):
+        """
+        Get the cloud interface for backup storage.
+
+        :returns CloudInterface|None: the cloud interface object, if configured
+        """
+        cloud_provider = self.backup_cloud_provider
+        if not cloud_provider:
+            return None
+        return get_cloud_interface_from_server_config(
+            self.config, cloud_provider, self.config.basebackups_directory
+        )
 
     def check(self, check_strategy=__default_check_strategy):
         """
@@ -3389,7 +3418,21 @@ class Server(RemoteStatusMixin):
 
         :return str: the directory that contains the xlogdb file
         """
-        return self.config.xlogdb_directory
+        # If using a local storage for WALs, use the xlogdb_directory location as is
+        if not self.use_wal_cloud_storage:
+            return self.config.xlogdb_directory
+
+        # By default xlogdb_directory is the same as wals_directory. When storing WALs
+        # in the cloud however, the wals_directory will be a cloud URL (e.g., s3://...),
+        # so we need to provide a different local path for the xlogdb file:
+
+        # 1. If there is a custom xlogdb_directory configured
+        # (i.e. it is not the same as wals_directory), then honor it
+        if not self.config.xlogdb_directory.startswith(self.config.wals_directory):
+            return self.config.xlogdb_directory
+
+        # 2. Otherwise, store the xlogdb in the meta directory as a safe fallback
+        return self.meta_directory
 
     @property
     def xlogdb_file_name(self):

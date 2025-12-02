@@ -1151,7 +1151,7 @@ class CloudInterface(with_metaclass(ABCMeta)):
         """
 
     @abstractmethod
-    def upload_fileobj(self, fileobj, key, override_tags=None):
+    def upload_fileobj(self, fileobj, key, override_tags=None, fail_if_exists=False):
         """
         Synchronously upload the content of a file-like object to a cloud key
 
@@ -1159,6 +1159,9 @@ class CloudInterface(with_metaclass(ABCMeta)):
         :param str key: The key to identify the uploaded object
         :param List[tuple] override_tags: List of k,v tuples which should override any
           tags already defined in the cloud interface
+        :param bool fail_if_exists: Whether to fail if the object already exists
+        :raises ObjectKeyAlreadyExists: if the object *fail_if_exists* is ``True``  and
+          the object already exists
         """
 
     @abstractmethod

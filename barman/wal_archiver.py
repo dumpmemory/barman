@@ -24,8 +24,10 @@ import shutil
 from abc import ABCMeta, abstractmethod
 from distutils.version import LooseVersion as Version
 from glob import glob
+from tempfile import NamedTemporaryFile
 
 from barman import output, xlog
+from barman.cloud_providers import ObjectKeyAlreadyExists
 from barman.command_wrappers import CommandFailedException, PgReceiveXlog
 from barman.exceptions import (
     AbortedRetryHookScript,
@@ -393,6 +395,75 @@ class LocalWalStorageStrategy(WalStorageStrategy):
             self._run_post_archive_scripts(wal_info, dst_file, error)
 
 
+class CloudWalStorageStrategy(WalStorageStrategy):
+    """
+    WAL storage strategy for cloud storage.
+    """
+
+    def __init__(self, backup_manager, server):
+        super(CloudWalStorageStrategy, self).__init__(backup_manager, server)
+        self.cloud_interface = self.server.get_wal_cloud_interface()
+
+    def _check_duplicate(self, wal_info, object_key):
+        """
+        Check if the cloud object *object_key* is identical to the source file.
+
+        :param WalFileInfo wal_info: the WAL file info object
+        :param str object_key: the cloud storage object key
+        :raise DuplicateWalFile: if the destination file exists and is
+            different from the source file
+        :raise MatchingDuplicateWalFile: if the destination file exists and is
+            identical to the source file
+        """
+        with NamedTemporaryFile(delete=True) as downloaded_file:
+            self.cloud_interface.download_file(
+                object_key, downloaded_file.name, decompress=None
+            )
+            if filecmp.cmp(wal_info.orig_filename, downloaded_file.name):
+                raise MatchingDuplicateWalFile(wal_info)
+            else:
+                raise DuplicateWalFile(wal_info)
+
+    def save(self, compressor, encryption, wal_info):
+        """
+        Effectively persist a WAL file according to the configured destination.
+
+        :param compressor: the compressor for the file (if any)
+        :param None|Encryption encryption: the encryptor for the file (if any)
+        :param WalFileInfo wal_info: the WAL file is being processed
+
+        .. note::
+            Compression and encryption are still not implemented for cloud storage,
+            but the parameters are kept for interface compatibility.
+        """
+        error = None
+        try:
+            self._run_pre_archive_scripts(wal_info, wal_info.orig_filename)
+            with open(wal_info.orig_filename, "rb") as fileobj:
+                with self.server.xlogdb("a") as fxlogdb:
+                    key = os.path.join(
+                        self.cloud_interface.path,
+                        self.config.name,
+                        "wals",
+                        wal_info.relpath(),
+                    )
+                    try:
+                        self.cloud_interface.upload_fileobj(
+                            fileobj=fileobj, key=key, fail_if_exists=True
+                        )
+                    except ObjectKeyAlreadyExists:
+                        self._check_duplicate(wal_info, key)
+                    fxlogdb.write(wal_info.to_xlogdb_line())
+        except Exception as e:
+            error = e
+            raise
+        finally:
+            self._run_post_archive_scripts(wal_info, wal_info.orig_filename, error)
+
+        os.unlink(wal_info.orig_filename)
+        wal_info.orig_filename = None
+
+
 class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):
     """
     Base class for WAL archiver objects
@@ -411,7 +482,9 @@ class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):
         self.config = backup_manager.config
         self.name = name
         if self.server.use_wal_cloud_storage:
-            self.storage_strategy = None  # TODO
+            self.storage_strategy = CloudWalStorageStrategy(
+                self.backup_manager, self.server
+            )
         else:
             self.storage_strategy = LocalWalStorageStrategy(
                 self.backup_manager, self.server

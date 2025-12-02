@@ -350,6 +350,7 @@ class AzureCloudInterface(CloudInterface):
         fileobj,
         key,
         override_tags=None,
+        fail_if_exists=False,
     ):
         """
         Synchronously upload the content of a file-like object to a cloud key
@@ -358,7 +359,13 @@ class AzureCloudInterface(CloudInterface):
         :param str key: The key to identify the uploaded object
         :param List[tuple] override_tags: List of tags as k,v tuples to be added to the
           uploaded object
+        :param bool fail_if_exists: Whether to fail if the object already exists
+        :raises NotImplementedError: if the object *fail_if_exists* is ``True``
         """
+        # TODO: implement a mechanism to avoid overrides
+        if fail_if_exists:
+            raise NotImplementedError()
+
         # Find length of the file so we can pass it to the Azure client
         fileobj.seek(0, SEEK_END)
         length = fileobj.tell()
