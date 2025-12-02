@@ -64,6 +64,7 @@ from barman.cloud import (
 from barman.cloud_providers import (
     CloudProviderOptionUnsupported,
     CloudProviderUnsupported,
+    ObjectKeyAlreadyExists,
     get_cloud_interface,
     validate_azure_blob_storage_url,
     validate_google_cloud_url,
@@ -758,6 +759,251 @@ class TestS3CloudInterface(object):
                 "Tagging": expected_tagging,
             },
             Config=cloud_interface.config,
+        )
+
+    @mock.patch("barman.cloud_providers.aws_s3.S3CloudInterface._put_object")
+    def test_upload_fileobj_fail_if_exists(self, mock_put_object):
+        """
+        Test :meth:`upload_fileobj` with ``fail_if_exists=True`` defers to
+        :meth:`_put_object`.
+        """
+        cloud_interface = S3CloudInterface("s3://bucket/path/to/dir")
+        mock_fileobj = mock.MagicMock()
+        cloud_interface.upload_fileobj(
+            fileobj=mock_fileobj,
+            key="path/to/dir",
+            override_tags=None,
+            fail_if_exists=True,
+        )
+        mock_put_object.assert_called_once_with(
+            fileobj=mock_fileobj,
+            key="path/to/dir",
+            override_tags=None,
+            fail_if_exists=True,
+        )
+
+    @mock.patch("barman.cloud_providers.aws_s3.boto3")
+    def test_put_object(self, boto_mock):
+        """
+        Tests synchronous file upload with boto3 using _put_object
+        """
+        cloud_interface = S3CloudInterface("s3://bucket/path/to/dir", encryption=None)
+        session_mock = boto_mock.Session.return_value
+        s3_mock = session_mock.resource.return_value
+        s3_client = s3_mock.meta.client
+
+        mock_fileobj = mock.MagicMock()
+        mock_key = "path/to/dir"
+        cloud_interface._put_object(mock_fileobj, mock_key)
+
+        s3_client.put_object.assert_called_once_with(
+            Body=mock_fileobj, Bucket="bucket", Key=mock_key
+        )
+
+    @pytest.mark.parametrize(
+        ("encryption_args", "expected_extra_args"),
+        [
+            (
+                {"encryption": "AES256", "sse_kms_key_id": None},
+                {"ServerSideEncryption": "AES256"},
+            ),
+            (
+                {"encryption": "aws:kms", "sse_kms_key_id": None},
+                {"ServerSideEncryption": "aws:kms"},
+            ),
+            (
+                {"encryption": "aws:kms", "sse_kms_key_id": "somekeyid"},
+                {"ServerSideEncryption": "aws:kms", "SSEKMSKeyId": "somekeyid"},
+            ),
+        ],
+    )
+    @mock.patch("barman.cloud_providers.aws_s3.boto3")
+    def test_put_object_with_encryption(
+        self, boto_mock, encryption_args, expected_extra_args
+    ):
+        """
+        Tests the ServerSideEncryption and SSEKMSKeyId arguments are provided to boto3
+        when uploading a file if encryption args are set on the S3CloudInterface
+        """
+        cloud_interface = S3CloudInterface("s3://bucket/path/to/dir", **encryption_args)
+        session_mock = boto_mock.Session.return_value
+        s3_mock = session_mock.resource.return_value
+        s3_client = s3_mock.meta.client
+
+        mock_fileobj = mock.MagicMock()
+        mock_key = "path/to/dir"
+        cloud_interface._put_object(mock_fileobj, mock_key)
+
+        s3_client.put_object.assert_called_once_with(
+            Body=mock_fileobj, Bucket="bucket", Key=mock_key, **expected_extra_args
+        )
+
+    @pytest.mark.parametrize(
+        "cloud_interface_tags, override_tags, expected_tagging",
+        [
+            # Cloud interface tags are used if no override tags
+            (
+                [("foo", "bar"), ("baz $%", "qux -/")],
+                None,
+                "foo=bar&baz+%24%25=qux+-%2F",
+            ),
+            # Override tags are used in place of cloud interface tags
+            (
+                [("foo", "bar")],
+                [("$+ a", "///"), ("()", "[]")],
+                "%24%2B+a=%2F%2F%2F&%28%29=%5B%5D",
+            ),
+        ],
+    )
+    @mock.patch("barman.cloud_providers.aws_s3.boto3")
+    def test_put_object_with_tags(
+        self, boto_mock, cloud_interface_tags, override_tags, expected_tagging
+    ):
+        """
+        Tests the Tagging argument is provided to boto3 when uploading
+        a file if tags are provided when creating S3CloudInterface.
+        """
+        cloud_interface = S3CloudInterface(
+            "s3://bucket/path/to/dir",
+            # Tags must be urlencoded so include quotable characters
+            tags=cloud_interface_tags,
+        )
+        session_mock = boto_mock.Session.return_value
+        s3_mock = session_mock.resource.return_value
+        s3_client = s3_mock.meta.client
+
+        mock_fileobj = mock.MagicMock()
+        mock_key = "path/to/dir"
+        cloud_interface._put_object(mock_fileobj, mock_key, override_tags=override_tags)
+
+        s3_client.put_object.assert_called_once_with(
+            Body=mock_fileobj, Bucket="bucket", Key=mock_key, Tagging=expected_tagging
+        )
+
+    @pytest.mark.parametrize("object_exists", [True, False])
+    @mock.patch(
+        "barman.cloud_providers.aws_s3.S3CloudInterface._check_object_existence"
+    )
+    @mock.patch("barman.cloud_providers.aws_s3.boto3")
+    def test_put_object_fail_if_exists_old_boto_version(
+        self, boto_mock, mock_check, object_exists
+    ):
+        """
+        Test _put_object with fail_if_exists=True using boto3 versions
+        older than 1.35.2, which do not support the IfNoneMatch parameter
+        on put_object.
+        """
+        cloud_interface = S3CloudInterface("s3://bucket/path/to/dir")
+        session_mock = boto_mock.Session.return_value
+        s3_mock = session_mock.resource.return_value
+        s3_client = s3_mock.meta.client
+        boto_mock.__version__ = "1.29.0"
+
+        mock_check.return_value = object_exists
+
+        mock_fileobj = mock.MagicMock()
+        mock_key = "path/to/dir"
+
+        if object_exists:
+            with pytest.raises(ObjectKeyAlreadyExists) as excinfo:
+                cloud_interface._put_object(mock_fileobj, mock_key, fail_if_exists=True)
+                mock_check.assert_called_once_with(mock_key)
+            assert str(excinfo.value) == (
+                "Object %s already exists in bucket %s"
+                % (mock_key, cloud_interface.bucket_name)
+            )
+        else:
+            cloud_interface._put_object(mock_fileobj, mock_key, fail_if_exists=True)
+            mock_check.assert_called_once_with(mock_key)
+            s3_client.put_object.assert_called_once_with(
+                Body=mock_fileobj, Bucket="bucket", Key=mock_key
+            )
+
+    @pytest.mark.parametrize("object_exists", [True, False])
+    @mock.patch(
+        "barman.cloud_providers.aws_s3.S3CloudInterface._check_object_existence"
+    )
+    @mock.patch("barman.cloud_providers.aws_s3.boto3")
+    def test_put_object_fail_if_exists_new_boto_version(
+        self, boto_mock, mock_check, object_exists
+    ):
+        """
+        Test _put_object with fail_if_exists=True using boto3 versions
+        1.35.2 and newer, which support the IfNoneMatch parameter
+        on put_object.
+        """
+        cloud_interface = S3CloudInterface("s3://bucket/path/to/dir")
+        session_mock = boto_mock.Session.return_value
+        s3_mock = session_mock.resource.return_value
+        s3_client = s3_mock.meta.client
+        boto_mock.__version__ = "1.35.2"
+
+        s3_client.put_object.side_effect = (
+            ClientError(
+                error_response={
+                    "Error": {
+                        "Code": "PreconditionFailed",
+                        "Message": "At least one of the pre-conditions you specified did not hold",
+                    }
+                },
+                operation_name="PutObject",
+            )
+            if object_exists
+            else None
+        )
+
+        mock_fileobj = mock.MagicMock()
+        mock_key = "path/to/dir"
+
+        if object_exists:
+            with pytest.raises(ObjectKeyAlreadyExists) as excinfo:
+                cloud_interface._put_object(mock_fileobj, mock_key, fail_if_exists=True)
+                mock_check.assert_not_called()
+                s3_client.put_object.assert_called_once_with(
+                    Body=mock_fileobj, Bucket="bucket", Key=mock_key, IfNoneMatch="*"
+                )
+            assert str(excinfo.value) == (
+                "Object %s already exists in bucket %s"
+                % (mock_key, cloud_interface.bucket_name)
+            )
+        else:
+            cloud_interface._put_object(mock_fileobj, mock_key, fail_if_exists=True)
+            s3_client.put_object.assert_called_once_with(
+                Body=mock_fileobj, Bucket="bucket", Key=mock_key, IfNoneMatch="*"
+            )
+
+    @mock.patch("barman.cloud_providers.aws_s3.boto3")
+    def test_put_object_fails_with_conditional_failire(self, mock_boto):
+        """
+        Test that _put_object retries sending the file again when a
+        ConditionalRequestConflict error code is received from S3.
+        """
+        cloud_interface = S3CloudInterface("s3://bucket/path/to/dir")
+        session_mock = mock_boto.Session.return_value
+        s3_mock = session_mock.resource.return_value
+        s3_client = s3_mock.meta.client
+
+        mock_fileobj = mock.MagicMock()
+        mock_key = "path/to/dir"
+
+        # Simulate ConditionalRequestConflict error on first call, success on second call
+        s3_client.put_object.side_effect = [
+            ClientError(
+                error_response={
+                    "Error": {
+                        "Code": "ConditionalRequestConflict",
+                        "Message": "Some error message",
+                    }
+                },
+                operation_name="PutObject",
+            ),
+            None,
+        ]
+
+        cloud_interface._put_object(mock_fileobj, mock_key)
+
+        s3_client.put_object.assert_has_calls(
+            [mock.call(Body=mock_fileobj, Bucket="bucket", Key=mock_key)] * 2
         )
 
     @mock.patch("barman.cloud_providers.aws_s3.boto3")
@@ -1677,6 +1923,37 @@ class TestS3CloudInterface(object):
         # THEN a ValueError is raised
         with pytest.raises(ValueError):
             cloud_interface.delete_under_prefix(prefix)
+
+    @pytest.mark.parametrize("object_exists", [False, True])
+    @mock.patch("barman.cloud_providers.aws_s3.boto3")
+    def test_check_object_existence(self, boto_mock, object_exists):
+        """
+        Test ``S3CloudInterface._check_object_existence`` method.
+        Verifies that the method correctly checks for the existence of an object
+        in an S3 bucket using the ``head_object`` method of the S3 client.
+        """
+        # Mock the S3 client to raise a ClientError if the object does not exist
+        session_mock = boto_mock.Session.return_value
+        s3_mock = session_mock.resource.return_value
+        s3_client = s3_mock.meta.client
+        if not object_exists:
+            s3_client.head_object.side_effect = ClientError(
+                {"Error": {"Code": "404", "Message": "Not Found"}},
+                "HeadObject",
+            )
+
+        # GIVEN an S3CloudInterface
+        cloud_interface = S3CloudInterface("s3://bucket/test", encryption=None)
+
+        # WHEN _check_object_existence is called with a given object path
+        result = cloud_interface._check_object_existence("path/to/object")
+
+        # THEN head_object is called with the expected parameters
+        s3_client.head_object.assert_called_once_with(
+            Bucket="bucket", Key="path/to/object"
+        )
+        # AND the return value is as expected
+        assert result is object_exists
 
 
 class TestAzureCloudInterface(object):

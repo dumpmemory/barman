@@ -2320,13 +2320,49 @@ class TestServer(object):
         assert len(server.get_children_timelines(3)) == 0
         assert len(server.get_children_timelines(4)) == 0
 
-    def test_xlogdb_directory(self):
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=lambda: False)
+    def test_xlogdb_directory_no_cloud_storage(self, mock_use_wal_cloud_storage):
         """
-        Test the xlogdb_directory server property
+        Test the xlogdb_directory server property when not using cloud storage
         """
-        # It's just a shortcut to config.xlogdb_directory
+        # When not using cloud storage, it should return config.xlogdb_directory
         server = build_real_server()
         assert server.xlogdb_directory == server.config.xlogdb_directory
+
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=lambda: True)
+    def test_xlogdb_directory_cloud_storage_custom_path(
+        self, mock_use_wal_cloud_storage, tmpdir
+    ):
+        """
+        Test the xlogdb_directory server property when using cloud storage with custom xlogdb_directory
+        """
+        # When using cloud storage but xlogdb_directory is custom (not under wals_directory)
+        custom_xlogdb = tmpdir.mkdir("custom_xlogdb").strpath
+        server = build_real_server(
+            main_conf={
+                "wals_directory": tmpdir.mkdir("wals").strpath,
+                "xlogdb_directory": custom_xlogdb,
+            }
+        )
+        assert server.xlogdb_directory == custom_xlogdb
+
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=lambda: True)
+    def test_xlogdb_directory_cloud_storage_default_path(
+        self, mock_use_wal_cloud_storage, tmpdir
+    ):
+        """
+        Test the xlogdb_directory server property when using cloud storage with default xlogdb_directory
+        """
+        # When using cloud storage and xlogdb_directory is under wals_directory
+        # it should return meta_directory instead
+        wals_dir = tmpdir.mkdir("wals").strpath
+        server = build_real_server(
+            main_conf={
+                "wals_directory": wals_dir,
+                "xlogdb_directory": wals_dir + "/xlogdb",
+            }
+        )
+        assert server.xlogdb_directory == server.meta_directory
 
     def test_xlogdb_file_name(self):
         """
@@ -4295,3 +4331,9 @@ class TestCheckStrategy(object):
         record = records.pop()
         assert record.levelname == "ERROR"
         assert record.msg == "Check 'wal_level' failed for server 'test_server_one'"
+
+    def test_get_wal_cloud_interface(self):
+        pass
+
+    def test_get_backup_cloud_interface(self):
+        pass

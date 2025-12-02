@@ -22,6 +22,7 @@ from mock import ANY, MagicMock, call, patch
 from testing_helpers import build_backup_manager, build_test_backup_info, caplog_reset
 
 import barman.xlog
+from barman.cloud_providers import ObjectKeyAlreadyExists
 from barman.exceptions import (
     AbortedRetryHookScript,
     ArchiverFailure,
@@ -33,6 +34,7 @@ from barman.infofile import WalFileInfo
 from barman.process import ProcessInfo
 from barman.server import CheckOutputStrategy
 from barman.wal_archiver import (
+    CloudWalStorageStrategy,
     FileWalArchiver,
     LocalWalStorageStrategy,
     StreamingWalArchiver,
@@ -254,9 +256,7 @@ class TestFileWalArchiver(object):
 
     @patch("os.fsync")
     @patch("barman.wal_archiver.FileWalArchiver.get_next_batch")
-    def test_archive_batch(
-        self, get_next_batch_mock, fsync_mock, caplog
-    ):
+    def test_archive_batch(self, get_next_batch_mock, fsync_mock, caplog):
         """
         Test archive using batch limit
         """
@@ -327,7 +327,9 @@ class TestFileWalArchiver(object):
         archive_dir.ensure(dir=True)
         xlog_db.ensure()
         xlog_db_fileobj = xlog_db.open(mode="a")
-        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db_fileobj
+        backup_manager.server.xlogdb.return_value.__enter__.return_value = (
+            xlog_db_fileobj
+        )
         backup_manager.server.use_wal_cloud_storage = False
         backup_manager.server.archivers = [FileWalArchiver(backup_manager)]
 
@@ -383,7 +385,9 @@ class TestFileWalArchiver(object):
         archive_dir.ensure(dir=True)
         xlog_db.ensure()
         xlog_db_fileobj = xlog_db.open(mode="a")
-        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db_fileobj
+        backup_manager.server.xlogdb.return_value.__enter__.return_value = (
+            xlog_db_fileobj
+        )
         backup_manager.server.use_wal_cloud_storage = False
         backup_manager.server.archivers = [FileWalArchiver(backup_manager)]
 
@@ -437,7 +441,9 @@ class TestFileWalArchiver(object):
         archive_dir.ensure(dir=True)
         xlog_db.ensure()
         xlog_db_fileobj = xlog_db.open(mode="a")
-        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db_fileobj
+        backup_manager.server.xlogdb.return_value.__enter__.return_value = (
+            xlog_db_fileobj
+        )
         backup_manager.server.use_wal_cloud_storage = False
         backup_manager.server.archivers = [FileWalArchiver(backup_manager)]
 
@@ -492,7 +498,9 @@ class TestFileWalArchiver(object):
         archive_dir.ensure(dir=True)
         xlog_db.ensure()
         xlog_db_fileobj = xlog_db.open(mode="a")
-        backup_manager.server.xlogdb.return_value.__enter__.return_value = xlog_db_fileobj
+        backup_manager.server.xlogdb.return_value.__enter__.return_value = (
+            xlog_db_fileobj
+        )
         backup_manager.server.use_wal_cloud_storage = False
         backup_manager.server.archivers = [FileWalArchiver(backup_manager)]
 
@@ -1609,12 +1617,13 @@ class TestLocalWalStorageStrategy:
             compressor,
             "/src/path/000000010000000000000001",
             "/server/wals",
-            mock_wal_info
+            mock_wal_info,
         )
         # AND the stats from the source file are updated to the compressed file
         mock_copy_stats.assert_called_once_with(
             "/src/path/000000010000000000000001",
-            mock_compress.return_value
+            mock_compress.return_value,
+            mock_wal_info,
         )
         # AND the xlogdb is opened for the save operation
         wal_storage.server.xlogdb.assert_called_once_with("a")
@@ -1700,12 +1709,13 @@ class TestLocalWalStorageStrategy:
             encryption,
             "/src/path/000000010000000000000001",
             "/server/wals",
-            mock_wal_info
+            mock_wal_info,
         )
         # AND the stats from the source file are updated to the encrypted file
         mock_copy_stats.assert_called_once_with(
             "/src/path/000000010000000000000001",
-            mock_encrypt.return_value
+            mock_encrypt.return_value,
+            mock_wal_info,
         )
         # AND the xlogdb is opened for the save operation
         wal_storage.server.xlogdb.assert_called_once_with("a")
@@ -1731,7 +1741,6 @@ class TestLocalWalStorageStrategy:
         )
         # Lasly, ensure that no compression was performed
         mock_compress.assert_not_called()
-
 
     @patch("barman.wal_archiver.mkpath")
     @patch("barman.wal_archiver.LocalWalStorageStrategy._run_pre_archive_scripts")
@@ -1792,19 +1801,17 @@ class TestLocalWalStorageStrategy:
             compressor,
             "/src/path/000000010000000000000001",
             "/server/wals",
-            mock_wal_info
+            mock_wal_info,
         )
         # AND _encrypt_file is called to encrypt the compressed file
         mock_encrypt.assert_called_once_with(
-            encryption,
-            mock_compress.return_value,
-            "/server/wals",
-            mock_wal_info
+            encryption, mock_compress.return_value, "/server/wals", mock_wal_info
         )
         # AND the stats from the source file are updated to the compressed-encrypted file
         mock_copy_stats.assert_called_once_with(
             "/src/path/000000010000000000000001",
-            mock_encrypt.return_value
+            mock_encrypt.return_value,
+            mock_wal_info,
         )
         # AND the xlogdb is opened for the save operation
         wal_storage.server.xlogdb.assert_called_once_with("a")
@@ -1828,3 +1835,160 @@ class TestLocalWalStorageStrategy:
         mock_run_post_scripts.assert_called_once_with(
             mock_wal_info, "/server/wals/000000010000000000000001", None
         )
+
+
+class TestCloudWalStorageStrategy:
+    """Tests for the :class:`CloudWalStorageStrategy` class"""
+
+    @pytest.mark.parametrize(
+        "cmp_result,expected_exception",
+        [
+            (False, DuplicateWalFile),
+            (True, MatchingDuplicateWalFile),
+        ],
+    )
+    @patch("barman.wal_archiver.NamedTemporaryFile")
+    @patch("barman.wal_archiver.filecmp.cmp")
+    def test_check_duplicate(
+        self, mock_cmp, mock_tempfile, cmp_result, expected_exception
+    ):
+        """
+        Test that :meth:`_check_duplicate` correctly compares files and raises
+        the appropriate exceptions when duplicates are found in cloud storage.
+        """
+        # GIVEN a CloudWalStorageStrategy instance
+        wal_storage = CloudWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        wal_storage.cloud_interface = MagicMock()
+        # AND a mocked filecmp.cmp returning the desired comparison result
+        mock_cmp.return_value = cmp_result
+        # AND a wal_info and object key for the test
+        mock_wal_info = MagicMock(orig_filename="/src/path/000000010000000000000001")
+        obj_key = "backups/barman/TestServer/wals/000000010000000000000001"
+
+        # WHEN _check_duplicate is called
+        # THEN the appropriate exception is raised based on the comparison result
+        with pytest.raises(expected_exception):
+            wal_storage._check_duplicate(mock_wal_info, obj_key)
+
+        # AND the cloud object is downloaded to a temporary file for comparison
+        mock_tempfile.assert_called_once_with(delete=True)
+        wal_storage.cloud_interface.download_file.assert_called_once_with(
+            obj_key,
+            mock_tempfile.return_value.__enter__.return_value.name,
+            decompress=None,
+        )
+        # AND filecmp.cmp was called with the original file and the temporary file
+        mock_cmp.assert_called_once_with(
+            mock_wal_info.orig_filename,
+            mock_tempfile.return_value.__enter__.return_value.name,
+        )
+
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_pre_archive_scripts")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_post_archive_scripts")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._check_duplicate")
+    @patch("barman.wal_archiver.os.unlink")
+    @patch("barman.wal_archiver.open")
+    def test_save(
+        self,
+        mock_open,
+        mock_unlink,
+        mock_check_duplicate,
+        mock_run_post_scripts,
+        mock_run_pre_scripts,
+    ):
+        """
+        Test that :meth:`save` correctly uploads WAL files to cloud storage.
+        """
+        # GIVEN a CloudWalStorageStrategy instance
+        wal_storage = CloudWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        wal_storage.cloud_interface = MagicMock(path="backups/barman")
+        # AND the following wal_info object
+        mock_wal_info = MagicMock(
+            orig_filename="/src/path/000000010000000000000001",
+            relpath=lambda: "0000000100000001/000000010000000000000001",
+        )
+
+        # WHEN save is called
+        compressor, encryption = None, None
+        wal_storage.save(compressor, encryption, mock_wal_info)
+
+        # THEN the pre-archive scripts are run with correct arguments
+        mock_run_pre_scripts.assert_called_once_with(
+            mock_wal_info, "/src/path/000000010000000000000001"
+        )
+        # AND the source file and xlogdb are opened correctly
+        mock_open.assert_called_once_with("/src/path/000000010000000000000001", "rb")
+        wal_storage.server.xlogdb.assert_called_once_with("a")
+        # AND the opened src file is upload to the cloud with the correct key
+        # which is built using the cloud_interface path, server, and the wal_info relpath
+        wal_storage.cloud_interface.upload_fileobj.assert_called_once_with(
+            fileobj=mock_open.return_value.__enter__.return_value,
+            key="backups/barman/TestServer/wals/0000000100000001/000000010000000000000001",
+            fail_if_exists=True,
+        )
+        # AND the wal_info line is written to the opened xlogdb
+        wal_storage.server.xlogdb.return_value.__enter__.return_value.write.assert_called_once_with(
+            mock_wal_info.to_xlogdb_line.return_value
+        )
+        # AND the post-archive scripts are run with correct arguments
+        mock_run_post_scripts.assert_called_once_with(
+            mock_wal_info, "/src/path/000000010000000000000001", None
+        )
+        # AND the source file is unlinked after the upload
+        mock_unlink.assert_called_once_with("/src/path/000000010000000000000001")
+        # Lastly, ensure that no duplicate check was performed, as no exception was
+        # raised by the upload_fileobj method
+        mock_check_duplicate.assert_not_called()
+
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_pre_archive_scripts")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_post_archive_scripts")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._check_duplicate")
+    @patch("barman.wal_archiver.os.unlink")
+    @patch("barman.wal_archiver.open")
+    def test_save_duplicate(
+        self,
+        mock_open,
+        mock_unlink,
+        mock_check_duplicate,
+        mock_run_post_scripts,
+        mock_run_pre_scripts,
+    ):
+        """
+        Test that :meth:`save` correctly handles duplicate WAL files
+        when uploading to cloud storage.
+        """
+        # GIVEN a CloudWalStorageStrategy instance
+        wal_storage = CloudWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        wal_storage.cloud_interface = MagicMock(path="backups/barman")
+        # AND the following wal_info object
+        mock_wal_info = MagicMock(
+            orig_filename="/src/path/000000010000000000000001",
+            relpath=lambda: "0000000100000001/000000010000000000000001",
+        )
+        # AND the cloud_interface upload_fileobj raises ObjectKeyAlreadyExists
+        # AND the _check_duplicate raises DuplicateWalFile
+        wal_storage.cloud_interface.upload_fileobj.side_effect = ObjectKeyAlreadyExists
+        mock_check_duplicate.side_effect = DuplicateWalFile
+
+        # WHEN save is called
+        # THEN ObjectKeyAlreadyExists is catched and _check_duplicate is called
+        # which raises DuplicateWalFile
+        compressor, encryption = None, None
+        with pytest.raises(DuplicateWalFile) as exc_info:
+            wal_storage.save(compressor, encryption, mock_wal_info)
+            mock_check_duplicate.assert_called_once_with(
+                mock_wal_info,
+                "backups/barman/TestServer/wals/0000000100000001/000000010000000000000001",
+            )
+            # AND the post-archive is run correctly, including the exception info
+            mock_run_post_scripts.assert_called_once_with(
+                mock_wal_info,
+                "/src/path/000000010000000000000001",
+                exc_info,
+            )
