@@ -684,7 +684,7 @@ class TestCommand(object):
         assert ("Command", WARNING, "err: " + err) in caplog.record_tuples
 
     @mock.patch("time.sleep")
-    @mock.patch("barman.command_wrappers.Command._get_output_once")
+    @mock.patch("barman.command_wrappers.Command._get_result")
     def test_retry(
         self, get_output_no_retry_mock, sleep_mock, popen, pipe_processor_loop
     ):
@@ -692,7 +692,7 @@ class TestCommand(object):
         Test the retry method
 
         :param mock.Mock get_output_no_retry_mock: simulate a
-            Command._get_output_once() call
+            Command._get_result() call
         :param mock.Mock sleep_mock: mimic the sleep timer
         :param mock.Mock popen: unused, mocked from the whole test class
         :param mock.Mock pipe_processor_loop: unused, mocked from the whole
