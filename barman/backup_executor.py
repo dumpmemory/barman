@@ -163,7 +163,6 @@ class BackupExecutor(with_metaclass(ABCMeta, RemoteStatusMixin)):
         If the provided backup is the first, purge unused WAL files before the backup
         start.
 
-
         .. note::
             If ``worm_mode`` is enabled, then we don't remove those WAL files
             because they are (should be) stored in an immutable storage, and at
@@ -613,9 +612,7 @@ class PostgresBackupExecutor(BackupExecutor):
         remote_status = self.get_remote_status()
 
         # If pg_basebackup supports --max-rate set the bandwidth_limit
-        bandwidth_limit = None
-        if remote_status["pg_basebackup_bwlimit"]:
-            bandwidth_limit = self.config.bandwidth_limit
+        bandwidth_limit = self._get_bandwidth_limit(remote_status)
 
         # Make sure we are not wasting precious PostgreSQL resources
         # for the whole duration of the copy
@@ -682,6 +679,16 @@ class PostgresBackupExecutor(BackupExecutor):
                 output.warning(msg)
             else:
                 _logger.debug(msg)
+
+    def _get_bandwidth_limit(self, remote_status):
+        """
+        Get the bandwidth limit for ``pg_basebackup``, if supported.
+
+        :param dict[str,Any] remote_status: remote status information
+        :return int|None: the bandwidth limit configured, if any
+        """
+        if remote_status["pg_basebackup_bwlimit"]:
+            return self.config.bandwidth_limit
 
     def _retry_handler(self, dest_dirs, command, args, kwargs, attempt, exc):
         """
@@ -762,10 +769,11 @@ class PostgresBackupExecutor(BackupExecutor):
 
 class CloudPostgresBackupExecutor(PostgresBackupExecutor):
     """
-    Concrete class for backup via ``pg_basebackup`` with dynamic upload to cloud storage.
+    Concrete class for backups via ``pg_basebackup`` with dynamic upload to cloud storage.
 
-    In this method backups are not fully stored locally and are instead uploaded to
-    the cloud storage as files are being copied from the Postgres server.
+    In this method a backup is never fully stored locally. Instead, it is uploaded to
+    the cloud storage as files are copied from the Postgres server by making use of
+    a staging area on local disk.
 
     The complete process is as follows:
 
@@ -776,20 +784,44 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         is ever reached, the backup subprocess is stopped and only resumed when enough
         space has been freed.
     3. A thread is started to fetch “ready files”. Such files are those which are
-        already fully written and closed by the backup process. These files are put in
-        a “ready queue”.
-    4. Build the tarball. Receives ready files from the ready queue and appends them
-        to a tarball that is constantly being written. The tarball is written in
-        chunks, called "part files". Part files are written to disk in the staging area
-        and live there until uploaded to the cloud on step 5.
+        already fully written and closed by ``pg_basebackup``. These files are then put
+        in a “ready queue”.
+    4. The main thread then starts to fetch ready files from the ready queue and
+        appends them to tarballs (one for PGDATA and one for each tablespace) that are
+        constantly being written. Each file is removed after appended to its tarball.
+        Tarballs are written in chunks, called "part files". Part files are written to
+        disk in a subdirectory of the staging area and live there until uploaded to the
+        cloud on step 5.
     5. Multiple processes are started to upload part files to the cloud (the number of
         processes is defined by :attr:`config.parallel_jobs`). Each file is deleted
         after its upload is confirmed successful.
 
     .. note::
-        The logic of steps 4 and 5 are not contained in this method, but in the
-        :class:`barman.cloud.CloudBackupUploader` class used here.
+        The logic of steps 4 and 5 are not contained in this class, but in the
+        :class:`barman.cloud.CloudUploadController` class utilized here.
     """
+
+    # The below structure makes it easier to manage the staging area. Essentially:
+    # 1. Tarball chunks are built reading from {staging_dir}/plain and
+    #    written to {staging_dir}/tarballs
+    # 2. Multipart upload is then performed reading chunks from {staging_dir}/tarballs
+    _OUTPUT_PLAIN_DEST = "{staging_dir}/plain"
+    _OUTPUT_PGDATA_DEST = "{staging_dir}/plain/data"
+    _OUTPUT_TBLSPC_DEST = "{staging_dir}/plain/{oid}"
+    _OUTPUT_TARBALL_DEST = "{staging_dir}/tarballs"
+
+    # The files below have to be uploaded last, otherwise pg_basebackup might fail
+    # at the end of its execution when trying to modify some of them. This was observed
+    # during the initial development of this feature. There is also some hints of this
+    # behavior in the pg_basebackup source code itself e.g.:
+    # https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/pg_basebackup/pg_basebackup.c#L2320
+    # https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/pg_basebackup/pg_basebackup.c#L2285
+    _LAST_FILES = [
+        r"^.*\.conf$",  # All .conf files
+        r"^.*\.tmp$",  # All .tmp files (e.g. backup_manifest.tmp)
+        r"^.*current_logfiles",
+        r"^.*PG_VERSION",
+    ]
 
     def __init__(self, backup_manager):
         """
@@ -799,6 +831,15 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             assigned to the executor
         """
         super(CloudPostgresBackupExecutor, self).__init__(backup_manager)
+        self._pgdata_dest = self._OUTPUT_PGDATA_DEST.format(
+            staging_dir=self.config.cloud_staging_directory
+        )
+        self._tarball_dest = self._OUTPUT_TARBALL_DEST.format(
+            staging_dir=self.config.cloud_staging_directory
+        )
+        self._plain_dest = self._OUTPUT_PLAIN_DEST.format(
+            staging_dir=self.config.cloud_staging_directory
+        )
         self._ready_files_queue = None
 
     def backup_copy(self, backup_info):
@@ -806,19 +847,97 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         Perform the actual copy of the backup using ``pg_basebackup``.
 
         For this executor, this means controlling the backup process, the building
-        of the tarball and its upload to the cloud storage.
-
-        In case of failure during the execution of the ``pg_basebackup`` command
-        or during the upload of files, a retry mechanism is triggered. If retrying
-        is unsuccessful, the method raises a :exec:`DataTransferFailure`, making sure
-        all the staged files are cleaned up.
+        of the tarballs and their upload to the cloud storage.
 
         :param barman.infofile.LocalBackupInfo backup_info: backup information
 
         .. note::
-            In this method step 1 is performed and steps 2 to 5 are coordinated.
-            Read the class docstring for details.
+            This method is reponsible for coordinating all the steps described in the
+            class docstring.
         """
+        # Make sure the staging area directories exist and are writable
+        self._prepare_backup_destination([self._plain_dest, self._tarball_dest])
+
+        # Starts pg_basebackup directing its output to the staging area
+        self._run_pg_basebackup(backup_info)
+
+    def _run_pg_basebackup(self, backup_info):
+        """
+        Run ``pg_basebackup`` directing its output to the staging area.
+
+        To be exact, the output is directed to ``{staging_dir}/plain/data`` for
+        PGDATA and ``{staging_dir}/plain/{oid}`` for each tablespace.
+
+        The execution is done asynchronously, meaning that this method returns
+        immediately after spawning the backup subprocess. This allows threads such as
+        :meth:`_monitor_staging_area` and :meth:`_fetch_ready_files` to have a
+        reference to the running process as it executes.
+
+        :param barman.infofile.LocalBackupInfo backup_info: backup information
+        :return barman.command_wrappers.PgBaseBackup: the running ``pg_basebackup``
+            process
+
+        .. note::
+            This method performs step 1 described in the class docstring.
+        """
+        remote_status = self.get_remote_status()
+        bandwidth_limit = self._get_bandwidth_limit(remote_status)
+        tbspc_mapping = self._get_tablespace_mapping(backup_info)
+        parent_backup_manifest = self._get_parent_backup_manifest_path(backup_info)
+        pg_basebackup = PgBaseBackup(
+            wait=False,
+            connection=self.server.streaming,
+            destination=self._pgdata_dest,
+            command=remote_status["pg_basebackup_path"],
+            version=remote_status["pg_basebackup_version"],
+            app_name=self.config.streaming_backup_name,
+            no_sync=True,
+            tbs_mapping=tbspc_mapping,
+            bwlimit=bandwidth_limit,
+            immediate=self.config.immediate_checkpoint,
+            path=self.server.path,
+            parent_backup_manifest_path=parent_backup_manifest,
+        )
+        try:
+            output.debug("Starting pg_basebackup to %s" % self._pgdata_dest)
+            pg_basebackup()
+        except CommandFailedException as e:
+            msg = "data transfer failure on directory '%s'" % self._pgdata_dest
+            raise DataTransferFailure.from_command_error("pg_basebackup", e, msg)
+
+        return pg_basebackup
+
+    def _get_tablespace_mapping(self, backup_info):
+        """
+        Get the tablespace mapping for ``pg_basebackup``.
+
+        Each tablespace is mapped to "{staging_dir}/plain/{oid}".
+
+        :param barman.infofile.LocalBackupInfo backup_info: backup information
+        :return dict[str,str]: mapping of source to destination tablespace locations
+        """
+        tbspc_mapping = {}
+        tablespaces = backup_info.tablespaces or []
+        for tbspc in tablespaces:
+            source = tbspc.location
+            destination = self._OUTPUT_TBLSPC_DEST.format(
+                staging_dir=self.config.cloud_staging_directory,
+                oid=tbspc.oid,
+            )
+            tbspc_mapping[source] = destination
+        return tbspc_mapping
+
+    def _get_parent_backup_manifest_path(self, backup_info):
+        """
+        Get the backup manifest path of the parent backup, if any.
+
+        :param barman.infofile.LocalBackupInfo backup_info: backup information
+        :return str|None: the backup manifest path of the parent backup
+        """
+        parent_backup_info = backup_info.get_parent_backup_info()
+        if parent_backup_info:
+            filename = f"{parent_backup_info.backup_id}-backup_manifest"
+            return os.path.join(self.server.meta_directory, filename)
 
     def _monitor_staging_area(self):
         """
@@ -841,6 +960,14 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         .. note::
             In this method step 3 is performed. Read the class docstring for details.
         """
+
+    def _start_backup_copy_message(self, backup_info):
+        output.info(
+            "Starting backup copy via pg_basebackup for %s to the cloud storage %s: %s",
+            backup_info.backup_id,
+            self.server.backup_cloud_provider,
+            self.config.basebackups_directory,
+        )
 
 
 class ExternalBackupExecutor(with_metaclass(ABCMeta, BackupExecutor)):

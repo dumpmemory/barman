@@ -329,7 +329,7 @@ class Command(object):
         attempt = 0
         while True:
             try:
-                return self._get_output_once(*args, **kwargs)
+                return self._get_result(*args, **kwargs)
             except CommandFailedException as exc:
                 # Try again if retry number is lower than the retry limit
                 if attempt < self.retry_times:
@@ -352,7 +352,7 @@ class Command(object):
                         # original one
                         raise CommandMaxRetryExceeded(*exc.args)
 
-    def _get_output_once(self, *args, **kwargs):
+    def _get_result(self, *args, **kwargs):
         """
         Run the command and return the output and the error as a tuple.
 
@@ -958,6 +958,7 @@ class PgBaseBackup(PostgreSQLClient):
         check=True,
         compression=None,
         parent_backup_manifest_path=None,
+        no_sync=False,
         args=None,
         **kwargs
     ):
@@ -980,6 +981,7 @@ class PgBaseBackup(PostgreSQLClient):
         :param str parent_backup_manifest_path:
           the path to a backup_manifest file from a previous backup which can
           be used to perform an incremental backup
+        :param bool no_sync: avoid fsync calls if specified
         :param List[str] args: additional arguments
         """
         PostgreSQLClient.__init__(
@@ -1018,6 +1020,10 @@ class PgBaseBackup(PostgreSQLClient):
         # If it has a manifest file path it means it is an incremental backup
         if parent_backup_manifest_path:
             self.args.append("--incremental=%s" % parent_backup_manifest_path)
+
+        # Avoid fsync calls if requested
+        if no_sync:
+            self.args.append("--no-sync")
 
         # Immediate checkpoint
         if immediate:
