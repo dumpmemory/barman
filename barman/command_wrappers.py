@@ -131,6 +131,7 @@ class Command(object):
         check=False,
         allowed_retval=(0,),
         close_fds=True,
+        wait=True,
         out_handler=None,
         err_handler=None,
         retry_times=0,
@@ -159,6 +160,12 @@ class Command(object):
 
         If the `close_fds` argument is True, all file descriptors
         except 0, 1 and 2 will be closed before the child process is executed.
+
+        If `wait` is True this class only returns when the command
+        has been terminated. Otherwise, it returns immediately after spawning
+        the subprocess. When `wait` is False, the output/error/retry handlers are
+        ignored. Similarly, retries are also not managed in case of failures that
+        happen during the execution of the command.
 
         If the `check` argument is True, the exit code will be checked
         against the `allowed_retval` list, raising a CommandFailedException if
@@ -199,6 +206,8 @@ class Command(object):
         :param list[int] allowed_retval: List of exit codes considered as a
             successful termination.
         :param bool close_fds: If set, close all the extra file descriptors
+        :param bool wait: If ``True``, it returns only when the command is terminated.
+            Otherwise, it returns immediately after spawning the subprocess.
         :param callable out_handler: handler for lines sent on stdout
         :param callable err_handler: handler for lines sent on stderr
         :param int retry_times: number of allowed retry attempts
@@ -210,6 +219,7 @@ class Command(object):
         self.args = args if args is not None else []
         self.shell = shell
         self.close_fds = close_fds
+        self.wait = wait
         self.check = check
         self.allowed_retval = allowed_retval
         self.retry_times = retry_times
@@ -303,6 +313,10 @@ class Command(object):
         against the `allowed_retval` list, raising a CommandFailedException if
         not in the list.
 
+        If `wait` is True this method only returns when the command
+        has been terminated. Otherwise, it returns immediately after spawning
+        the subprocess.
+
         Every keyword argument can be specified both in the class constructor
         and during the method call. If specified in both places,
         the method arguments will take the precedence over
@@ -355,6 +369,10 @@ class Command(object):
         against the `allowed_retval` list, raising a CommandFailedException if
         not in the list.
 
+        If `wait` is True this method only returns when the command
+        has been terminated. Otherwise, it returns immediately after spawning
+        the subprocess, in which case (None, None) is returned.
+
         Every keyword argument can be specified both in the class constructor
         and during the method call. If specified in both places,
         the method arguments will take the precedence over
@@ -379,6 +397,7 @@ class Command(object):
         # If check is true, it must be handled here
         check = kwargs.pop("check", self.check)
         allowed_retval = kwargs.pop("allowed_retval", self.allowed_retval)
+        wait = kwargs.pop("wait", self.wait)
         self.execute(
             out_handler=out_handler,
             err_handler=err_handler,
@@ -386,6 +405,11 @@ class Command(object):
             *args,
             **kwargs
         )
+
+        # If not requested to wait for the command termination, return now
+        if not wait:
+            return None, None
+
         self.out = "\n".join(out)
         self.err = "\n".join(err)
 
@@ -441,6 +465,7 @@ class Command(object):
         check = kwargs.pop("check", self.check)
         allowed_retval = kwargs.pop("allowed_retval", self.allowed_retval)
         close_fds = kwargs.pop("close_fds", self.close_fds)
+        wait = kwargs.pop("wait", self.wait)
         out_handler = kwargs.pop("out_handler", self.out_handler)
         err_handler = kwargs.pop("err_handler", self.err_handler)
         if len(kwargs):
@@ -463,6 +488,11 @@ class Command(object):
         if stdin:
             pipe.stdin.write(stdin)
         pipe.stdin.close()
+
+        # If not requested to wait for the command termination, return now
+        if not wait:
+            return
+
         # Prepare the list of processors
         processors = [
             StreamLineProcessor(pipe.stdout, out_handler),
