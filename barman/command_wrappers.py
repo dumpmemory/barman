@@ -651,6 +651,7 @@ class Command(object):
     def pid(self):
         """
         Get the pid of the subprocess
+
         :rtype: int|None
         """
         with self._pipe_lock:
@@ -676,12 +677,28 @@ class Command(object):
     def is_running(self):
         """
         Check if the command is still running
+
         :rtype: bool
+        :return: ``True`` if the command is still running, ``False`` otherwise
         """
         with self._pipe_lock:
             if self.pipe:
                 return self.pipe.poll() is None
             return False
+
+    def wait_termination(self):
+        """
+        Wait for the command to terminate
+
+        :rtype: int|None
+        :return: the exit code of the command
+        """
+        with self._pipe_lock:
+            if self.pipe:
+                self.pipe.wait()
+                self.ret = self.pipe.returncode
+                return self.ret
+            return None
 
 
 class Rsync(Command):

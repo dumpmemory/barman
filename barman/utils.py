@@ -1323,6 +1323,7 @@ def get_directory_size(path):
     """
     Get the total size of a directory by summing the sizes of all files
     contained within it and its subdirectories.
+
     :param str path: The path to the directory.
     :return int: The total size of the directory in bytes.
     """

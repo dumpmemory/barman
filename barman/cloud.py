@@ -179,15 +179,15 @@ class TarFileIgnoringTruncate(tarfile.TarFile):
 
 
 class CloudTarUploader(object):
-    # This is the method we use to create new buffers
-    # We use named temporary files, so we can pass them by name to
-    # other processes
-    _buffer = partial(
-        NamedTemporaryFile, delete=False, prefix="barman-upload-", suffix=".part"
-    )
 
     def __init__(
-        self, cloud_interface, key, chunk_size, compression=None, max_bandwidth=None
+        self,
+        cloud_interface,
+        key,
+        chunk_size,
+        compression=None,
+        max_bandwidth=None,
+        staging_dir=None,
     ):
         """
         A tar archive that resides on cloud storage
@@ -198,6 +198,8 @@ class CloudTarUploader(object):
         :param int chunk_size: the upload chunk size
         :param int max_bandwidth: the maximum amount of data per second that
           should be uploaded by this tar uploader
+        :param str|None staging_dir: the temporary directory where part files are
+          created before uploaded
         """
         self.cloud_interface = cloud_interface
         self.key = key
@@ -207,6 +209,7 @@ class CloudTarUploader(object):
         self.buffer = None
         self.counter = 0
         self.compressor = None
+        self.staging_dir = staging_dir
         # Some supported compressions (e.g. snappy) require CloudTarUploader to apply
         # compression manually rather than relying on the tar file.
         self.compressor = cloud_compression.get_compressor(compression)
@@ -223,6 +226,17 @@ class CloudTarUploader(object):
         self.stats = None
         self.time_of_last_upload = None
         self.size_of_last_upload = None
+
+        # This is the method we use to create new buffers
+        # We use named temporary files, so we can pass them by name to
+        # other processes
+        self._buffer = partial(
+            NamedTemporaryFile,
+            delete=False,
+            prefix="barman-upload-",
+            suffix=".part",
+            dir=self.staging_dir,
+        )
 
     def write(self, buf):
         if self.buffer and self.buffer.tell() > self.chunk_size:
@@ -312,6 +326,7 @@ class CloudUploadController(object):
         compression,
         min_chunk_size=None,
         max_bandwidth=None,
+        staging_dir=None,
     ):
         """
         Create a new controller that upload the backup in cloud storage
@@ -323,6 +338,8 @@ class CloudUploadController(object):
         :param int|None min_chunk_size: the minimum size of a single upload part
         :param int|None max_bandwidth: the maximum amount of data per second that
           should be uploaded during the backup
+        :param str|None staging_dir: the temporary directory where part files are
+            created before uploaded
         """
 
         self.cloud_interface = cloud_interface
@@ -352,6 +369,7 @@ class CloudUploadController(object):
         self.chunk_size = max(possible_min_chunk_sizes)
         self.compression = compression
         self.max_bandwidth = max_bandwidth
+        self.staging_dir = staging_dir
         self.tar_list = {}
 
         self.upload_stats = {}
@@ -397,6 +415,7 @@ class CloudUploadController(object):
                     chunk_size=self.chunk_size,
                     compression=self.compression,
                     max_bandwidth=self.max_bandwidth,
+                    staging_dir=self.staging_dir,
                 )
             ]
         # If the current uploading file size is over DEFAULT_MAX_TAR_SIZE

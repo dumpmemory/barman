@@ -39,6 +39,7 @@ from abc import ABCMeta, abstractmethod
 from contextlib import closing
 from distutils.version import LooseVersion as Version
 from functools import partial
+from io import BytesIO
 
 import dateutil.parser
 
@@ -840,17 +841,24 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             assigned to the executor
         """
         super(CloudPostgresBackupExecutor, self).__init__(backup_manager)
+        self.strategy = CloudPostgresBackupStrategy(
+            self.server.postgres, self.config.name, self.backup_compression
+        )
+        self._cloud_staging_dir = os.path.join(
+            self.config.cloud_staging_directory, str(os.getpid())
+        )
         self._pgdata_dest = self._OUTPUT_PGDATA_DEST.format(
-            staging_dir=self.config.cloud_staging_directory
+            staging_dir=self._cloud_staging_dir
         )
         self._tarball_dest = self._OUTPUT_TARBALL_DEST.format(
-            staging_dir=self.config.cloud_staging_directory
+            staging_dir=self._cloud_staging_dir
         )
         self._plain_dest = self._OUTPUT_PLAIN_DEST.format(
-            staging_dir=self.config.cloud_staging_directory
+            staging_dir=self._cloud_staging_dir
         )
-        self._cloud_staging_dir = self.config.cloud_staging_directory
-        self._ready_queue = queue.SimpleQueue()
+        self._cloud_interface = self.server.get_backup_cloud_interface()
+        self._upload_controller = None
+        self._ready_queue = queue.Queue()
 
     def backup_copy(self, backup_info):
         """
@@ -865,6 +873,8 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             This method is reponsible for coordinating all the steps described in the
             class docstring.
         """
+        self.copy_start_time = datetime.datetime.now()
+
         # Make sure the staging area directories exist and are writable
         self._prepare_backup_destination([self._plain_dest, self._tarball_dest])
 
@@ -882,6 +892,94 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             target=self._fetch_ready_files, args=(pg_basebackup,)
         )
         fetching_thread.start()
+
+        # Starts the actual upload process of files from the ready queue
+        self._init_upload_controller(backup_info)
+        with closing(self._cloud_interface):
+            with closing(self._upload_controller):
+                self._upload_ready_files()
+                pg_basebackup.wait_termination()
+                monitoring_thread.join()
+                fetching_thread.join()
+
+        # Store statistics about the upload time
+        backup_info.copy_stats = self._upload_controller.statistics()
+        # Store metadata from the backup label
+        self._read_backup_label(backup_info)
+        # Store the backup_manifest in the meta dir to allow future incremental backups
+        self._save_backup_manifest(backup_info)
+        # Once all metadata is collected, upload the backup.info file
+        self._upload_backup_info(backup_info)
+        # Cleanup the staging area
+        shutil.rmtree(self._cloud_staging_dir, ignore_errors=True)
+        # Override the actual total time
+        self.copy_end_time = datetime.datetime.now()
+        backup_info.copy_stats["total_time"] = total_seconds(
+            self.copy_end_time - self.copy_start_time
+        )
+
+    def _init_upload_controller(self, backup_info):
+        """
+        Initialize the cloud upload controller.
+
+        The cloud controller is an essential piece responsible for steps 4 and 5
+        described in the class, namely building tarballs and uploading them to the
+        cloud storage.
+
+        :return barman.cloud.CloudUploadController: the upload controller
+        """
+        from barman.cloud import CloudUploadController
+
+        # The exact location in the bucket where tarballs and backup.info will be stored
+        # E.g. if basebackups_directory is s3://my-backups then its key prefix will be
+        # my-backups/<server_name>/base/<backup_id>
+        # This follows the same structure used by the Barman cloud scripts
+        key_prefix = os.path.join(
+            self._cloud_interface.path, self.config.name, "base", backup_info.backup_id
+        )
+        self._upload_controller = CloudUploadController(
+            cloud_interface=self._cloud_interface,
+            key_prefix=key_prefix,
+            max_archive_size=107374182400,  # Same default as cloud scripts (100GB)
+            compression=None,
+            max_bandwidth=self.config.bandwidth_limit,
+            staging_dir=self._tarball_dest,
+        )
+
+    def _read_backup_label(self, backup_info):
+        """
+        Read and store metadata from the ``backup_label`` in the *backup_info* object.
+
+        :param barman.infofile.LocalBackupInfo backup_info: backup information
+        """
+        label_path = os.path.join(self._pgdata_dest, "backup_label")
+        with open(label_path, "r") as label_file:
+            backup_info.set_attribute("backup_label", label_file.read())
+
+    def _save_backup_manifest(self, backup_info):
+        """
+        Save the ``backup_manifest`` file in the server's meta directory.
+
+        This is needed to allow future incremental backups based on this one.
+
+        :param barman.infofile.LocalBackupInfo backup_info: backup information
+        """
+        filename = f"{backup_info.backup_id}-backup_manifest"
+        manifest_dest_path = os.path.join(self.server.meta_directory, filename)
+        manifest_src_path = os.path.join(self._pgdata_dest, "backup_manifest")
+        shutil.copy2(manifest_src_path, manifest_dest_path)
+
+    def _upload_backup_info(self, backup_info):
+        """
+        Upload the ``backup.info`` file to the cloud storage.
+
+        :param barman.infofile.LocalBackupInfo backup_info: backup information
+        """
+        with BytesIO() as backup_info_fileobj:
+            backup_info.save(file_object=backup_info_fileobj)
+            backup_info_fileobj.seek(0)
+            key = os.path.join(self._upload_controller.key_prefix, "backup.info")
+            self._cloud_interface.upload_fileobj(backup_info_fileobj, key)
 
     def _run_pg_basebackup(self, backup_info):
         """
@@ -948,7 +1046,7 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         for tbspc in tablespaces:
             source = tbspc.location
             destination = self._OUTPUT_TBLSPC_DEST.format(
-                staging_dir=self.config.cloud_staging_directory,
+                staging_dir=self._cloud_staging_dir,
                 oid=tbspc.oid,
             )
             tbspc_mapping[source] = destination
@@ -1131,6 +1229,92 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             if re.match(pattern, filename):
                 return True
         return False
+
+    def _upload_ready_files(self):
+        """
+        Upload files from the ready queue to the cloud storage.
+
+        Files are appended to tarballs (one for PGDATA and one for each tablespace).
+        Each file is removed after appended to its tarball.
+
+        .. note::
+            The core logic of building tarballs and uploading them to the cloud storage
+            is handled by the :attr:`_upload_controller` object used here, with its
+            ``add_file`` and ``upload_directory`` methods.
+
+            This method performs steps 4 and 5 described in this class docstring.
+        """
+        while True:
+            try:
+                filepath = self._ready_queue.get_nowait()
+            except queue.Empty:
+                time.sleep(1)
+                continue
+
+            if filepath is None:  # Sentinel found, no more files will come
+                break
+
+            # The file name
+            filename = os.path.basename(filepath)
+            # The tarball it belongs to
+            tarball_name = self._get_tarball_name(filepath)
+            # Its path inside the tarball i.e. its path when unarchived
+            # E.g. plain/data/base/1/16384 -> base/1/16384; plain/<oid>/1/16384 -> 1/16384
+            rel_path = os.path.relpath(filepath, self._plain_dest)
+            path_inside_tarball = rel_path.split(os.sep, 1)[1]
+            self._upload_controller.add_file(
+                label=filename,
+                src=filepath,
+                dst=tarball_name,
+                path=path_inside_tarball,
+            )
+            # When add_file returns the file has already been appended, so delete it
+            # unless it's the backup_label or backup_manifest (both are needed later)
+            if filename not in ("backup_label", "backup_manifest"):
+                os.unlink(filepath)
+
+        # Once all files in the queue have been appended then upload the remaining
+        # content inside each subdirectory (PGDATA and tablespaces)
+        # As most files were already uploadd and deleted, these will be mostly
+        # empty directories (which are relevant when starting the cluster)
+        sub_dirs = [item for item in os.listdir(self._plain_dest)]
+        for dir in sub_dirs:
+            full_path = os.path.join(self._plain_dest, dir)
+            self._upload_controller.upload_directory(
+                label=dir,
+                src=full_path,
+                dst=self._get_tarball_name(full_path),
+                exclude=EXCLUDE_LIST + PGDATA_EXCLUDE_LIST,
+            )
+
+        # At last copy pg_control. As it contains info such as the latest checkpoint,
+        # it must be copied after all other files to guarantee consistency
+        self._upload_controller.add_file(
+            label="pg_control",
+            src="%s/global/pg_control" % self._pgdata_dest,
+            dst="data",
+            path="global/pg_control",
+        )
+
+    def _get_tarball_name(self, filepath):
+        """
+        Get the tarball name a given file belongs to.
+
+        For PGDATA files, the tarball name is always "data". For tablespace files,
+        the tarball name is the OID of the tablespace.
+
+        .. note::
+            It's sure that all tablespace files are under a dedicated directory with
+            its OID as name because that's how :meth:`_run_pg_basebackup` mapped them.
+
+        :param str filepath: path of the file
+        :return str: the tarball destination name
+        """
+        if filepath.startswith(self._pgdata_dest):
+            return "data"
+        rel_path = os.path.relpath(filepath, self._plain_dest)
+        oid = rel_path.split(os.sep)[0]
+        return oid
 
     def _start_backup_copy_message(self, backup_info):
         output.info(
@@ -2507,6 +2691,26 @@ class PostgresBackupStrategy(BackupStrategy):
             backup_info.set_attribute("backup_label", backup_label)
         else:
             super(PostgresBackupStrategy, self)._read_backup_label(backup_info)
+
+
+class CloudPostgresBackupStrategy(PostgresBackupStrategy):
+    """
+    Concrete class for cloud postgres backup strategy.
+
+    This strategy follows the same logic as :class:`PostgresBackupStrategy` except that
+    it does not read the ``backup_label`` file. This is because in cloud backups the
+    backup label is never stored in the backup's data directory, as this class' parent
+    assumes. Instead, the file only exists temporarily in the staging area before being
+    uploaded to cloud storage. Hence the need for this subclass with this specific
+    override.
+
+    The backup label is still read to fill the ``backup.info`` file in the
+    :meth:`CloudPostgresBackupExecutor._read_backup_label` though, so the same
+    behavior is still preserved.
+    """
+
+    def _read_backup_label(self, backup_info):
+        return
 
 
 class ExclusiveBackupStrategy(BackupStrategy):
