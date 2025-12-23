@@ -31,6 +31,7 @@ import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 from distutils.version import LooseVersion as Version
 
@@ -230,6 +231,8 @@ class Command(object):
         self.ret = None
         self.out = None
         self.err = None
+        # Lock to protect access to self.pipe after subprocess creation
+        self._pipe_lock = threading.Lock()
         # If env_append has been provided use it or replace with an empty dict
         env_append = env_append or {}
         # If path has been provided, replace it in the environment
@@ -644,28 +647,41 @@ class Command(object):
         # Set the signal handler
         signal.signal(signal_id, _handler)
 
+    @property
+    def pid(self):
+        """
+        Get the pid of the subprocess
+        :rtype: int|None
+        """
+        with self._pipe_lock:
+            if self.pipe:
+                return self.pipe.pid
+
     def pause(self):
         """
         Pause the command execution sending a SIGSTOP to the subprocess
         """
-        if self.pipe:
-            self.pipe.send_signal(signal.SIGSTOP)
+        with self._pipe_lock:
+            if self.pipe:
+                self.pipe.send_signal(signal.SIGSTOP)
 
     def resume(self):
         """
         Resume the command execution sending a SIGCONT to the subprocess
         """
-        if self.pipe:
-            self.pipe.send_signal(signal.SIGCONT)
+        with self._pipe_lock:
+            if self.pipe:
+                self.pipe.send_signal(signal.SIGCONT)
 
     def is_running(self):
         """
         Check if the command is still running
         :rtype: bool
         """
-        if self.pipe:
-            return self.pipe.poll() is None
-        return False
+        with self._pipe_lock:
+            if self.pipe:
+                return self.pipe.poll() is None
+            return False
 
 
 class Rsync(Command):
@@ -1458,6 +1474,27 @@ class GPG(Command):
         # Ensure that the "check" argument is set to True by default.
         kwargs.setdefault("check", True)
         Command.__init__(self, gpg, args=options, **kwargs)
+
+
+class Lsof(Command):
+    """
+    Wrapper class for the ``lsof`` system command
+    An example output of the command as it is here is below:
+        p227704
+        n/home/user/path/to/directory/file1
+        n/
+        n/usr/pgsql-18/bin/pg_receivewal
+        n/usr/lib/locale/locale-archive
+        ...
+    """
+
+    def __init__(self, pid, **kwargs):
+        """
+        Constructor
+        :param int pid: process ID to query for open files
+        """
+        options = ["-Fn", "-p", str(pid)]
+        Command.__init__(self, "lsof", args=options, **kwargs)
 
 
 def shell_quote(arg):

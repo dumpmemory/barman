@@ -30,6 +30,7 @@ A BackupExecutor is invoked by the BackupManager for backup operations.
 import datetime
 import logging
 import os
+import queue
 import re
 import shutil
 import threading
@@ -43,7 +44,7 @@ import dateutil.parser
 
 from barman import output, xlog
 from barman.cloud_providers import get_snapshot_interface_from_server_config
-from barman.command_wrappers import PgBaseBackup
+from barman.command_wrappers import Lsof, PgBaseBackup
 from barman.compression import get_pg_basebackup_compression
 from barman.config import BackupOptions
 from barman.copy_controller import RsyncCopyController
@@ -59,7 +60,12 @@ from barman.exceptions import (
     SnapshotBackupException,
     SshCommandException,
 )
-from barman.fs import UnixLocalCommand, UnixRemoteCommand, unix_command_factory
+from barman.fs import (
+    UnixLocalCommand,
+    UnixRemoteCommand,
+    path_allowed,
+    unix_command_factory,
+)
 from barman.infofile import BackupInfo
 from barman.postgres import PostgresKeepAlive
 from barman.postgres_plumbing import EXCLUDE_LIST, PGDATA_EXCLUDE_LIST
@@ -844,7 +850,7 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             staging_dir=self.config.cloud_staging_directory
         )
         self._cloud_staging_dir = self.config.cloud_staging_directory
-        self._ready_files_queue = None
+        self._ready_queue = queue.SimpleQueue()
 
     def backup_copy(self, backup_info):
         """
@@ -871,6 +877,12 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         )
         monitoring_thread.start()
 
+        # Start the fetching thread to put ready files in the ready queue
+        fetching_thread = threading.Thread(
+            target=self._fetch_ready_files, args=(pg_basebackup,)
+        )
+        fetching_thread.start()
+
     def _run_pg_basebackup(self, backup_info):
         """
         Run ``pg_basebackup`` directing its output to the staging area.
@@ -889,6 +901,11 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
 
         .. note::
             This method performs step 1 described in the class docstring.
+
+            The ``PgBaseBackup`` class invokes a subprocess with ``preexec_fn`` set.
+            Such parameter is not advised in a multi-threaded environment, however in
+            this case it is safe because no other thread is started before this
+            method returns, so in essence it still runs in a single-threaded context.
         """
         remote_status = self.get_remote_status()
         bandwidth_limit = self._get_bandwidth_limit(remote_status)
@@ -992,17 +1009,128 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             # Check again every one second
             time.sleep(1)
 
-    def _fetch_ready_files(self):
+    def _fetch_ready_files(self, pg_basebackup):
         """
-        Anayze the staging area for ready files and put them in the ready queue.
+        Grab ready files from the staging area and put them in the ready queue.
 
         Ready files are those which are fully written and closed by ``pg_basebackup``.
+        Files present in :attr:`CloudPostgresBackupExecutor._LAST_FILES` are appended
+        lastly, after the termination of ``pg_basebackup`` to guarantee its consistency.
 
-        This method runs in a separate thread.
+        This method is meant to run in a separate thread.
+
+        :param barman.command_wrappers.PgBaseBackup pg_basebackup: the running
+            ``pg_basebackup`` process
 
         .. note::
-            In this method step 3 is performed. Read the class docstring for details.
+            This method performs step 3 described in this class docstring.
         """
+        output.debug("Starting to fetch ready files from %s" % self._plain_dest)
+        processed = set()
+        while True:
+            # Gather all files in the monitoring directory except: those still opened,
+            # those already processed, those in LAST_FILES and those to be ignored
+            all_files = self._get_files_from_dir(self._plain_dest)
+            open_files = self._get_open_files(pg_basebackup.pid)
+            for filepath in all_files:
+                if (
+                    filepath not in processed
+                    and filepath not in open_files
+                    and not self._is_last_file(filepath)
+                    and not self._ignore_file(filepath)
+                ):
+                    self._ready_queue.put(filepath)
+                    processed.add(filepath)
+
+            # When pg_basebackup ends, fetch all remaining files i.e. those present in
+            # LAST_FILES and those that were opened during the last iteration
+            # (they should be readily closed now)
+            if not pg_basebackup.is_running():
+                output.debug("pg_basebackup process ended, fetching remaining files")
+                for filepath in self._get_files_from_dir(self._plain_dest):
+                    if filepath not in processed and not self._ignore_file(filepath):
+                        self._ready_queue.put(filepath)
+                        processed.add(filepath)
+                break
+
+            output.debug(
+                "Fetched round of ready files, current queue size is %s"
+                % self._ready_queue.qsize()
+            )
+            time.sleep(1)
+
+        output.debug("No more files to fetch, exiting ready files fetcher thread")
+        self._ready_queue.put(None)  # Sentinel to signal no more files will be added
+
+    def _get_files_from_dir(self, directory):
+        """
+        Get a list of all files in a given *directory* (recursively).
+
+        :param str directory: the directory to scan
+        :return generator[str]: generator of file paths
+        """
+        for dirpath, _, filenames in os.walk(directory):
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                yield filepath
+
+    def _get_open_files(self, pid):
+        """
+        Get the list of files currently opened by the given process.
+
+        This is used to determine which files are still being written by
+        ``pg_basebackup``.
+
+        :param int pid: the PID of the ``pg_basebackup`` process
+        :return list[str]: list of paths of open files
+
+        .. note::
+            The ``lsof`` command exits with a non-zero code if no files are found to
+            be opened. This is not an error condition for our purposes.
+            For this reason, we retry the command multiple times with a small sleep
+            between each try. If all retries fail, we can assume that the non-zero
+            exit code is due to an actual error and let the appropriate exception
+            propagate.
+        """
+        lsof = Lsof(pid, retry_times=5, retry_sleep=0.5)
+        lsof()
+        open_files = []
+        # Format of lsof output. Check the Lsof class for an output example
+        for line in lsof.out.splitlines()[1:]:  # Skip header line
+            line = line.strip()[1:]  # Remove spaces and leading 'n'
+            if line.startswith(self._plain_dest):  # Only if in the plain dir
+                open_files.append(line)
+        return open_files
+
+    def _ignore_file(self, file):
+        """
+        Determine whether a file should be ignored.
+
+        :param str file: path of the file or directory
+        :return bool: ``True`` if the file should be ignored, ``False`` otherwise
+
+        .. note::
+            These are the same rules followed in :mod:`barman.cloud`.
+        """
+        ignore_list = EXCLUDE_LIST + PGDATA_EXCLUDE_LIST
+        rel_src_path = os.path.relpath(file, self._pgdata_dest)
+        if not path_allowed(ignore_list, None, rel_src_path, False):
+            return True
+        return False
+
+    def _is_last_file(self, filepath):
+        """
+        Determine whether a file matches any pattern in
+        :attr:`CloudPostgresBackupExecutor._LAST_FILES`.
+
+        :param str filepath: path of the file
+        :return bool: ``True`` if positive, ``False`` otherwise
+        """
+        filename = os.path.basename(filepath)
+        for pattern in self._LAST_FILES:
+            if re.match(pattern, filename):
+                return True
+        return False
 
     def _start_backup_copy_message(self, backup_info):
         output.info(
