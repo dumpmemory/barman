@@ -30,7 +30,6 @@ import signal
 import tarfile
 import time
 from abc import ABCMeta, abstractmethod, abstractproperty
-from functools import partial
 from io import BytesIO, RawIOBase
 from tempfile import NamedTemporaryFile
 
@@ -179,7 +178,6 @@ class TarFileIgnoringTruncate(tarfile.TarFile):
 
 
 class CloudTarUploader(object):
-
     def __init__(
         self,
         cloud_interface,
@@ -227,11 +225,16 @@ class CloudTarUploader(object):
         self.time_of_last_upload = None
         self.size_of_last_upload = None
 
-        # This is the method we use to create new buffers
-        # We use named temporary files, so we can pass them by name to
-        # other processes
-        self._buffer = partial(
-            NamedTemporaryFile,
+    # This is the method we use to create new buffers
+    # We use named temporary files, so we can pass them by name to
+    # other processes
+    # 20251223 pvbiesen: partial broke in 3.14, this could fix it with staticmethod :
+    # _buffer = staticmethod(partial(
+    #    NamedTemporaryFile, delete=False, prefix="barman-upload-", suffix=".part"
+    # ))
+    # 20251223 pvbiesen: or, just for readability :
+    def _buffer(self):
+        return NamedTemporaryFile(
             delete=False,
             prefix="barman-upload-",
             suffix=".part",
