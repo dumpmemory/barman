@@ -19,6 +19,7 @@
 import datetime
 import logging
 import os
+import queue
 from functools import partial
 
 import mock
@@ -1569,7 +1570,10 @@ class TestCloudPostgresBackupExecutor(object):
         assert executor._pgdata_dest == "/tmp/barman/plain/data"
         assert executor._tarball_dest == "/tmp/barman/tarballs"
         assert executor._plain_dest == "/tmp/barman/plain"
+        assert executor._cloud_staging_dir == "/tmp/barman"
+        assert isinstance(executor._ready_queue, queue.SimpleQueue)
 
+    @patch("barman.backup_executor.threading.Thread")
     @patch(
         "barman.backup_executor.CloudPostgresBackupExecutor._prepare_backup_destination"
     )
@@ -1578,10 +1582,7 @@ class TestCloudPostgresBackupExecutor(object):
         "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
     )
     def test_backup_copy(
-        self,
-        _,
-        mock_run_pg_basebackup,
-        mock_prepare_backup_destination,
+        self, _, mock_run_pg_basebackup, mock_prepare_backup_destination, mock_thread
     ):
         """
         Test that the ``backup_copy`` method performs all the expected steps
@@ -1600,6 +1601,17 @@ class TestCloudPostgresBackupExecutor(object):
         )
         # AND pg_basebackup is started
         mock_run_pg_basebackup.assert_called_once_with(backup_info)
+        pg_basebackup = mock_run_pg_basebackup.return_value
+        # AND monitoring of the staging area and fetching of ready files
+        # are started in their dedicated threads and later joined
+        mock_thread.assert_has_calls(
+            [
+                mock.call(target=executor._monitor_staging_area, args=(pg_basebackup,)),
+                mock.call().start(),
+                mock.call(target=executor._fetch_ready_files, args=(pg_basebackup,)),
+                mock.call().start(),
+            ]
+        )
 
     @patch(
         "barman.backup_executor.CloudPostgresBackupExecutor.get_remote_status",
@@ -1849,6 +1861,176 @@ class TestCloudPostgresBackupExecutor(object):
         # backup process ended
         mock_isdir.assert_has_calls([mock.call("/tmp/barman/plain")] * 2)
         mock_sleep.assert_has_calls([mock.call(1)] * 2)
+
+    @patch("barman.backup_executor.time.sleep")
+    @patch("barman.backup_executor.CloudPostgresBackupExecutor._get_files_from_dir")
+    @patch("barman.backup_executor.CloudPostgresBackupExecutor._get_open_files")
+    @patch("barman.backup_executor.CloudPostgresBackupExecutor._is_last_file")
+    @patch("barman.backup_executor.CloudPostgresBackupExecutor._ignore_file")
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_fetch_ready_files(
+        self,
+        _,
+        mock_ignore_file,
+        mock_is_last_file,
+        mock_get_open_files,
+        mock_get_files,
+        mock_sleep,
+    ):
+        """
+        Test that ``_fetch_ready_files`` correctly populates the ready queue
+        with the correct files and in the correct order.
+        """
+        # Mock the following files being in the staging directory
+        mock_get_files.return_value = [
+            "/tmp/barman/plain/data/base/4/2658",
+            "/tmp/barman/plain/data/base/4/2672",
+            "/tmp/barman/plain/data/log/postgresql-Sat.log",
+            "/tmp/barman/plain/39484/PG_17_2024/5/271",
+            "/tmp/barman/plain/data/postgresql.conf",
+        ]
+        # Mock that only the following file is still open by pg_basebackup
+        mock_get_open_files.return_value = ["/tmp/barman/plain/data/base/4/2672"]
+        # Mock that postgresql.conf should be fetched lastly
+        # and postgresql-Sat.log should be ignored
+        mock_is_last_file.side_effect = lambda f: f.endswith("postgresql.conf")
+        mock_ignore_file.side_effect = lambda f: f.endswith("postgresql-Sat.log")
+        # Mock the backup process to simulate it running then ending so that
+        # the fetch loop does not run indefinitely
+        pg_basebackup = mock.Mock()
+        pg_basebackup.is_running.side_effect = [True, True, False]
+        pg_basebackup.pid = 12345
+
+        # GIVEN a CloudPostgresBackupExecutor with all relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        executor._ready_queue = queue.SimpleQueue()
+        executor._plain_dest = "/tmp/barman/plain"
+        # WHEN _fetch_ready_files is called
+        executor._fetch_ready_files(pg_basebackup)
+        # THEN the ready queue contains the expected files in the expected order
+        # First the files that are neither open nor last files
+        assert executor._ready_queue.get() == "/tmp/barman/plain/data/base/4/2658"
+        assert executor._ready_queue.get() == "/tmp/barman/plain/39484/PG_17_2024/5/271"
+        # The below file was open during the fetching, so it appears later in the queue
+        assert executor._ready_queue.get() == "/tmp/barman/plain/data/base/4/2672"
+        # The below file was marked as last file so it appears at the end of the queue
+        assert executor._ready_queue.get() == "/tmp/barman/plain/data/postgresql.conf"
+        assert executor._ready_queue.get() is None  # End marker
+        assert executor._ready_queue.empty()
+        # AND also assert that the relevant methods were called as expected
+        mock_get_files.assert_has_calls([mock.call("/tmp/barman/plain")] * 3)
+        mock_get_open_files.assert_has_calls([mock.call(12345)] * 3)
+        mock_ignore_file.assert_called()
+        mock_is_last_file.assert_called()
+        mock_sleep.assert_has_calls([mock.call(1)] * 2)
+
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_get_files_from_dir(self, _, tmpdir):
+        """
+        Test that ``_get_files_from_dir`` correctly retrieves all files
+        from the given directory and its subdirectories.
+        """
+        # Create a test directory structure with the following files:
+        # /data/base/4/2658
+        # /data/base/4/2672
+        # /data/log/postgresql-Sat.log
+        # /39484/PG_17_2024/5/271
+        data_dir = tmpdir.mkdir("data")
+        base_dir = data_dir.mkdir("base").mkdir("4")
+        base_dir.join("2658").write("")
+        base_dir.join("2672").write("")
+        data_dir.mkdir("log").join("postgresql-Sat.log").write("")
+        tmpdir.mkdir("39484").mkdir("PG_17_2024").mkdir("5").join("271").write("")
+
+        # GIVEN a CloudPostgresBackupExecutor
+        executor = CloudPostgresBackupExecutor(None)
+        result = executor._get_files_from_dir(str(tmpdir))
+        # THEN it returns the expected list of files
+        assert sorted(result) == sorted(
+            [
+                str(tmpdir.join("data/base/4/2658")),
+                str(tmpdir.join("data/base/4/2672")),
+                str(tmpdir.join("data/log/postgresql-Sat.log")),
+                str(tmpdir.join("39484/PG_17_2024/5/271")),
+            ]
+        )
+
+    @patch("barman.backup_executor.Lsof")
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_get_open_files(self, _, mock_lsof):
+        """
+        Test that ``_get_open_files`` correctly retrieves the list of open by the
+        given process (i.e. ``pg_basebackup``) within the plain destination directory.
+        """
+        # Mock the output of lsof command to return the following lines:
+        # p6593
+        # n/tmp/barman/plain/data/base/4/2672
+        # n/usr/random/otherfile
+        mock_lsof.return_value.out = (
+            "p6593\nn/tmp/barman/plain/data/base/4/2672\nn/usr/random/otherfile\n"
+        )
+        # GIVEN a CloudPostgresBackupExecutor with all relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        executor._plain_dest = "/tmp/barman/plain"
+        # WHEN _get_open_files is called
+        process_id = 123
+        result = executor._get_open_files(process_id)
+        # THEN it returns the expected list of open files within the plain directory
+        assert list(result) == ["/tmp/barman/plain/data/base/4/2672"]
+        # AND lsof is called with the expected parameters
+        mock_lsof.assert_called_once_with(
+            process_id,
+            retry_times=5,
+            retry_sleep=0.5,
+        )
+
+    @patch("barman.backup_executor.path_allowed", return_value=False)
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_ignore_file(self, _, mock_path_allowed):
+        """
+        Test that ``_ignore_file`` correctly determines whether a file
+        should be ignored based on the exclude lists.
+        """
+        # GIVEN a CloudPostgresBackupExecutor with all relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        executor._pgdata_dest = "/tmp/barman/plain/data"
+        # WHEN _ignore_file is called with a test file path
+        result = executor._ignore_file("/tmp/barman/plain/data/log/postgresql-Sat.log")
+        # THEN path_allowed is called with the correct parameters
+        mock_path_allowed.assert_called_once_with(
+            EXCLUDE_LIST + PGDATA_EXCLUDE_LIST, None, "log/postgresql-Sat.log", False
+        )
+        # AND the result is the opposite boolean of whatever path_allowed returned
+        assert result == (not mock_path_allowed.return_value)
+
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_is_last_file(self, _):
+        """
+        Test that ``_is_last_file`` correctly identifies files that should be
+        uploaded lastly, such files are defined in
+        ``CloudPostgresBackupExecutor.LAST_FILE_LIST``.
+        """
+        # GIVEN a CloudPostgresBackupExecutor with all relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        executor._pgdata_dest = "/tmp/barman/plain/data"
+        # WHEN _is_last_file is called with a path to postgresql.conf
+        result = executor._is_last_file("/tmp/barman/plain/data/postgresql.conf")
+        # THEN the result is True as .conf files are in the last file list
+        assert result is True
+        # AND WHEN _is_last_file is called with a path to a regular data file
+        result = executor._is_last_file("/tmp/barman/plain/data/base/4/2658")
+        # THEN the result is False
+        assert result is False
 
 
 class TestSnapshotBackupExecutor(object):

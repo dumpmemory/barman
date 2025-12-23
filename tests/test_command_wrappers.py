@@ -19,6 +19,7 @@
 import errno
 import os
 import select
+import signal
 import sys
 from logging import DEBUG, INFO, WARNING
 from subprocess import PIPE
@@ -30,6 +31,7 @@ from testing_helpers import u
 from barman import command_wrappers
 from barman.command_wrappers import (
     GPG,
+    Lsof,
     PgReceiveXlog,
     StreamLineProcessor,
     full_command_quote,
@@ -732,6 +734,93 @@ class TestCommand(object):
         assert exc_info.value.args == e.args
         assert sleep_mock.call_count == 5
         assert get_output_no_retry_mock.call_count == 6
+
+    def test_pid(self, popen, pipe_processor_loop):
+        """
+        Test the pid property returns the subprocess pid
+        """
+        command = command_wrappers.Command("command")
+        command._pipe_lock = mock.Mock(__enter__=mock.Mock(), __exit__=mock.Mock())
+
+        # Test when pipe is None
+        command.pipe = None
+        assert command.pid is None
+        command._pipe_lock.__enter__.assert_called_once()
+        command._pipe_lock.__exit__.assert_called_once()
+
+        command._pipe_lock.reset_mock()
+
+        # Test when pipe exists
+        pipe_mock = _mock_pipe(popen, pipe_processor_loop)
+        pipe_mock.pid = 12345
+        command.pipe = pipe_mock
+        assert command.pid == 12345
+        command._pipe_lock.__enter__.assert_called_once()
+        command._pipe_lock.__exit__.assert_called_once()
+
+    def test_pause(self, popen, pipe_processor_loop):
+        """
+        Test the pause method sends SIGSTOP to the subprocess
+        """
+        command = command_wrappers.Command("command")
+        command._pipe_lock = mock.Mock(__enter__=mock.Mock(), __exit__=mock.Mock())
+        pipe_mock = _mock_pipe(popen, pipe_processor_loop)
+        pipe_mock.poll.return_value = None
+        command.pipe = pipe_mock
+
+        command.pause()
+
+        pipe_mock.send_signal.assert_called_once_with(signal.SIGSTOP)
+        command._pipe_lock.__enter__.assert_called_once()
+        command._pipe_lock.__exit__.assert_called_once()
+
+    def test_resume(self, popen, pipe_processor_loop):
+        """
+        Test the resume method sends SIGCONT to the subprocess
+        """
+        command = command_wrappers.Command("command")
+        command._pipe_lock = mock.Mock(__enter__=mock.Mock(), __exit__=mock.Mock())
+        pipe_mock = _mock_pipe(popen, pipe_processor_loop)
+        pipe_mock.poll.return_value = None
+        command.pipe = pipe_mock
+
+        command.resume()
+
+        pipe_mock.send_signal.assert_called_once_with(signal.SIGCONT)
+        command._pipe_lock.__enter__.assert_called_once()
+        command._pipe_lock.__exit__.assert_called_once()
+
+    def test_is_running(self, popen, pipe_processor_loop):
+        """
+        Test that ``is_running`` returns ``False`` when pipe is
+        ``None`` or process has terminated and ``True`` otherwise.
+        """
+        command = command_wrappers.Command("command")
+        command._pipe_lock = mock.Mock(__enter__=mock.Mock(), __exit__=mock.Mock())
+
+        # Test when pipe is None
+        command.pipe = None
+        assert command.is_running() is False
+        command._pipe_lock.__enter__.assert_called_once()
+        command._pipe_lock.__exit__.assert_called_once()
+
+        command._pipe_lock.reset_mock()
+
+        # Test when pipe exists but process has terminated
+        pipe_mock = _mock_pipe(popen, pipe_processor_loop)
+        pipe_mock.poll.return_value = 0
+        command.pipe = pipe_mock
+        assert command.is_running() is False
+        command._pipe_lock.__enter__.assert_called_once()
+        command._pipe_lock.__exit__.assert_called_once()
+
+        command._pipe_lock.reset_mock()
+
+        # Test when pipe exists and process is still running
+        pipe_mock.poll.return_value = None
+        assert command.is_running() is True
+        command._pipe_lock.__enter__.assert_called_once()
+        command._pipe_lock.__exit__.assert_called_once()
 
 
 # noinspection PyMethodMayBeStatic
@@ -2214,3 +2303,19 @@ class TestGPG:
         assert command.err is None
         assert ("GPG", 10, out) in caplog.record_tuples
         assert ("GPG", 30, err) in caplog.record_tuples
+
+
+class TestLsof:
+    """
+    Simple class for testing of the :class:`Lsof` class.
+    """
+
+    @mock.patch("barman.command_wrappers.Command.__init__", return_value=None)
+    def test__init__(self, mock_super_init):
+        pid = 1234
+        lsof = Lsof(pid)
+        mock_super_init.assert_called_once_with(
+            lsof,
+            "lsof",
+            args=["-Fn", "-p", "1234"],
+        )
