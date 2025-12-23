@@ -32,6 +32,8 @@ import logging
 import os
 import re
 import shutil
+import threading
+import time
 from abc import ABCMeta, abstractmethod
 from contextlib import closing
 from distutils.version import LooseVersion as Version
@@ -68,6 +70,7 @@ from barman.utils import (
     check_aws_snapshot_lock_duration_range,
     check_aws_snapshot_lock_mode,
     force_str,
+    get_directory_size,
     human_readable_timedelta,
     mkpath,
     total_seconds,
@@ -840,6 +843,7 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         self._plain_dest = self._OUTPUT_PLAIN_DEST.format(
             staging_dir=self.config.cloud_staging_directory
         )
+        self._cloud_staging_dir = self.config.cloud_staging_directory
         self._ready_files_queue = None
 
     def backup_copy(self, backup_info):
@@ -859,7 +863,13 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         self._prepare_backup_destination([self._plain_dest, self._tarball_dest])
 
         # Starts pg_basebackup directing its output to the staging area
-        self._run_pg_basebackup(backup_info)
+        pg_basebackup = self._run_pg_basebackup(backup_info)
+
+        # Start the monitoring thread to control the staging area size
+        monitoring_thread = threading.Thread(
+            target=self._monitor_staging_area, args=(pg_basebackup,)
+        )
+        monitoring_thread.start()
 
     def _run_pg_basebackup(self, backup_info):
         """
@@ -939,15 +949,48 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             filename = f"{parent_backup_info.backup_id}-backup_manifest"
             return os.path.join(self.server.meta_directory, filename)
 
-    def _monitor_staging_area(self):
+    def _monitor_staging_area(self, pg_basebackup):
         """
-        Monitor the staging area size and pause/resume the backup process.
+        Monitor the staging area size, pausing/resuming the ``pg_basebackup`` process
+        as needed to keep it under the configured limit in
+        :attr:`config.cloud_staging_max_size`.
 
-        This method runs in a separate thread.
+        This method is meant to run in a separate thread.
+
+        :param barman.comamnd_wrappers.PgBaseBackup pg_basebackup: the running
+            ``pg_basebackup`` process
 
         .. note::
-            In this method step 2 is performed. Read the class docstring for details.
+            This method performs step 2 described in this class docstring.
         """
+        is_paused = False
+        while pg_basebackup.is_running():
+            output.debug(
+                "Monitoring the staging area '%s' size" % self._cloud_staging_dir
+            )
+            if not os.path.isdir(self._plain_dest):
+                output.debug("No content in staging yet, sleeping for 1 second")
+                time.sleep(1)
+                continue
+
+            staging_size = get_directory_size(self._cloud_staging_dir)
+            if staging_size > self.config.cloud_staging_max_size and not is_paused:
+                output.debug(
+                    "Staging area size %s exceeds the max size %s, pausing pg_basebackup"
+                    % (staging_size, self.config.cloud_staging_max_size)
+                )
+                pg_basebackup.pause()
+                is_paused = True
+            elif is_paused and staging_size < self.config.cloud_staging_max_size:
+                output.debug(
+                    "Staging area size %s is below the max size %s, resuming pg_basebackup"
+                    % (staging_size, self.config.cloud_staging_max_size)
+                )
+                pg_basebackup.resume()
+                is_paused = False
+
+            # Check again every one second
+            time.sleep(1)
 
     def _fetch_ready_files(self):
         """

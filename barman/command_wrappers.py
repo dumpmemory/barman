@@ -644,6 +644,29 @@ class Command(object):
         # Set the signal handler
         signal.signal(signal_id, _handler)
 
+    def pause(self):
+        """
+        Pause the command execution sending a SIGSTOP to the subprocess
+        """
+        if self.pipe:
+            self.pipe.send_signal(signal.SIGSTOP)
+
+    def resume(self):
+        """
+        Resume the command execution sending a SIGCONT to the subprocess
+        """
+        if self.pipe:
+            self.pipe.send_signal(signal.SIGCONT)
+
+    def is_running(self):
+        """
+        Check if the command is still running
+        :rtype: bool
+        """
+        if self.pipe:
+            return self.pipe.poll() is None
+        return False
+
 
 class Rsync(Command):
     """
