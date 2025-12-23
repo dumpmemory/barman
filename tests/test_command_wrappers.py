@@ -822,6 +822,22 @@ class TestCommand(object):
         command._pipe_lock.__enter__.assert_called_once()
         command._pipe_lock.__exit__.assert_called_once()
 
+    def test_wait_termination(self, popen, pipe_processor_loop):
+        """
+        Test that ``wait_termination`` waits for process termination correctly.
+        """
+        command = command_wrappers.Command("command")
+        command._pipe_lock = mock.Mock(__enter__=mock.Mock(), __exit__=mock.Mock())
+        pipe_mock = _mock_pipe(popen, pipe_processor_loop)
+        command.pipe = pipe_mock
+
+        ret = command.wait_termination()
+
+        assert ret == pipe_mock.returncode
+        pipe_mock.wait.assert_called_once()
+        command._pipe_lock.__enter__.assert_called_once()
+        command._pipe_lock.__exit__.assert_called_once()
+
 
 # noinspection PyMethodMayBeStatic
 class TestCommandPipeProcessorLoop(object):
