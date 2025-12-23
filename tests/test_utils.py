@@ -1691,6 +1691,32 @@ class TestIsSubdirectory:
         assert barman.utils.is_subdirectory("", "/tmp") is False
 
 
+class TestGetDirectorySize:
+    def test_empty_directory(self, tmpdir):
+        dir_path = tmpdir.mkdir("empty_dir")
+        size = barman.utils.get_directory_size(str(dir_path))
+        assert size == 0
+
+    def test_directory_with_files(self, tmpdir):
+        dir_path = tmpdir.mkdir("file_dir")
+        file1 = dir_path.join("file1.txt")
+        file1.write("a" * 100)  # 100 bytes
+        file2 = dir_path.join("file2.txt")
+        file2.write("b" * 200)  # 200 bytes
+        size = barman.utils.get_directory_size(str(dir_path))
+        assert size == 300
+
+    def test_nested_directories(self, tmpdir):
+        dir_path = tmpdir.mkdir("nested_dir")
+        sub_dir = dir_path.mkdir("sub_dir")
+        file1 = dir_path.join("file1.txt")
+        file1.write("a" * 150)  # 150 bytes
+        file2 = sub_dir.join("file2.txt")
+        file2.write("b" * 250)  # 250 bytes
+        size = barman.utils.get_directory_size(str(dir_path))
+        assert size == 400
+
+
 class TestGetMajorVersion:
     def test_none_input(self):
         assert barman.utils.get_major_version(None) is None

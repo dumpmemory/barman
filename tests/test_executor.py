@@ -1780,6 +1780,76 @@ class TestCloudPostgresBackupExecutor(object):
         # Assert the correct calsl were made
         backup_info.get_parent_backup_info.assert_called_once()
 
+    @patch("barman.backup_executor.get_directory_size")
+    @patch("barman.backup_executor.os.path.isdir", return_value=True)
+    @patch("barman.backup_executor.time.sleep")
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_monitor_staging_area(self, _, mock_sleep, mock_isdir, mock_get_dir_size):
+        """
+        Test that ``_monitor_staging_area`` correctly pauses and resumes the backup
+        according the threshold configured and the current directory size.
+        """
+        # Mock get_directory_size to simulate directory size increasing and decreasing
+        mock_get_dir_size.side_effect = [
+            35 * 1024 * 1024 * 1024,  # 35 GB
+            40 * 1024 * 1024 * 1024,  # 40 GB
+            25 * 1024 * 1024 * 1024,  # 25 GB
+        ]
+        # Mock the backup process to simulate it running then ending so that
+        # the monitoring loop does not run indefinitely
+        pg_basebackup = mock.Mock()
+        pg_basebackup.is_running.side_effect = [True, True, True, False]
+
+        # GIVEN a CloudPostgresBackupExecutor with all relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        executor.config = mock.Mock(
+            cloud_staging_max_size=30 * 1024 * 1024 * 1024  # 30 GB as threashold
+        )
+        executor._cloud_staging_dir = "/tmp/barman"
+        executor._plain_dest = "/tmp/barman/plain"
+        # WHEN _monitor_staging_area is called
+        executor._monitor_staging_area(pg_basebackup)
+        # THEN the process is paused twice (as the first two sizes are above threshold)
+        # and resumed once (as the third size is below threshold)
+        pg_basebackup.pause.call_count == 2
+        pg_basebackup.resume.call_count == 1
+        # AND os.path.isdir, get_directory_size and time.sleep were called as expected
+        mock_isdir.assert_has_calls([mock.call("/tmp/barman/plain")] * 3)
+        mock_get_dir_size.assert_has_calls([mock.call("/tmp/barman")] * 3)
+        mock_sleep.assert_has_calls([mock.call(1)] * 3)
+
+    @patch("barman.backup_executor.os.path.isdir", return_value=False)
+    @patch("barman.backup_executor.time.sleep")
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_monitor_staging_area_not_created_yet(self, _, mock_sleep, mock_isdir):
+        """
+        Test that ``_monitor_staging_area`` correctly handles the case where
+        the staging directory does not yet exist. It should wait until the
+        directory is created, sleeping between checks.
+        """
+        # GIVEN a CloudPostgresBackupExecutor with all relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        executor.config = mock.Mock(
+            cloud_staging_max_size=30 * 1024 * 1024 * 1024  # 30 GB
+        )
+        executor._cloud_staging_dir = "/tmp/barman"
+        executor._plain_dest = "/tmp/barman/plain"
+        # Mock the backup process to simulate it running then ending so that
+        # the monitoring loop does not run indefinitely
+        pg_basebackup = mock.Mock()
+        pg_basebackup.is_running.side_effect = [True, True, False]
+        # WHEN _monitor_staging_area is called
+        executor._monitor_staging_area(pg_basebackup)
+        # THEN os.path.isdir AND time.sleep are called as expected, meaning that
+        # the method kept checking for the directory to be created until the
+        # backup process ended
+        mock_isdir.assert_has_calls([mock.call("/tmp/barman/plain")] * 2)
+        mock_sleep.assert_has_calls([mock.call(1)] * 2)
+
 
 class TestSnapshotBackupExecutor(object):
     """
