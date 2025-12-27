@@ -1,0 +1,20 @@
+---
+- summary: Fix file handle leak for long-running WAL archiving services
+  description: |
+    Fixed a resource leak in the cloud WAL archiving functionality where file handles
+    were not being properly closed after uploading WAL files to cloud storage. This
+    issue could primarily affect long-running WAL archiving services that process
+    multiple WAL files in sequence, where the accumulating open file handles could
+    eventually cause "Too many open files" errors, preventing further WAL archiving
+    operations.
+
+    The fix ensures that file handles are properly closed immediately after each
+    upload operation completes, regardless of whether compression is used and even
+    when upload failures occur. This prevents handle exhaustion in services that
+    perform continuous or high-frequency WAL archiving to cloud providers.
+
+    Special thanks to @ethiebautgeorge-nasuni who contributed to this feature in
+    the PR #1129.
+  type: bugfix
+  jira_tickets:
+    - BAR-973
