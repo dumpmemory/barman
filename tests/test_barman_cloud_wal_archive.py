@@ -425,7 +425,7 @@ class TestMain(object):
             url="https://account.blob.core.windows.net/container/path/to/dir",
             encryption_scope=None,
             tags=None,
-            **expected_cloud_interface_kwargs
+            **expected_cloud_interface_kwargs,
         )
 
     @pytest.mark.parametrize(
@@ -472,7 +472,7 @@ class TestMain(object):
             profile_name=None,
             endpoint_url=None,
             read_timeout=None,
-            **expected_cloud_interface_kwargs
+            **expected_cloud_interface_kwargs,
         )
 
     @pytest.mark.parametrize(
@@ -521,7 +521,7 @@ class TestMain(object):
             url="cloud_storage_url",
             tags=None,
             jobs=1,
-            **expected_cloud_interface_kwargs
+            **expected_cloud_interface_kwargs,
         )
 
 
@@ -721,6 +721,107 @@ class TestWalUploader(object):
         cloud_interface_mock.upload_fileobj.assert_called_once_with(
             fileobj=rfo_mock(), key=expected_key, override_tags=None
         )
+
+    def test_upload_wal_closes_file_handle(self, tmpdir):
+        """
+        Test that upload_wal properly closes the file handle.
+        This verifies the fix for the resource leak bug where file_object
+        was not being closed.
+        """
+        # Setup the WAL file
+        source = tmpdir.join("wal_dir/000000080000ABFF000000C1")
+        source.write("test content".encode("utf-8"), ensure=True)
+        # Create a CloudWalUploader with mocked cloud interface
+        cloud_interface_mock = mock.MagicMock()
+        cloud_interface_mock.path = "s3://bucket/path"
+        uploader = CloudWalUploader(cloud_interface_mock, "test-server")
+        # Patch open to track the file handle
+        with mock.patch("builtins.open", side_effect=open) as open_mock:
+            uploader.upload_wal(source.strpath)
+            # Verify open was called
+            open_mock.assert_called()
+            # Get the file handle that was opened
+            file_handle = open_mock.return_value
+            # Verify it was closed
+            assert file_handle.closed
+
+    @pytest.mark.parametrize("compression", ["gzip", "bzip2"])
+    def test_upload_wal_closes_file_handle_with_compression(self, tmpdir, compression):
+        """
+        Test that upload_wal properly closes file handles when compression is used.
+        This verifies the fix for the resource leak bug where wal_file was not
+        being closed in the compression path.
+        """
+        # Setup the WAL file
+        source = tmpdir.join("wal_dir/000000080000ABFF000000C1")
+        source.write("test content for compression".encode("utf-8"), ensure=True)
+        # Create a CloudWalUploader with compression
+        cloud_interface_mock = mock.MagicMock()
+        cloud_interface_mock.path = "s3://bucket/path"
+        uploader = CloudWalUploader(
+            cloud_interface_mock, "test-server", compression=compression
+        )
+
+        # Track file handles to verify they are closed
+        original_open = open
+        opened_files = []
+
+        def tracking_open(*args, **kwargs):
+            f = original_open(*args, **kwargs)
+            opened_files.append(f)
+            return f
+
+        # Patch open to track file handles
+        with mock.patch("builtins.open", side_effect=tracking_open):
+            uploader.upload_wal(source.strpath)
+
+        # Verify all opened files were closed (fixes the wal_file leak)
+        for f in opened_files:
+            assert (
+                f.closed
+            ), f"File {f.name} was not closed with compression={compression}"
+
+        # Verify upload was called
+        cloud_interface_mock.upload_fileobj.assert_called_once()
+
+    def test_multiple_uploads_no_leak(self, tmpdir):
+        """
+        Test that multiple sequential uploads don't leak file handles.
+        This simulates the bug scenario where a WAL uploader service makes
+        multiple upload calls and exhausts file handles.
+        """
+        # Create multiple WAL files
+        sources = []
+        for i in range(5):
+            source = tmpdir.join(f"wal_dir/00000008{i:04d}ABFF000000C1")
+            source.write(f"content {i}".encode("utf-8"), ensure=True)
+            sources.append(source.strpath)
+
+        # Create uploader
+        cloud_interface_mock = mock.MagicMock()
+        cloud_interface_mock.path = "s3://bucket/path"
+        uploader = CloudWalUploader(cloud_interface_mock, "test-server")
+
+        # Track all file handles across multiple uploads
+        original_open = open
+        all_opened_files = []
+
+        def tracking_open(*args, **kwargs):
+            f = original_open(*args, **kwargs)
+            all_opened_files.append(f)
+            return f
+
+        # Upload all files with tracking
+        with mock.patch("builtins.open", side_effect=tracking_open):
+            for source in sources:
+                uploader.upload_wal(source)
+
+        # Verify all opened files were closed (no file handle leaks)
+        for f in all_opened_files:
+            assert f.closed, f"File {f.name} was not closed in sequential uploads"
+
+        # Verify all uploads were called
+        assert cloud_interface_mock.upload_fileobj.call_count == 5
 
 
 class TestWalUploaderS3(object):
