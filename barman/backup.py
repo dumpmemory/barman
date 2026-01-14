@@ -1312,6 +1312,9 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
 
         :param barman.infofile.LocalBackupInfo backup: the backup to delete
         """
+        if self.server.use_backup_cloud_storage:
+            self._delete_cloud_backup_data(backup)
+            return
         # If this backup has snapshots then they should be deleted first.
         if backup.snapshots_info:
             _logger.debug(
@@ -1347,6 +1350,25 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         if os.path.exists(pg_data):
             _logger.debug("Deleting PGDATA directory: %s" % pg_data)
             shutil.rmtree(pg_data)
+
+    def _delete_cloud_backup_data(self, backup):
+        """
+        Delete backup data from its cloud storage path.
+
+        :param barman.infofile.LocalBackupInfo backup: the backup to delete
+        """
+        # Construct the cloud path e.g. if basebackups_directory is s3://my-backups
+        # then this will be my-backups/<server_name>/base/<backup_id>
+        cloud_interface = self.server.get_backup_cloud_interface()
+        backup_path = os.path.join(
+            cloud_interface.path, self.config.name, "base", backup.backup_id
+        )
+        # Get all the objects keys under the backup path and pass them to delete_objects
+        # In the future we might replace this with just calling the cloud interface's
+        # delete_under_prefix method instead, but currently that is only implemented for S3
+        objects_keys = [k for k in cloud_interface.list_bucket(backup_path + "/")]
+        _logger.debug("Deleting all backup data from cloud path: %s" % backup_path)
+        cloud_interface.delete_objects(objects_keys)
 
     def _run_pre_delete_wal_scripts(self, wal_info):
         """
