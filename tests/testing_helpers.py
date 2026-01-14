@@ -478,6 +478,8 @@ def build_mocked_server(
     server.systemid = "6721602258895701769"
     server.postgres.server_version = pg_version
     server.meta_directory = "%s/meta" % server.config.backup_directory
+    server.use_backup_cloud_storage = False
+    server.use_wal_cloud_storage = False
     return server
 
 

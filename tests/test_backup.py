@@ -416,6 +416,38 @@ class TestBackup(object):
         # Ensure the annotation was deleted
         mock_delete_annotation.assert_called_once_with(b_info.backup_id)
 
+    def test_delete_cloud_backup_data(self):
+        """
+        Test deletion of backup data from cloud storage.
+        """
+        # GIVEN a BackupManager with a mocked cloud interface
+        backup_manager = build_backup_manager(name="my-server")
+        backup_info = build_test_backup_info(backup_id="test_backup_id")
+        cloud_interface_mock = Mock(
+            path="my-backups",
+            list_bucket=Mock(
+                return_value=[
+                    "my-backups/my-server/base/%s/data.tar" % backup_info.backup_id,
+                    "my-backups/my-server/base/%s/tbs1.tar" % backup_info.backup_id,
+                    "my-backups/my-server/base/%s/backup.info" % backup_info.backup_id,
+                ]
+            ),
+        )
+        backup_manager.server.get_backup_cloud_interface = lambda: cloud_interface_mock
+        # WHEN _delete_cloud_backup_data is called
+        backup_manager._delete_cloud_backup_data(backup_info)
+        # THEN the listed objects from the bucket are deleted from cloud storage
+        cloud_interface_mock.list_bucket.assert_called_once_with(
+            "my-backups/my-server/base/%s/" % backup_info.backup_id
+        )
+        cloud_interface_mock.delete_objects.assert_called_once_with(
+            [
+                "my-backups/my-server/base/%s/data.tar" % backup_info.backup_id,
+                "my-backups/my-server/base/%s/tbs1.tar" % backup_info.backup_id,
+                "my-backups/my-server/base/%s/backup.info" % backup_info.backup_id,
+            ]
+        )
+
     @patch("os.stat")
     @patch("barman.backup.fsync_file")
     @patch("barman.backup.fsync_dir")
@@ -2624,9 +2656,9 @@ class TestVerifyBackup:
     def test_verify_backup_not_supported_with_cloud(self, mock_output):
         backup_manager = build_backup_manager()
         mock_backup_info = Mock()
-        backup_manager.verify_backup(mock_backup_info)
         backup_manager.server.use_backup_cloud_storage = True
         backup_manager.server.use_wal_cloud_storage = True
+        backup_manager.verify_backup(mock_backup_info)
         mock_output.error.assert_called_once_with(
             "Backup verification is not supported for servers using cloud storage"
         )
