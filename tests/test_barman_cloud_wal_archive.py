@@ -283,6 +283,7 @@ class TestMain(object):
             encryption=None,
             sse_kms_key_id=None,
             read_timeout=None,
+            addressing_style=None,
         )
 
         # Verify expected override tags are passed to upload_wal
@@ -472,6 +473,7 @@ class TestMain(object):
             profile_name=None,
             endpoint_url=None,
             read_timeout=None,
+            addressing_style=None,
             **expected_cloud_interface_kwargs,
         )
 

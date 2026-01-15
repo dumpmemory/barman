@@ -386,6 +386,7 @@ class TestCloudBackup(object):
             profile_name=None,
             endpoint_url=None,
             read_timeout=None,
+            addressing_style=None,
             **expected_cloud_interface_kwargs
         )
 

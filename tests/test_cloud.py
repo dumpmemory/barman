@@ -574,29 +574,81 @@ class TestS3CloudInterface(object):
             config=config_mock.return_value,
         )
 
+    @pytest.mark.parametrize(
+        "addressing_style, endpoint_url, expected_config_call",
+        [
+            # Test with None (default behavior)
+            (None, None, mock.call()),
+            # Test with 'auto' addressing style
+            ("auto", None, mock.call(s3={"addressing_style": "auto"})),
+            # Test with 'virtual' addressing style
+            ("virtual", None, mock.call(s3={"addressing_style": "virtual"})),
+            # Test with 'path' addressing style (original test case)
+            ("path", None, mock.call(s3={"addressing_style": "path"})),
+            # Test with virtual addressing + S3-compatible endpoint (primary use case)
+            (
+                "virtual",
+                "https://minio.example.com",
+                mock.call(s3={"addressing_style": "virtual"}),
+            ),
+            # Test with path addressing + S3-compatible endpoint
+            (
+                "path",
+                "https://s3-compatible.example.com",
+                mock.call(s3={"addressing_style": "path"}),
+            ),
+        ],
+    )
     @mock.patch("barman.cloud_providers.aws_s3.Config")
     @mock.patch("barman.cloud_providers.aws_s3.boto3")
-    def test_uploader_minimal_addressing_style(self, boto_mock, config_mock):
+    def test_uploader_addressing_style(
+        self,
+        boto_mock,
+        config_mock,
+        addressing_style,
+        endpoint_url,
+        expected_config_call,
+    ):
+        """
+        Test S3CloudInterface creation with various addressing_style configurations.
+
+        This test verifies that the addressing_style parameter is correctly passed to
+        boto3's Config object when creating an S3CloudInterface. The addressing_style
+        parameter allows users to override boto3's default behavior, which is particularly
+        important for S3-compatible storage providers (e.g., MinIO) that may require
+        virtual-hosted-style addressing even when using non-amazonaws.com endpoints.
+
+        Test scenarios:
+        - Default behavior (addressing_style=None)
+        - All three valid addressing styles: 'auto', 'virtual', 'path'
+        - Combinations with custom endpoint_url for S3-compatible storage
+        """
         # GIVEN an s3 bucket url
         bucket_url = "s3://bucket/path/to/dir"
 
-        # WHEN an S3CloudInterface with minimal arguments is created with
-        # a specified addressing_style
+        # WHEN an S3CloudInterface is created with the specified addressing_style
+        # and endpoint_url
         cloud_interface = S3CloudInterface(
-            url=bucket_url, encryption=None, addressing_style="path"
+            url=bucket_url,
+            encryption=None,
+            addressing_style=addressing_style,
+            endpoint_url=endpoint_url,
         )
 
-        # THEN the cloud interface addressing_style property is set to the specified
-        # value
-        assert cloud_interface.addressing_style == "path"
-        # AND a Config is created with the specified addressing_style
-        config_mock.assert_called_once_with(s3={"addressing_style": "path"})
-        # AND the boto3 resource is created with no specified endpoint_url
+        # THEN the cloud interface addressing_style property is set correctly
+        assert cloud_interface.addressing_style == addressing_style
+        # AND the endpoint_url property is set correctly
+        assert cloud_interface.endpoint_url == endpoint_url
+        # AND a Config is created with the expected arguments
+        config_mock.assert_called_once_with(
+            **expected_config_call.kwargs if addressing_style else {}
+        )
+        # AND the boto3 resource is created with the specified endpoint_url
         # and the created Config object
         session_mock = boto_mock.Session.return_value
         session_mock.resource.assert_called_once_with(
             "s3",
-            endpoint_url=None,
+            endpoint_url=endpoint_url,
             config=config_mock.return_value,
         )
 
