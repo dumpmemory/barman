@@ -125,6 +125,7 @@ class S3CloudInterface(CloudInterface):
         delete_batch_size=None,
         read_timeout=None,
         sse_kms_key_id=None,
+        addressing_style=None,
     ):
         """
         Create a new S3 interface given the S3 destination url and the profile
@@ -143,6 +144,8 @@ class S3CloudInterface(CloudInterface):
           raised when waiting to read from a connection
         :param str|None sse_kms_key_id: the AWS KMS key ID that should be used
           for encrypting uploaded data in S3
+        :param str|None addressing_style: the addressing style to use for S3
+          requests. Valid values are 'auto', 'virtual', or 'path'
         """
         super(S3CloudInterface, self).__init__(
             url=url,
@@ -155,6 +158,7 @@ class S3CloudInterface(CloudInterface):
         self.endpoint_url = endpoint_url
         self.read_timeout = read_timeout
         self.sse_kms_key_id = sse_kms_key_id
+        self.addressing_style = addressing_style
 
         # Extract information from the destination URL
         parsed_url = urlparse(url)
@@ -178,6 +182,8 @@ class S3CloudInterface(CloudInterface):
         config_kwargs = {}
         if self.read_timeout is not None:
             config_kwargs["read_timeout"] = self.read_timeout
+        if self.addressing_style is not None:
+            config_kwargs["s3"] = {"addressing_style": self.addressing_style}
         config = Config(**config_kwargs)
 
         session = boto3.Session(profile_name=self.profile_name)
