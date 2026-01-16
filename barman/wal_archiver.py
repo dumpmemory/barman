@@ -120,6 +120,17 @@ class WalStorageStrategy(metaclass=ABCMeta):
         :param WalFileInfo wal_info: the WAL file is being processed
         """
 
+    @abstractmethod
+    def delete(self, wals_to_delete):
+        """
+        Delete WAL files according to the configured destination.
+
+        :param dict[str, list[WalFileInfo]] wals_to_delete: A dictionary where key is
+            the WAL directory name and value is a list of wal_info objects representing
+            the WALs to be deleted in that directory.
+        :return list[str]: a list of deleted WAL names.
+        """
+
     def _run_pre_archive_scripts(self, wal_info, src_file):
         """
         Run the pre-archive scripts.
@@ -167,6 +178,51 @@ class WalStorageStrategy(metaclass=ABCMeta):
         # Run the post_archive_script if present
         script = HookScriptRunner(self.backup_manager, "archive_script", "post", error)
         script.env_from_wal_info(wal_info, dest_file)
+        script.run()
+
+    def _run_pre_delete_wal_scripts(self, wal_info):
+        """
+        Run the pre-delete hook-scripts, if any, on the given WAL.
+
+        :param barman.infofile.WalFileInfo wal_info: WAL to run the script on.
+        """
+        # Run the pre_wal_delete_script if present.
+        script = HookScriptRunner(self.backup_manager, "wal_delete_script", "pre")
+        script.env_from_wal_info(wal_info)
+        script.run()
+        # Run the pre_wal_delete_retry_script if present.
+        retry_script = RetryHookScriptRunner(
+            self.backup_manager, "wal_delete_retry_script", "pre"
+        )
+        retry_script.env_from_wal_info(wal_info)
+        retry_script.run()
+
+    def _run_post_delete_wal_scripts(self, wal_info, error=None):
+        """
+        Run the post-delete hook-scripts, if any, on the given WAL.
+
+        :param barman.infofile.WalFileInfo wal_info: WAL to run the script on.
+        :param None|str error: error message in case a failure happened.
+        """
+        # Run the post_wal_delete_retry_script if present.
+        try:
+            retry_script = RetryHookScriptRunner(
+                self.backup_manager, "wal_delete_retry_script", "post"
+            )
+            retry_script.env_from_wal_info(wal_info, None, error)
+            retry_script.run()
+        except AbortedRetryHookScript as e:
+            # Ignore the ABORT_STOP as it is a post-hook operation
+            _logger.warning(
+                "Ignoring stop request after receiving "
+                "abort (exit code %d) from post-wal-delete "
+                "retry hook script: %s",
+                e.hook.exit_status,
+                e.hook.script,
+            )
+        # Run the post_wal_delete_script if present.
+        script = HookScriptRunner(self.backup_manager, "wal_delete_script", "post")
+        script.env_from_wal_info(wal_info, None, error)
         script.run()
 
 
@@ -394,6 +450,66 @@ class LocalWalStorageStrategy(WalStorageStrategy):
         finally:
             self._run_post_archive_scripts(wal_info, dst_file, error)
 
+    def delete(self, wals_to_delete):
+        wals_deleted = []
+        for wal_dir, wal_list in wals_to_delete.items():
+            delete_directory = False
+            # Each directory can contain up to 256 WAL files. If the deletion list
+            # contains 256 entries, the entire directory can be safely deleted
+            # Otherwise, check if all WALs in the directory are in the deletion list
+            if len(wal_list) >= 256:
+                delete_directory = True
+            else:
+                wal_names_to_delete = {wal_info.name for wal_info in wal_list}
+                wal_names_in_dir = os.listdir(wal_dir)
+                if set(wal_names_in_dir).issubset(wal_names_to_delete):
+                    delete_directory = True
+            # If the directory can be deleted, run the hook-scripts on each WAL file
+            # before and after the rmtree. Otherwise, delete each WAL individually
+            if delete_directory:
+                self._delete_wal_directory(wal_dir, wal_list)
+                wals_deleted.extend(wal_info.name for wal_info in wal_list)
+            else:
+                for wal_info in wal_list:
+                    self._delete_wal_file(wal_info)
+                    wals_deleted.append(wal_info.name)
+
+        return wals_deleted
+
+    def _delete_wal_directory(self, wal_dir, wal_list):
+        for wal_info in wal_list:
+            self._run_pre_delete_wal_scripts(wal_info)
+        shutil.rmtree(wal_dir)
+        for wal_info in wal_list:
+            self._run_post_delete_wal_scripts(wal_info)
+
+    def _delete_wal_file(self, wal_info):
+        """
+        Perform the actual deletion of the WAL file from local storage.
+
+        :param WalFileInfo wal_info: the WAL file info object
+        """
+        self._run_pre_delete_wal_scripts(wal_info)
+        error = None
+        try:
+            os.unlink(wal_info.fullpath(self.server))
+            try:
+                os.removedirs(os.path.dirname(wal_info.fullpath(self.server)))
+            except OSError:
+                # This is not an error condition
+                # We always try to remove the trailing directories,
+                # this means that hashdir is not empty.
+                pass
+        except OSError as e:
+            error = "Ignoring deletion of WAL file %s for server %s: %s" % (
+                wal_info.name,
+                self.config.name,
+                e,
+            )
+            output.warning(error)
+
+        self._run_post_delete_wal_scripts(wal_info, error)
+
 
 class CloudWalStorageStrategy(WalStorageStrategy):
     """
@@ -462,6 +578,9 @@ class CloudWalStorageStrategy(WalStorageStrategy):
 
         os.unlink(wal_info.orig_filename)
         wal_info.orig_filename = None
+
+    def delete(self, wals_to_delete):
+        pass
 
 
 class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):

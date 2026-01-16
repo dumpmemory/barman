@@ -109,7 +109,13 @@ from barman.utils import (
     pretty_size,
     timeout,
 )
-from barman.wal_archiver import FileWalArchiver, StreamingWalArchiver, WalArchiver
+from barman.wal_archiver import (
+    CloudWalStorageStrategy,
+    FileWalArchiver,
+    LocalWalStorageStrategy,
+    StreamingWalArchiver,
+    WalArchiver,
+)
 
 PARTIAL_EXTENSION = ".partial"
 PRIMARY_INFO_FILE = "primary.info"
@@ -282,6 +288,8 @@ class Server(RemoteStatusMixin):
         # Initialize the backup manager
         self.backup_manager = BackupManager(self)
 
+        self._init_wal_storage()
+
         if not self.passive_node:
             self._init_archivers()
 
@@ -347,6 +355,12 @@ class Server(RemoteStatusMixin):
                 self.config.update_msg_list_and_disable_server(
                     "Streaming connection: " + force_str(e).strip()
                 )
+
+    def _init_wal_storage(self):
+        if self.use_wal_cloud_storage:
+            self.wal_storage = CloudWalStorageStrategy(self.backup_manager, self)
+        else:
+            self.wal_storage = LocalWalStorageStrategy(self.backup_manager, self)
 
     def _init_archivers(self):
         # Initialize the StreamingWalArchiver
