@@ -14,6 +14,7 @@
                   [ { -t | --test } ]
                   [ --cloud-provider { aws-s3 | azure-blob-storage | google-cloud-storage } ]
                   [ --endpoint-url ENDPOINT_URL ]
+                  [ --addressing-style { auto | virtual | path } ]
                   [ { -r | --retention-policy } RETENTION_POLICY ]
                   [ { -m | --minimum-redundancy } MINIMUM_REDUNDANCY ]
                   [ { -b | --backup-id } BACKUP_ID]
@@ -137,6 +138,16 @@ WALs are considered unused if:
 
 ``--endpoint-url``
   Override default S3 endpoint URL with the given one.
+
+``--addressing-style``
+  The addressing style to use for S3 requests. This is useful when connecting to
+  S3-compatible services that require a specific addressing style.
+
+  Allowed options are:
+
+  * ``auto`` (default): Uses the addressing style determined by the underlying library.
+  * ``virtual``: Uses virtual-hosted style addressing (e.g., bucket-name.s3.amazonaws.com).
+  * ``path``: Uses path-style addressing (e.g., s3.amazonaws.com/bucket-name).
 
 ``-P`` / ``--aws-profile``
   Profile name (e.g. ``INI`` section in AWS credentials file).

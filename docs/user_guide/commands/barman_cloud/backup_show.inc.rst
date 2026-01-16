@@ -17,6 +17,7 @@
                   [ { -P | --aws-profile } AWS_PROFILE ]
                   [ --profile AWS_PROFILE ]
                   [ --read-timeout READ_TIMEOUT ]
+                  [ --addressing-style { auto | virtual | path } ]
                   [ { --azure-credential | --credential } { azure-cli | managed-identity | default } ]
                   [ --format FORMAT ]
                   SOURCE_URL SERVER_NAME BACKUP_ID
@@ -85,6 +86,17 @@ but it has fewer information.
 ``--read-timeout``
   The time in seconds until a timeout is raised when waiting to read from a connection
   (defaults to ``60`` seconds).
+
+``--addressing-style``
+  The S3 addressing style to use when connecting to S3-compatible cloud storage. This
+  option is useful when using custom S3 endpoints (such as MinIO) that may require a
+  specific addressing style.
+  
+  Allowed options:
+
+  * ``auto`` (default): Uses the addressing style determined by the boto3 library.
+  * ``virtual``: Uses virtual-hosted-style addressing (bucket-name.s3.amazonaws.com).
+  * ``path``: Uses path-style addressing (s3.amazonaws.com/bucket-name).
 
 **Extra options for the Azure cloud provider**
 

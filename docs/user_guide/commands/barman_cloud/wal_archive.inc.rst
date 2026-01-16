@@ -18,6 +18,7 @@
                   [ --tag KEY,VALUE [ --tag KEY,VALUE ... ] ]
                   [ --history-tag KEY,VALUE [ --history-tag KEY,VALUE ... ] ]
                   [ --endpoint-url ENDPOINT_URL ]
+                  [ --addressing-style { auto | virtual | path } ]
                   [ { -P | --aws-profile } AWS_PROFILE ]
                   [ --profile AWS_PROFILE ]
                   [ --read-timeout READ_TIMEOUT ]
@@ -146,6 +147,16 @@ Barman server. Additionally, it can be utilized as a hook script for WAL archivi
 
 ``--endpoint-url``
   Override default S3 endpoint URL with the given one.
+
+``--addressing-style``
+  The addressing style to use for S3 requests. This is useful when connecting to
+  S3-compatible services that require a specific addressing style.
+
+  Allowed options are:
+
+  * ``auto`` (default): Uses the addressing style determined by the underlying library.
+  * ``virtual``: Uses virtual-hosted style addressing (e.g., bucket-name.s3.amazonaws.com).
+  * ``path``: Uses path-style addressing (e.g., s3.amazonaws.com/bucket-name).
 
 ``-P`` / ``--aws-profile``
   Profile name (e.g. ``INI`` section in AWS credentials file).
