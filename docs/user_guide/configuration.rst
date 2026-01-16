@@ -55,6 +55,12 @@ in square brackets. Each section can include various options.
 Models and servers must have unique identifiers, and reserved words cannot be used as
 names.
 
+.. note::
+  **Comment Handling**: Only line comments are supported (lines starting with ``#`` or ``;``).
+  Inline comments (``#`` or ``;`` appearing after configuration values on the same line) are 
+  not supported and will be parsed as part of the configuration value, which may 
+  cause unexpected behavior.
+
 **Reserved Words**
 
 The following reserved words cannot be used as server or model names:
