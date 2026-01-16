@@ -580,7 +580,27 @@ class CloudWalStorageStrategy(WalStorageStrategy):
         wal_info.orig_filename = None
 
     def delete(self, wals_to_delete):
-        pass
+        wal_objects_to_delete = []
+        for _, wal_list in wals_to_delete.items():
+            for wal_info in wal_list:
+                object_key = os.path.join(
+                    self.cloud_interface.path,
+                    self.config.name,
+                    "wals",
+                    wal_info.relpath(),
+                )
+                wal_objects_to_delete.append(object_key)
+                self._run_pre_delete_wal_scripts(wal_info)
+
+        self.cloud_interface.delete_objects(wal_objects_to_delete)
+
+        wals_deleted = []
+        for _, wal_list in wals_to_delete.items():
+            for wal_info in wal_list:
+                self._run_post_delete_wal_scripts(wal_info)
+                wals_deleted.append(wal_info.name)
+
+        return wals_deleted
 
 
 class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):
