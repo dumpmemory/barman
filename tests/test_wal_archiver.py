@@ -1177,7 +1177,9 @@ class TestWalStorageStrategy:
     @patch(
         "barman.wal_archiver.WalStorageStrategy.__abstractmethods__", new_callable=set
     )
-    def test_run_pre_delete_wal_scripts(self, _, mock_hook_script, mock_retry_hook_script):
+    def test_run_pre_delete_wal_scripts(
+        self, _, mock_hook_script, mock_retry_hook_script
+    ):
         """Test that the pre-delete scripts are run correctly when present"""
         backup_manager = build_backup_manager(name="TestServer")
         wal_storage = WalStorageStrategy(backup_manager, backup_manager.server)
@@ -1209,7 +1211,9 @@ class TestWalStorageStrategy:
     @patch(
         "barman.wal_archiver.WalStorageStrategy.__abstractmethods__", new_callable=set
     )
-    def test_run_post_delete_wal_scripts(self, _, mock_hook_script, mock_retry_hook_script):
+    def test_run_post_delete_wal_scripts(
+        self, _, mock_hook_script, mock_retry_hook_script
+    ):
         """Test that the post-delete scripts are run correctly when present"""
         backup_manager = build_backup_manager(name="TestServer")
         wal_storage = WalStorageStrategy(backup_manager, backup_manager.server)
@@ -1222,15 +1226,19 @@ class TestWalStorageStrategy:
         mock_retry_hook_script.assert_called_once_with(
             backup_manager, "wal_delete_retry_script", "post"
         )
-        mock_retry_hook_script.env_from_wal_info(arg_wal_info, arg_error)
-        mock_retry_hook_script.run()
+        mock_retry_hook_script.return_value.env_from_wal_info.assert_called_once_with(
+            arg_wal_info, None, arg_error
+        )
+        mock_retry_hook_script.return_value.run.assert_called_once()
 
         # AND the post-delete hook script is instantiated and run correctly
         mock_hook_script.assert_called_once_with(
             backup_manager, "wal_delete_script", "post"
         )
-        mock_hook_script.env_from_wal_info(arg_wal_info, None, arg_error)
-        mock_hook_script.run()
+        mock_hook_script.return_value.env_from_wal_info.assert_called_once_with(
+            arg_wal_info, None, arg_error
+        )
+        mock_hook_script.return_value.run.assert_called_once()
 
     @patch("barman.wal_archiver._logger")
     @patch("barman.wal_archiver.RetryHookScriptRunner")
@@ -1238,11 +1246,13 @@ class TestWalStorageStrategy:
     @patch(
         "barman.wal_archiver.WalStorageStrategy.__abstractmethods__", new_callable=set
     )
-    def test_run_post_delete_wal_scripts_with_error(self, _, mock_hook_script, mock_retry_hook_script, mock_logger):
+    def test_run_post_delete_wal_scripts_with_error(
+        self, _, mock_hook_script, mock_retry_hook_script, mock_logger
+    ):
         """
         Test that the post-delete scripts are run correctly when an error occurred.
 
-        That hapens when the retry hook script raises an exec:`AbortedRetryHookScript`
+        That happens when the retry hook script raises an exec:`AbortedRetryHookScript`
         exception.
         """
         backup_manager = build_backup_manager(name="TestServer")
@@ -1258,7 +1268,7 @@ class TestWalStorageStrategy:
         wal_storage._run_post_delete_wal_scripts(arg_wal_info, arg_error)
 
         # THEN the post-delete retry hook script is instantiated and run correctly
-        # AND the AbortedRetryHookScript exception is catched and logged
+        # AND the AbortedRetryHookScript exception is caught and logged
         mock_retry_hook_script.assert_called_once_with(
             backup_manager, "wal_delete_retry_script", "post"
         )
@@ -1279,8 +1289,10 @@ class TestWalStorageStrategy:
         mock_hook_script.assert_called_once_with(
             backup_manager, "wal_delete_script", "post"
         )
-        mock_hook_script.env_from_wal_info(arg_wal_info, None, arg_error)
-        mock_hook_script.run()
+        mock_hook_script.return_value.env_from_wal_info.assert_called_once_with(
+            arg_wal_info, None, arg_error
+        )
+        mock_hook_script.return_value.run.assert_called_once()
 
 
 class TestLocalWalStorageStrategy:
@@ -1994,7 +2006,7 @@ class TestLocalWalStorageStrategy:
             build_backup_manager(name="TestServer"), None
         )
         wal_storage.delete(wals_to_delete)
-        # THEN delete_wal_file is called for each requested WAL file
+        # THEN _delete_wal_directory is called on the WAL directory
         mock_delete_directory.assert_called_once_with(
             "/server/wals/0000000100000001", [wal_info1, wal_info2]
         )
@@ -2002,7 +2014,9 @@ class TestLocalWalStorageStrategy:
     @patch("barman.wal_archiver.LocalWalStorageStrategy._run_pre_delete_wal_scripts")
     @patch("barman.wal_archiver.LocalWalStorageStrategy._run_post_delete_wal_scripts")
     @patch("barman.wal_archiver.shutil.rmtree")
-    def test_delete_wal_directory(self, mock_rmtree, mock_post_scripts, mock_pre_scripts):
+    def test_delete_wal_directory(
+        self, mock_rmtree, mock_post_scripts, mock_pre_scripts
+    ):
         """
         Test that :meth:`_delete_wal_directory` correctly deletes a WAL directory
         and runs pre- and post-deletion scripts.
@@ -2036,7 +2050,9 @@ class TestLocalWalStorageStrategy:
         )
         # WHEN _delete_wal_directory is called
         wal_info = MagicMock()
-        wal_info.fullpath = lambda x: "/server/wals/0000000100000001/000000010000000000000001"
+        wal_info.fullpath = (
+            lambda x: "/server/wals/0000000100000001/000000010000000000000001"
+        )
         wal_storage._delete_wal_file(wal_info)
         # THEN the file is unlinked and pre- and post-deletion scripts are run
         mock_pre_scripts.assert_called_once_with(wal_info)
@@ -2201,3 +2217,36 @@ class TestCloudWalStorageStrategy:
                 "/src/path/000000010000000000000001",
                 exc_info,
             )
+
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_pre_delete_wal_scripts")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_post_delete_wal_scripts")
+    def test_delete(self, mock_post_scripts, mock_pre_scripts):
+        """
+        Test that :meth:`delete` correctly deletes WAL files from cloud storage.
+        """
+        # GIVEN a CloudWalStorageStrategy instance
+        wal_storage = CloudWalStorageStrategy(
+            build_backup_manager(name="server"), MagicMock()
+        )
+        wal_storage.cloud_interface = MagicMock(path="my-bucket")
+
+        # AND two wal_info objects to be deleted
+        wal_info1, wal_info2 = MagicMock(), MagicMock()
+        wal_info1.relpath = lambda: "0000000100000001/000000010000000000000001"
+        wal_info2.relpath = lambda: "0000000100000001/000000010000000000000002"
+        wals_to_delete = {
+            "my-bucket/server/wals/0000000100000001": [wal_info1, wal_info2]
+        }
+
+        # WHEN delete is called
+        wal_storage.delete(wals_to_delete)
+
+        # THEN the cloud_interface delete_object is called for each WAL file
+        mock_pre_scripts.assert_has_calls([call(wal_info1), call(wal_info2)])
+        wal_storage.cloud_interface.delete_objects.assert_called_once_with(
+            [
+                "my-bucket/server/wals/0000000100000001/000000010000000000000001",
+                "my-bucket/server/wals/0000000100000001/000000010000000000000002",
+            ]
+        )
+        mock_post_scripts.assert_has_calls([call(wal_info1), call(wal_info2)])

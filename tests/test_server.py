@@ -59,6 +59,7 @@ from barman.lockfile import (
 from barman.postgres import PostgreSQLConnection, StandbyPostgreSQLConnection
 from barman.process import ProcessInfo
 from barman.server import CheckOutputStrategy, CheckStrategy, Server
+from barman.wal_archiver import CloudWalStorageStrategy, LocalWalStorageStrategy
 
 
 class ExceptionTest(Exception):
@@ -212,6 +213,20 @@ class TestServer(object):
             server = Server(cfg)
             assert isinstance(server.postgres, StandbyPostgreSQLConnection)
             assert server.postgres.primary is not None
+
+    @pytest.mark.parametrize("use_wal_cloud_storage", [True, False])
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=PropertyMock)
+    def test_init_wal_storages(self, mock_use_wal_storage, use_wal_cloud_storage):
+        """
+        Verify that the ``wal_storage`` attribute is set correctly based on
+        ``use_wal_cloud_storage`` property.
+        """
+        mock_use_wal_storage.return_value = use_wal_cloud_storage
+        server = build_real_server()
+        if use_wal_cloud_storage:
+            assert isinstance(server.wal_storage, CloudWalStorageStrategy)
+        else:
+            assert isinstance(server.wal_storage, LocalWalStorageStrategy)
 
     def test_check_config_missing(self, tmpdir):
         """
