@@ -2499,6 +2499,7 @@ class TestShowServersCli(object):
         mock_config.retention_policy = None
         mock_config.last_backup_maximum_age = None
         mock_config.basebackups_directory = "/path/to/basebackups"
+        mock_config.wals_directory = "/path/to/wals"
         yield mock_config
 
     @pytest.mark.parametrize(

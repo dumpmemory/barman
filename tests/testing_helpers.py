@@ -29,6 +29,7 @@ from barman.config import BackupOptions, Config
 from barman.infofile import BackupInfo, LocalBackupInfo, Tablespace, WalFileInfo
 from barman.server import Server
 from barman.utils import mkpath
+from barman.wal_archiver import LocalWalStorageStrategy
 from barman.xlog import DEFAULT_XLOG_SEG_SIZE
 
 try:
@@ -480,6 +481,7 @@ def build_mocked_server(
     server.meta_directory = "%s/meta" % server.config.backup_directory
     server.use_backup_cloud_storage = False
     server.use_wal_cloud_storage = False
+    server.wal_storage = LocalWalStorageStrategy(server.backup_manager, server)
     return server
 
 
