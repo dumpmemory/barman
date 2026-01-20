@@ -2061,6 +2061,49 @@ class TestLocalWalStorageStrategy:
         )
         mock_post_scripts.assert_called_once_with(wal_info, None)
 
+    def test_exists(self, tmpdir):
+        """
+        Test that :meth:`exists` correctly checks for the existence of a WAL file.
+        """
+        # GIVEN a LocalWalStorageStrategy instance
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(name="TestServer"), None
+        )
+        # AND a temporary file representing the WAL file
+        wal_file_path = tmpdir.join("000000010000000000000001")
+        wal_file_path.write("WAL file content")
+        # WHEN exists is called on the existing file
+        result_existing = wal_storage.exists(str(wal_file_path))
+        # THEN it returns True
+        assert result_existing is True
+
+        # WHEN exists is called on a non-existing file
+        result_non_existing = wal_storage.exists(
+            str(tmpdir.join("000000010000000000000002"))
+        )
+        # THEN it returns False
+        assert result_non_existing is False
+
+    @patch("barman.wal_archiver.xlog.hash_dir", return_value="0000000100000001")
+    def test_get_full_path(self, mock_hash_dir):
+        """
+        Test that :meth:`get_full_path` correctly constructs the full path
+        for a given WAL file.
+        """
+        # GIVEN a LocalWalStorageStrategy instance
+        wal_storage = LocalWalStorageStrategy(
+            build_backup_manager(
+                name="TestServer", main_conf={"wals_directory": "/barman/wals"}
+            ),
+            None,
+        )
+        # WHEN get_full_path is called with a WAL file name
+        wal_file_name = "000000010000000000000001"
+        result = wal_storage.get_full_path(wal_file_name)
+        # THEN it returns the correct full path
+        expected_path = "/barman/wals/0000000100000001/000000010000000000000001"
+        assert result == expected_path
+
 
 class TestCloudWalStorageStrategy:
     """Tests for the :class:`CloudWalStorageStrategy` class"""
@@ -2250,3 +2293,44 @@ class TestCloudWalStorageStrategy:
             ]
         )
         mock_post_scripts.assert_has_calls([call(wal_info1), call(wal_info2)])
+
+    def test_exists(self):
+        """
+        Test that :meth:`exists` correctly checks for the existence of a WAL file
+        in cloud storage.
+        """
+        # GIVEN a CloudWalStorageStrategy instance
+        wal_storage = CloudWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        wal_storage.cloud_interface = MagicMock()
+
+        # WHEN exists is called
+        full_path = "barman-bucket/wals/0000000100000001/000000010000000000000001"
+        wal_storage.exists(full_path)
+
+        # THEN cloud_interface.object_exists is called with the correct key
+        wal_storage.cloud_interface.check_object_existence.assert_called_once_with(
+            full_path
+        )
+
+    @patch("barman.wal_archiver.xlog.hash_dir", return_value="0000000100000001")
+    def test_get_full_path(self, mock_hash_dir):
+        """
+        Test that :meth:`get_full_path` correctly constructs the full path
+        for a given WAL file in cloud storage.
+        """
+        # GIVEN a CloudWalStorageStrategy instance
+        wal_storage = CloudWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        wal_storage.cloud_interface = MagicMock(path="barman-bucket")
+
+        # WHEN get_full_path is called with a WAL file name
+        wal_file_name = "000000010000000000000001"
+        result = wal_storage.get_full_path(wal_file_name)
+        # THEN it returns the correct full path
+        expected_path = (
+            "barman-bucket/TestServer/wals/0000000100000001/000000010000000000000001"
+        )
+        assert result == expected_path

@@ -881,9 +881,7 @@ class TestS3CloudInterface(object):
         )
 
     @pytest.mark.parametrize("object_exists", [True, False])
-    @mock.patch(
-        "barman.cloud_providers.aws_s3.S3CloudInterface._check_object_existence"
-    )
+    @mock.patch("barman.cloud_providers.aws_s3.S3CloudInterface.check_object_existence")
     @mock.patch("barman.cloud_providers.aws_s3.boto3")
     def test_put_object_fail_if_exists_old_boto_version(
         self, boto_mock, mock_check, object_exists
@@ -920,9 +918,7 @@ class TestS3CloudInterface(object):
             )
 
     @pytest.mark.parametrize("object_exists", [True, False])
-    @mock.patch(
-        "barman.cloud_providers.aws_s3.S3CloudInterface._check_object_existence"
-    )
+    @mock.patch("barman.cloud_providers.aws_s3.S3CloudInterface.check_object_existence")
     @mock.patch("barman.cloud_providers.aws_s3.boto3")
     def test_put_object_fail_if_exists_new_boto_version(
         self, boto_mock, mock_check, object_exists
@@ -1946,7 +1942,7 @@ class TestS3CloudInterface(object):
         cloud_interface = S3CloudInterface("s3://bucket/test", encryption=None)
 
         # WHEN _check_object_existence is called with a given object path
-        result = cloud_interface._check_object_existence("path/to/object")
+        result = cloud_interface.check_object_existence("path/to/object")
 
         # THEN head_object is called with the expected parameters
         s3_client.head_object.assert_called_once_with(

@@ -443,19 +443,6 @@ class TestServer(object):
             "Rebuilding xlogdb is not supported for servers using cloud storage"
         )
 
-    def test_get_wal_full_path(self, tmpdir):
-        """
-        Testing Server.get_wal_full_path() method
-        """
-        wal_name = "0000000B00000A36000000FF"
-        wal_hash = wal_name[:16]
-        server = build_real_server(
-            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
-            main_conf={"wals_directory": tmpdir.mkdir("wals").strpath},
-        )
-        full_path = server.get_wal_full_path(wal_name)
-        assert full_path == str(tmpdir.join("wals").join(wal_hash).join(wal_name))
-
     @pytest.mark.parametrize(
         [
             "wal_info_files",
@@ -2315,15 +2302,15 @@ class TestServer(object):
         tmpdir.join("main/wals").ensure(dir=True)
 
         # Write two history files
-        history_2 = server.get_wal_full_path("00000002.history")
+        history_2 = server.wal_storage.get_full_path("00000002.history")
         with open(history_2, "w") as fp:
             fp.write('1\t2/83000168\tat restore point "myrp"\n')
 
-        history_3 = server.get_wal_full_path("00000003.history")
+        history_3 = server.wal_storage.get_full_path("00000003.history")
         with open(history_3, "w") as fp:
             fp.write('1\t2/83000168\tat restore point "myrp"\n')
 
-        history_4 = server.get_wal_full_path("00000004.history")
+        history_4 = server.wal_storage.get_full_path("00000004.history")
         with open(history_4, "w") as fp:
             fp.write('1\t2/83000168\tat restore point "myrp"\n')
             fp.write("2\t2/84000268\tunknown\n")
@@ -2640,16 +2627,24 @@ class TestServer(object):
 
         # Case 3.1: we have all the files until this moment, nothing should
         # happen
-        available_wals.append(server.get_wal_full_path("000000010000000000000002"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000003"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000004"))
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000002")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000003")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000004")
+        )
         server.check_backup(backup_info)
         assert backup_info_save.called
         assert backup_info.status == BackupInfo.WAITING_FOR_WALS
 
         # Case 3.2: we miss two WAL files
         del available_wals[:]
-        available_wals.append(server.get_wal_full_path("000000010000000000000002"))
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000002")
+        )
         server.check_backup(backup_info)
         assert backup_info_save.called
         assert backup_info.status == BackupInfo.FAILED
@@ -2669,13 +2664,27 @@ class TestServer(object):
         # Case 4.1: we have all the files, so the backup should be marked as
         # done
         del available_wals[:]
-        available_wals.append(server.get_wal_full_path("000000010000000000000002"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000003"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000004"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000005"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000006"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000007"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000008"))
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000002")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000003")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000004")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000005")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000006")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000007")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000008")
+        )
         backup_info.status = BackupInfo.WAITING_FOR_WALS
         server.check_backup(backup_info)
         assert backup_info_save.called
@@ -2684,12 +2693,24 @@ class TestServer(object):
 
         # Case 4.2: a WAL file is missing
         del available_wals[:]
-        available_wals.append(server.get_wal_full_path("000000010000000000000002"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000003"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000005"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000006"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000007"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000008"))
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000002")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000003")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000005")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000006")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000007")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000008")
+        )
         backup_info.status = BackupInfo.WAITING_FOR_WALS
         server.check_backup(backup_info)
         assert backup_info_save.called
@@ -2707,13 +2728,27 @@ class TestServer(object):
         # FAILED (i.e. the rsync copy failed). The backup should still be
         # kept as failed
         del available_wals[:]
-        available_wals.append(server.get_wal_full_path("000000010000000000000002"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000003"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000004"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000005"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000006"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000007"))
-        available_wals.append(server.get_wal_full_path("000000010000000000000008"))
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000002")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000003")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000004")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000005")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000006")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000007")
+        )
+        available_wals.append(
+            server.wal_storage.get_full_path("000000010000000000000008")
+        )
         backup_info.status = BackupInfo.FAILED
         server.check_backup(backup_info)
         assert not backup_info_save.called

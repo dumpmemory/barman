@@ -1540,10 +1540,12 @@ class TestLocalBackupInfo:
         mock_base_backup_dir.return_value = backup_dir
         segment_name = "%08X%08X%08X" % (1, 1, 0)
         mock_required_wal_segments.return_value = [segment_name]
-        server.get_wal_full_path.side_effect = lambda x: os.path.join(
-            wals_dir,
-            xlog.hash_dir(x),
-            x,
+        server.wal_storage.get_full_path = mock.Mock(
+            side_effect=lambda x: os.path.join(
+                wals_dir,
+                xlog.hash_dir(x),
+                x,
+            )
         )
         wal1_file_path = os.path.join(
             wals_dir,
