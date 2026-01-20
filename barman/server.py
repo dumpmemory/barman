@@ -2325,18 +2325,6 @@ class Server(RemoteStatusMixin):
                     break
                 yield wal_info
 
-    def get_wal_full_path(self, wal_name):
-        """
-        Build the full path of a WAL for a server given the name
-
-        :param wal_name: WAL file name
-        """
-        # Build the path which contains the file
-        hash_dir = os.path.join(self.config.wals_directory, xlog.hash_dir(wal_name))
-        # Build the WAL file full path
-        full_path = os.path.join(hash_dir, wal_name)
-        return full_path
-
     def get_wal_possible_paths(self, wal_name, partial=False):
         """
         Build a list of possible positions of a WAL file
@@ -3894,7 +3882,7 @@ class Server(RemoteStatusMixin):
 
             # Finish if the closed wal file is in the archive.
             if wal_file:
-                if os.path.exists(self.get_wal_full_path(wal_file)):
+                if self.wal_storage.exists(self.wal_storage.get_full_path(wal_file)):
                     break
             else:
                 # Check if any new file has been archived, on any timeline

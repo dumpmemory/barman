@@ -375,7 +375,7 @@ class S3CloudInterface(CloudInterface):
             Config=self.config,
         )
 
-    def _check_object_existence(self, key):
+    def check_object_existence(self, key):
         """
         Check whether an object with the specified key exists in the bucket.
 
@@ -423,7 +423,7 @@ class S3CloudInterface(CloudInterface):
             else:
                 # when IfNoneMatch is not available, we need to manually check for
                 # object existence at the cost of an extra head-object API call
-                if self._check_object_existence(key):
+                if self.check_object_existence(key):
                     raise ObjectKeyAlreadyExists(
                         "Object %s already exists in bucket %s"
                         % (key, self.bucket_name)

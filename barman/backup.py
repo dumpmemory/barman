@@ -42,6 +42,7 @@ from barman.backup_executor import (
     SnapshotBackupExecutor,
 )
 from barman.backup_manifest import BackupManifest
+from barman.cloud import CloudBackupCatalog
 from barman.cloud_providers import (
     get_snapshot_interface_from_backup_info,
     recognize_cloud_provider,
@@ -1510,6 +1511,13 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
 
         :rtype: dict[str, WalFileInfo]|None
         """
+        if self.server.use_wal_cloud_storage:
+            # Leverage the cloud catalog to get the latest archived WALs info
+            cloud_catalog = CloudBackupCatalog(
+                self.server.get_wal_cloud_interface(), self.config.name
+            )
+            return cloud_catalog.get_latest_archived_wals_info()
+
         from os.path import isdir, join
 
         root = self.config.wals_directory
@@ -1779,8 +1787,8 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             # Stop checking if we reach the last archived wal
             if wal > last_archived_wal:
                 break
-            wal_full_path = self.server.get_wal_full_path(wal)
-            if not os.path.exists(wal_full_path):
+            wal_full_path = self.server.wal_storage.get_full_path(wal)
+            if not self.server.wal_storage.exists(wal_full_path):
                 missing_wal = wal
                 break
 

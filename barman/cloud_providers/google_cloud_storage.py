@@ -262,6 +262,15 @@ class GoogleCloudInterface(CloudInterface):
             _logger.error(e)
             raise e
 
+    def check_object_existence(self, key):
+        """
+        Check whether an object with the specified key exists in the bucket.
+
+        :param str key: The object key
+        :return: ``True`` if the object exists, ``False`` otherwise
+        """
+        return NotImplementedError()
+
     def create_multipart_upload(self, key):
         """
         JSON API does not allow this kind of multipart.

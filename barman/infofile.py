@@ -922,7 +922,7 @@ class LocalBackupInfo(BackupInfo):
         if target in "standalone":
             # List all the WAL files for this backup
             for x in self.get_required_wal_segments():
-                yield self.server.get_wal_full_path(x)
+                yield self.server.wal_storage.get_full_path(x)
         if target in ("wal", "full"):
             for wal_info in self.server.get_wal_until_next_backup(
                 self, include_history=True

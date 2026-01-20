@@ -510,6 +510,16 @@ class LocalWalStorageStrategy(WalStorageStrategy):
 
         self._run_post_delete_wal_scripts(wal_info, error)
 
+    def exists(self, wal_full_path):
+        return os.path.exists(wal_full_path)
+
+    def get_full_path(self, wal_name):
+        # Build the path which contains the file
+        hash_dir = os.path.join(self.config.wals_directory, xlog.hash_dir(wal_name))
+        # Build the WAL file full path
+        full_path = os.path.join(hash_dir, wal_name)
+        return full_path
+
 
 class CloudWalStorageStrategy(WalStorageStrategy):
     """
@@ -601,6 +611,18 @@ class CloudWalStorageStrategy(WalStorageStrategy):
                 wals_deleted.append(wal_info.name)
 
         return wals_deleted
+
+    def exists(self, wal_full_path):
+        return self.cloud_interface.check_object_existence(wal_full_path)
+
+    def get_full_path(self, wal_name):
+        return os.path.join(
+            self.cloud_interface.path,
+            self.config.name,
+            "wals",
+            xlog.hash_dir(wal_name),
+            wal_name,
+        )
 
 
 class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):

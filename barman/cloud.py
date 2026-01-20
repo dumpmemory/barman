@@ -1157,6 +1157,15 @@ class CloudInterface(with_metaclass(ABCMeta)):
         """
 
     @abstractmethod
+    def check_object_existence(self, key):
+        """
+        Check whether an object with the specified key exists in the bucket.
+
+        :param str key: The object key
+        :return: ``True`` if the object exists, ``False`` otherwise
+        """
+
+    @abstractmethod
     def remote_open(self, key, decompressor=None):
         """
         Open a remote object in cloud storage and returns a readable stream

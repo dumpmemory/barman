@@ -384,6 +384,15 @@ class AzureCloudInterface(CloudInterface):
             **extra_args
         )
 
+    def check_object_existence(self, key):
+        """
+        Check whether an object with the specified key exists in the bucket.
+
+        :param str key: The object key
+        :return: ``True`` if the object exists, ``False`` otherwise
+        """
+        return NotImplementedError()
+
     def create_multipart_upload(self, key):
         """No-op method because Azure has no concept of multipart uploads
 
