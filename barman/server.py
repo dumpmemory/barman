@@ -602,11 +602,19 @@ class Server(RemoteStatusMixin):
 
     @property
     def backup_cloud_provider(self):
-        return recognize_cloud_provider(self.config.basebackups_directory)
+        if getattr(self, "_backup_cloud_provider", None) is None:
+            self._backup_cloud_provider = recognize_cloud_provider(
+                self.config.basebackups_directory
+            )
+        return self._backup_cloud_provider
 
     @property
     def wal_cloud_provider(self):
-        return recognize_cloud_provider(self.config.wals_directory)
+        if getattr(self, "_wal_cloud_provider", None) is None:
+            self._wal_cloud_provider = recognize_cloud_provider(
+                self.config.wals_directory
+            )
+        return self._wal_cloud_provider
 
     @property
     def use_backup_cloud_storage(self):
