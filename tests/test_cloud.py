@@ -28,7 +28,7 @@ from functools import partial
 from io import BytesIO
 from tarfile import TarFile, TarInfo
 from tarfile import open as open_tar
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, _TemporaryFileWrapper
 from unittest import TestCase
 
 import botocore
@@ -4213,6 +4213,38 @@ class TestCloudTarUploader(object):
                     assert result.read() == content
         # AND the supplied chunk_size was set
         assert uploader.chunk_size == chunk_size
+
+    @mock.patch("barman.cloud.CloudInterface")
+    def test_buffer_method(self, mock_cloud_interface):
+        """
+        Verifies that the _buffer method returns a NamedTemporaryFile with the
+        expected properties. This test ensures Python 3.14 compatibility after
+        the change from staticmethod(partial(...)) to instance method.
+        """
+        # GIVEN a CloudTarUploader instance
+        uploader = CloudTarUploader(
+            mock_cloud_interface,
+            key="test/key",
+            chunk_size=1024,
+            compression=None,
+        )
+
+        # WHEN _buffer is called
+        buffer_file = uploader._buffer()
+
+        # THEN it returns a NamedTemporaryFile
+        assert isinstance(buffer_file, _TemporaryFileWrapper)
+
+        # AND the file has the expected prefix and suffix
+        assert buffer_file.name.find("barman-upload-") != -1
+        assert buffer_file.name.endswith(".part")
+
+        # AND the file exists (delete=False was set)
+        assert os.path.exists(buffer_file.name)
+
+        # Cleanup
+        buffer_file.close()
+        os.unlink(buffer_file.name)
 
     @pytest.mark.parametrize(
         (
