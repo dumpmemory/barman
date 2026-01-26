@@ -2,3 +2,13 @@
 # useDefault will extend the base configuration with the default gitleaks config:
 # https://github.com/zricethezav/gitleaks/blob/master/config/gitleaks.toml
 useDefault = true
+
+[allowlist]
+# Ignore test files
+paths = [
+'''tests/.*''' 
+]
+# Ignore false positive on the 'fail_if_exists' flag
+regexes = [
+    '''fail_if_exists=True'''
+]
