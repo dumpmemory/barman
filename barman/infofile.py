@@ -1192,18 +1192,39 @@ class LocalBackupInfo(BackupInfo):
         """
         if self.status == BackupInfo.EMPTY:
             return False
-        backup_dir = self.get_basebackup_directory()
-        # In the >= 3.13.2 structure, it is considered orphan if the backup.info exists
-        # in the server meta directory while no directory related to the backup exists
+
         backup_info_path = self.get_filename()
-        if os.path.exists(backup_info_path) and not os.path.exists(backup_dir):
-            return True
-        # In the < 3.13.2 structure, the backup.info lived inside the backup directory.
-        # In this case, it is considered orphan if the backup.info exists alone in there
-        old_backup_info_path = os.path.join(backup_dir, "backup.info")
-        if os.path.exists(backup_dir) and os.path.exists(old_backup_info_path):
-            if len(os.listdir(backup_dir)) == 1:
+
+        # NOTE: Historically, LocalBackupInfo handled local metadata while BackupInfo
+        # is used by the cloud scripts. As we are now merging them together, we are
+        # temporarily storing backup.info in both locations. For that reason,
+        # LocalBackupInfo is also checking for orphan files in the cloud in the logic
+        # below, as even though the backup is not local, the metadata still is.
+
+        # For cloud backups it is considered orphan if the backup.info exists
+        # in the server meta directory while no object related to the backup exists
+        if self.server.use_backup_cloud_storage:
+            cloud_interface = self.server.get_backup_cloud_interface()
+            object_key = os.path.join(
+                cloud_interface.path, self.config.name, "base", self.backup_id
+            )
+            has_content = bool(cloud_interface.list_bucket(prefix=(object_key + "/")))
+            if os.path.exists(backup_info_path) and not has_content:
                 return True
+        else:
+            # In the >= 3.13.2 structure, it is considered orphan if the backup.info exists
+            # in the server meta directory while no directory related to the backup exists
+            backup_dir = self.get_basebackup_directory()
+            if os.path.exists(backup_info_path) and not os.path.exists(backup_dir):
+                return True
+
+            # In the < 3.13.2 structure, the backup.info lived inside the backup directory.
+            # In this case, it is considered orphan if the backup.info exists alone in there
+            old_backup_info_path = os.path.join(backup_dir, "backup.info")
+            if os.path.exists(backup_dir) and os.path.exists(old_backup_info_path):
+                if len(os.listdir(backup_dir)) == 1:
+                    return True
+
         return False
 
 
