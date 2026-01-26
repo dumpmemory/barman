@@ -134,6 +134,8 @@ def build_test_backup_info(
         server.passive_node = False
         server.backup_manager.name = "default"
         server.meta_directory = "%s/meta" % server.config.backup_directory
+        server.use_backup_cloud_storage = False
+        server.use_wal_cloud_storage = False
 
     backup_info = LocalBackupInfo(**locals())
     return backup_info

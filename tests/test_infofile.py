@@ -702,6 +702,54 @@ class TestBackupInfo(object):
         b_info = LocalBackupInfo(server, backup_id="no_backup_info")
         assert b_info.is_orphan is False
 
+    def test_is_orphan_cloud(self, tmpdir):
+        """
+        Ensure :meth:`BackupInfo.is_orphan` returns the correct value for cloud backups.
+        """
+        server = build_mocked_server(
+            main_conf={
+                "basebackups_directory": tmpdir.strpath,
+                "backup_directory": tmpdir.join("main"),
+            },
+        )
+        server.use_backup_cloud_storage = True
+        server.get_backup_cloud_interface = mock.Mock(
+            return_value=mock.Mock(path="barman-backups")
+        )
+
+        # Case 1: Not orphan (status is empty)
+        backup_info = LocalBackupInfo(server, backup_id="not_orphan_backup")
+        backup_info.status = BackupInfo.EMPTY
+        assert backup_info.is_orphan is False
+
+        # Case 2: Orphan backup (only the backup.info file exists)
+        server_dir = tmpdir.mkdir("main")
+        meta_dir = server_dir.mkdir("meta")
+        backup_info_path = meta_dir.join("orphan_backup-backup.info")
+        backup_info_path.write("status = DONE\n")
+        backup_info = LocalBackupInfo(server, backup_id="orphan_backup")
+        backup_info.status = BackupInfo.DONE
+        # Mock the cloud interface to return no file on the backup path
+        server.get_backup_cloud_interface.return_value.list_bucket.return_value = []
+        assert backup_info.is_orphan is True
+        server.get_backup_cloud_interface.return_value.list_bucket.assert_called_with(
+            prefix="barman-backups/main/base/orphan_backup/"
+        )
+
+        server.get_backup_cloud_interface.reset_mock()
+
+        # Case 3: Not orphan (backup.info and other files exists)
+        backup_info = LocalBackupInfo(server, backup_id="not_orphan_backup2")
+        backup_info.status = BackupInfo.DONE
+        # Mock the cloud interface to return some file on the backup path
+        server.get_backup_cloud_interface.return_value.list_bucket.return_value = [
+            "barman-backups/fake_backup_id/random_file",
+        ]
+        assert backup_info.is_orphan is False
+        server.get_backup_cloud_interface.return_value.list_bucket.assert_called_with(
+            prefix="barman-backups/main/base/not_orphan_backup2/"
+        )
+
     def test_backup_info_save(self, tmpdir):
         """
         Test the save method of a BackupInfo object
