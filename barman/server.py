@@ -1243,6 +1243,46 @@ class Server(RemoteStatusMixin):
                 "a cloud storage",
             )
             return
+        if self.use_backup_cloud_storage:
+            cloud_interface = self.get_backup_cloud_interface()
+            # Use a try-except block here because sometimes it might fail with another
+            # exception other than the one catched in test_connectivity()
+            try:
+                can_connect = cloud_interface.test_connectivity()
+            except Exception as ex:
+                can_connect = False
+                _logger.error(
+                    "Exception occurred while testing cloud connectivity for backup storage: %s",
+                    ex,
+                )
+            if not can_connect:
+                check_strategy.result(
+                    self.config.name,
+                    False,
+                    hint="Could not connect to the cloud provider for backup storage. Check your "
+                    "credentials and configuration",
+                )
+                return
+        if self.use_wal_cloud_storage:
+            cloud_interface = self.get_wal_cloud_interface()
+            # Use a try-except block here because sometimes it might fail with another
+            # exception other than the one catched in test_connectivity()
+            try:
+                can_connect = cloud_interface.test_connectivity()
+            except Exception as ex:
+                can_connect = False
+                _logger.error(
+                    "Exception occurred while testing cloud connectivity for WAL storage: %s",
+                    ex,
+                )
+            if not can_connect:
+                check_strategy.result(
+                    self.config.name,
+                    False,
+                    hint="Could not connect to the cloud provider for WAL storage. Check your "
+                    "credentials and configuration",
+                )
+                return
 
         check_strategy.result(self.config.name, True)
 
