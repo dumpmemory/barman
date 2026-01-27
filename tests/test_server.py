@@ -4015,12 +4015,18 @@ class TestServer(object):
             ),
         ],
     )
+    @patch("barman.server.Server.get_wal_cloud_interface", new_callable=lambda: Mock())
+    @patch(
+        "barman.server.Server.get_backup_cloud_interface", new_callable=lambda: Mock()
+    )
     @patch("barman.server.Server.use_wal_cloud_storage", new_callable=lambda: True)
     @patch("barman.server.Server.use_backup_cloud_storage", new_callable=lambda: True)
     def test_check_cloud_storage_configuration(
         self,
         _mock_use_backup_cloud,
         _mock_use_wal_cloud,
+        _mock_get_backup_cloud_interface,
+        _mock_get_wal_cloud_interface,
         backup_compression,
         compression,
         encryption,
@@ -4043,6 +4049,61 @@ class TestServer(object):
         if hint:
             mock_strategy.result.assert_called_once_with(
                 server.config.name, False, hint=hint
+            )
+        else:
+            mock_strategy.result.assert_called_once_with(server.config.name, True)
+
+    @pytest.mark.parametrize("wal_cloud_connectivity", [False, True])
+    @pytest.mark.parametrize("backup_cloud_connectivity", [False, True])
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=lambda: True)
+    @patch("barman.server.Server.use_backup_cloud_storage", new_callable=lambda: True)
+    def test_check_cloud_storage_configuration_cloud_connectivity(
+        self,
+        _mock_use_backup_cloud,
+        _mock_use_wal_cloud,
+        backup_cloud_connectivity,
+        wal_cloud_connectivity,
+    ):
+        """
+        Test check_cloud_storage_configuration and make sure it fails when the
+        respective cloud provider for backup or WAL is not reachable.
+        """
+        # Mock a strategy and a server with no problematic configuration
+        mock_strategy = Mock()
+        server = build_real_server(
+            main_conf={
+                "backup_compression": "none",
+                "compression": None,
+                "encryption": None,
+                "backup_method": "postgres",
+                "worm_mode": "off",
+            }
+        )
+        # Mock the cloud interfaces to return the desired connectivity status
+        server.get_backup_cloud_interface = Mock(
+            return_value=Mock(test_connectivity=lambda: backup_cloud_connectivity)
+        )
+        server.get_wal_cloud_interface = Mock(
+            return_value=Mock(test_connectivity=lambda: wal_cloud_connectivity)
+        )
+        # WHEN the check is performed
+        server.check_cloud_storage_configuration(mock_strategy)
+        # THEN the check is initialized
+        mock_strategy.init_check.assert_called_once_with("cloud storage configuration")
+        # AND the result and hint messages are as expected
+        if not backup_cloud_connectivity:
+            mock_strategy.result.assert_any_call(
+                server.config.name,
+                False,
+                hint="Could not connect to the cloud provider for backup storage. "
+                "Check your credentials and configuration",
+            )
+        elif not wal_cloud_connectivity:
+            mock_strategy.result.assert_any_call(
+                server.config.name,
+                False,
+                hint="Could not connect to the cloud provider for WAL storage. Check "
+                "your credentials and configuration",
             )
         else:
             mock_strategy.result.assert_called_once_with(server.config.name, True)
