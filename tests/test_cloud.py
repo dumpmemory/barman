@@ -108,6 +108,10 @@ def _compression_helper(src, compression):
     if compression == "snappy":
         dest = BytesIO()
         snappy.stream_compress(src, dest)
+    elif compression == "lz4":
+        import lz4.frame
+
+        dest = BytesIO(lz4.frame.compress(src.read()))
     elif compression == "gzip":
         dest = BytesIO()
         with gzip.GzipFile(fileobj=dest, mode="wb") as gz:
@@ -1719,7 +1723,7 @@ class TestS3CloudInterface(object):
         mock_delete_obj.assert_not_called()
 
     @pytest.mark.skipif(sys.version_info < (3, 0), reason="Requires Python 3 or higher")
-    @pytest.mark.parametrize("compression", (None, "bzip2", "gzip", "snappy"))
+    @pytest.mark.parametrize("compression", (None, "bzip2", "gzip", "snappy", "lz4"))
     @mock.patch("barman.cloud_providers.aws_s3.boto3")
     def test_download_file(self, boto_mock, compression, tmpdir):
         """Verifies that cloud_interface.download_file decompresses correctly."""
@@ -1751,7 +1755,13 @@ class TestS3CloudInterface(object):
 
     @pytest.mark.parametrize(
         ("compression", "file_ext"),
-        ((None, ""), ("bzip2", ".bz2"), ("gzip", ".gz"), ("snappy", ".snappy")),
+        (
+            (None, ""),
+            ("bzip2", ".bz2"),
+            ("gzip", ".gz"),
+            ("snappy", ".snappy"),
+            ("lz4", ".lz4"),
+        ),
     )
     @mock.patch("barman.cloud_providers.aws_s3.boto3")
     def test_extract_tar(self, boto_mock, compression, file_ext, tmpdir):
@@ -2827,7 +2837,7 @@ class TestAzureCloudInterface(object):
         ) in caplog.text
 
     @pytest.mark.skipif(sys.version_info < (3, 0), reason="Requires Python 3 or higher")
-    @pytest.mark.parametrize("compression", (None, "bzip2", "gzip", "snappy"))
+    @pytest.mark.parametrize("compression", (None, "bzip2", "gzip", "snappy", "lz4"))
     @mock.patch.dict(
         os.environ, {"AZURE_STORAGE_CONNECTION_STRING": "connection_string"}
     )
@@ -2876,7 +2886,13 @@ class TestAzureCloudInterface(object):
 
     @pytest.mark.parametrize(
         ("compression", "file_ext"),
-        ((None, ""), ("bzip2", ".bz2"), ("gzip", ".gz"), ("snappy", ".snappy")),
+        (
+            (None, ""),
+            ("bzip2", ".bz2"),
+            ("gzip", ".gz"),
+            ("snappy", ".snappy"),
+            ("lz4", ".lz4"),
+        ),
     )
     @mock.patch.dict(
         os.environ, {"AZURE_STORAGE_CONNECTION_STRING": "connection_string"}
@@ -3808,7 +3824,7 @@ end_time=2014-12-22 09:25:27.410470+01:00
                         suffix,
                     ),
                 ]
-                for suffix in ("", ".gz", ".bz2", ".snappy")
+                for suffix in ("", ".gz", ".bz2", ".snappy", ".lz4")
             ]
             for spec in spec_group
         ],
@@ -4236,7 +4252,7 @@ class TestCloudTarUploader(object):
         "compression",
         # The CloudTarUploader expects the short form compression args set by the
         # cloud_backup argument parser
-        (None, "bz2", "gz", "snappy"),
+        (None, "bz2", "gz", "snappy", "lz4"),
     )
     @mock.patch("barman.cloud.CloudInterface")
     def test_add(self, mock_cloud_interface, compression, tmpdir):
@@ -4281,6 +4297,14 @@ class TestCloudTarUploader(object):
                 # We must manually decompress the snappy bytes before extracting
                 tar_fileobj = BytesIO()
                 snappy.stream_decompress(uploaded_data, tar_fileobj)
+                tar_fileobj.seek(0)
+            elif compression == "lz4":
+                tar_mode = "r|"
+                # We must manually decompress the lz4 bytes before extracting
+                import lz4.frame
+
+                tar_fileobj = BytesIO()
+                tar_fileobj.write(lz4.frame.decompress(uploaded_data.read()))
                 tar_fileobj.seek(0)
             else:
                 tar_mode = "r|%s" % compression
