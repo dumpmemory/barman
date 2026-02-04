@@ -250,6 +250,25 @@ class TestServer(object):
         server.check(check_strategy)
         assert check_strategy.has_error
 
+    @patch("barman.server.os.makedirs", wraps=os.makedirs)
+    def test_make_directories(self, mock_makedirs, tmpdir):
+        # GIVEN a server with wals_directory and basebackups_directory config options
+        server = build_real_server()
+        wals_dir = tmpdir.mkdir("wals").strpath  # existing dir
+        incoming_dir = tmpdir.join("incoming").strpath  # non-existing dir
+        basebackups_dir = "s3://mybucket/basebackups"  # URL, should be ignored
+        server.config = mock.MagicMock(
+            KEYS=["wals_directory", "basebackups_directory", "incoming_wals_directory"],
+            wals_directory=wals_dir,
+            incoming_wals_directory=incoming_dir,
+            basebackups_directory=basebackups_dir,
+        )
+        # WHEN _make_directories is called
+        server._make_directories()
+        # THEN only the non-existing path is created, the existing and URL are skipped
+        assert os.path.exists(incoming_dir)
+        mock_makedirs.assert_called_once_with(incoming_dir)
+
     @patch("barman.server.os")
     def test_xlogdb_with_exception(self, os_mock, tmpdir):
         """
