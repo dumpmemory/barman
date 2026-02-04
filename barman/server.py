@@ -1293,7 +1293,8 @@ class Server(RemoteStatusMixin):
         for key in self.config.KEYS:
             if key.endswith("_directory") and hasattr(self.config, key):
                 val = getattr(self.config, key)
-                if val is not None and not os.path.isdir(val):
+                # Create the directory only if it does not exist and is not a URL
+                if val is not None and not os.path.isdir(val) and "://" not in val:
                     # noinspection PyTypeChecker
                     os.makedirs(val)
 
