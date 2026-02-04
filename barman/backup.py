@@ -1117,6 +1117,8 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             configurations
         :kwparam str|None recovery_option_port: port to set in restore command
             when invoking ``barman-wal-restore``
+        :kwparam str|None custom_restore_command: Custom restore command
+            to override Barman's default (only used with get-wal mode)
         """
 
         # Archive every WAL files in the incoming directory of the server

@@ -2496,6 +2496,8 @@ class Server(RemoteStatusMixin):
             configurations
         :kwparam str|None recovery_option_port: port to set in restore command
             when invoking ``barman-wal-restore``
+        :kwparam str|None custom_restore_command: Custom restore command
+            to override Barman's default (only used with get-wal mode)
         """
         return self.backup_manager.recover(
             backup_info, dest, wal_dest, tablespaces, remote_command, **kwargs

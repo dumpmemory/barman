@@ -1006,6 +1006,15 @@ def rebuild_xlogdb(args):
             ),
         ),
         argument(
+            "--restore-command",
+            dest="restore_command",
+            default=None,
+            help=(
+                "Custom restore command to override Barman's default restore_command. "
+                "It requires get-wal to be enabled and will be ignored otherwise."
+            ),
+        ),
+        argument(
             "--delta-restore",
             dest="delta_restore",
             help="Enable delta restore mode.",
@@ -1423,6 +1432,7 @@ def restore(args):
                 standby_mode=getattr(args, "standby_mode", None),
                 recovery_conf_filename=args.recovery_conf_filename,
                 recovery_option_port=args.recovery_option_port,
+                custom_restore_command=args.restore_command,
                 **snapshot_kwargs,
             )
         except RecoveryException as exc:
