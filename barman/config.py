@@ -1669,13 +1669,16 @@ class Config(object):
         """
         Look for conflicting paths intra-server and inter-server
         """
-
         # All paths in configuration
         servers_paths = {}
         # Global errors list
         self.servers_msg_list = []
 
         # Cycle all the available configurations sections
+        # TODO: server_names() calls _populate_servers_and_models(), which calls
+        # _check_conflicting_paths() again, so we are doing this check twice, making
+        # errors appear twice in the output. We should refactor this to avoid doing
+        # this check twice
         for section in sorted(self.server_names()):
             # Paths map
             section_conf = self._servers[section]
@@ -1690,6 +1693,12 @@ class Config(object):
 
             # Check for path errors
             for label, path in sorted(config_paths.items()):
+                # Skip cloud paths, as basebackups_directory and wals_directory can be
+                # set to a cloud provider URL since Barman 3.18, and in that case it's
+                # recommended to be the same value for both given they are only prefixes
+                # instead of full paths.
+                if "://" in path:
+                    continue
                 # If the path does not conflict with the others, add it to the
                 # paths map
                 real_path = os.path.realpath(path)

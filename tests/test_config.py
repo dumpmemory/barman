@@ -1018,6 +1018,47 @@ class TestConfig(object):
             mock_server.update_msg_list_and_disable_server.assert_not_called()
             mock.assert_called_once_with(mock_server._active_model_file, "r")
 
+    @pytest.mark.parametrize(
+        # This is just example. In practice, all *_directory are checked
+        "wals_directory, basebackups_directory, should_fail",
+        [
+            ("/local/path", "/local/path", True),  # Same local path fails
+            (
+                "/local/path",
+                "/another/local/path",
+                False,
+            ),  # Different local paths are ok
+            ("s3://cloud-path", "/local/path", False),  # Cloud and local paths are ok
+            ("s3://cloud-path", "s3://cloud-path", False),  # Same cloud path is ok
+        ],
+    )
+    def test_check_conflicting_paths(
+        self, wals_directory, basebackups_directory, should_fail
+    ):
+        """
+        Test that conflicting paths are correctly detected and reported.
+        """
+        c = testing_helpers.build_config_from_dicts(
+            main_conf={
+                "basebackups_directory": basebackups_directory,
+                "wals_directory": wals_directory,
+            }
+        )
+
+        c._check_conflicting_paths()
+
+        if should_fail:
+            # NOTE: there's currently a bug in _check_conflicting_paths that causes the
+            # same error to be added twice in msg_list, so we check for both occurrences
+            # for now. This will be fixed in the future
+            assert c._servers["main"].msg_list == [
+                "Conflicting path: wals_directory=%s conflicts with 'basebackups_directory' "
+                "for server 'main'" % wals_directory,
+                "Conflicting path: wals_directory=%s conflicts with 'basebackups_directory' "
+                "for server 'main'" % wals_directory,
+            ]
+            assert c._servers["main"].disabled is True
+
 
 class TestServerConfig(object):
     def test_update_msg_list_and_disable_server(self):
