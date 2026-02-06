@@ -1024,7 +1024,7 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             parent_backup_manifest_path=parent_backup_manifest,
         )
         try:
-            output.debug("Starting pg_basebackup to %s" % self._pgdata_dest)
+            _logger.debug("Starting pg_basebackup to %s" % self._pgdata_dest)
             pg_basebackup()
         except CommandFailedException as e:
             msg = "data transfer failure on directory '%s'" % self._pgdata_dest
@@ -1080,24 +1080,24 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         """
         is_paused = False
         while pg_basebackup.is_running():
-            output.debug(
+            _logger.debug(
                 "Monitoring the staging area '%s' size" % self._cloud_staging_dir
             )
             if not os.path.isdir(self._plain_dest):
-                output.debug("No content in staging yet, sleeping for 1 second")
+                _logger.debug("No content in staging yet, sleeping for 1 second")
                 time.sleep(1)
                 continue
 
             staging_size = get_directory_size(self._cloud_staging_dir)
             if staging_size > self.config.cloud_staging_max_size and not is_paused:
-                output.debug(
+                _logger.debug(
                     "Staging area size %s exceeds the max size %s, pausing pg_basebackup"
                     % (staging_size, self.config.cloud_staging_max_size)
                 )
                 pg_basebackup.pause()
                 is_paused = True
             elif is_paused and staging_size < self.config.cloud_staging_max_size:
-                output.debug(
+                _logger.debug(
                     "Staging area size %s is below the max size %s, resuming pg_basebackup"
                     % (staging_size, self.config.cloud_staging_max_size)
                 )
@@ -1123,7 +1123,7 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         .. note::
             This method performs step 3 described in this class docstring.
         """
-        output.debug("Starting to fetch ready files from %s" % self._plain_dest)
+        _logger.debug("Starting to fetch ready files from %s" % self._plain_dest)
         processed = set()
         while True:
             # Gather all files in the monitoring directory except: those still opened,
@@ -1144,20 +1144,20 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             # LAST_FILES and those that were opened during the last iteration
             # (they should be readily closed now)
             if not pg_basebackup.is_running():
-                output.debug("pg_basebackup process ended, fetching remaining files")
+                _logger.debug("pg_basebackup process ended, fetching remaining files")
                 for filepath in self._get_files_from_dir(self._plain_dest):
                     if filepath not in processed and not self._ignore_file(filepath):
                         self._ready_queue.put(filepath)
                         processed.add(filepath)
                 break
 
-            output.debug(
+            _logger.debug(
                 "Fetched round of ready files, current queue size is %s"
                 % self._ready_queue.qsize()
             )
             time.sleep(1)
 
-        output.debug("No more files to fetch, exiting ready files fetcher thread")
+        _logger.debug("No more files to fetch, exiting ready files fetcher thread")
         self._ready_queue.put(None)  # Sentinel to signal no more files will be added
 
     def _get_files_from_dir(self, directory):
