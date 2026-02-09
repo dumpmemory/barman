@@ -1457,6 +1457,19 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         objects_keys = [k for k in cloud_interface.list_bucket(backup_path + "/")]
         _logger.debug("Deleting all backup data from cloud path: %s" % backup_path)
         cloud_interface.delete_objects(objects_keys)
+        # Lastly delete the backup manifest from the local meta dir, if it exists
+        manifest_filename = "%s-backup_manifest" % backup.backup_id
+        manifest_path = os.path.join(self.server.meta_directory, manifest_filename)
+        if os.path.exists(manifest_path):
+            _logger.debug("Deleting backup manifest file: %s" % manifest_path)
+            try:
+                os.unlink(manifest_path)
+            except OSError:
+                output.warning(
+                    "Failed to delete backup manifest file: %s. Please manually delete "
+                    "this file if it still exists.",
+                    manifest_path,
+                )
 
     def check(self, check_strategy):
         """
