@@ -35,6 +35,7 @@ import dateutil.tz
 from barman import output, xlog
 from barman.annotations import AnnotationManagerFile, KeepManager, KeepManagerMixin
 from barman.backup_executor import (
+    CloudBackupExecutor,
     CloudPostgresBackupExecutor,
     PassiveBackupExecutor,
     PostgresBackupExecutor,
@@ -109,6 +110,8 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         try:
             if server.passive_node:
                 self.executor = PassiveBackupExecutor(self)
+            elif self.config.backup_method == "local-to-cloud":
+                self.executor = CloudBackupExecutor(self)
             elif self.config.backup_method == "postgres":
                 if recognize_cloud_provider(self.config.basebackups_directory):
                     self.executor = CloudPostgresBackupExecutor(self)

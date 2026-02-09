@@ -1225,12 +1225,15 @@ class Server(RemoteStatusMixin):
                 "cloud storage",
             )
             return
-        if self.use_backup_cloud_storage and self.config.backup_method != "postgres":
+        if self.use_backup_cloud_storage and self.config.backup_method not in {
+            "local-to-cloud",
+            "postgres",
+        }:
             check_strategy.result(
                 self.config.name,
                 False,
                 hint="cloud backup destination is only supported with "
-                "'backup_method = postgres'",
+                "'backup_method = postgres' or 'backup_method = local-to-cloud'",
             )
             return
         if (

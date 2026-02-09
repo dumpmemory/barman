@@ -244,6 +244,112 @@ def _parse_ssh_command(ssh_command):
     return ssh_command, ssh_options
 
 
+class CloudBackupExecutor(BackupExecutor):
+    """
+    Backup executor for direct cloud backups (``backup_method = local-to-cloud``).
+
+    This executor coordinates with PostgreSQL using the low-level backup API and uploads
+    the backup directly to cloud object storage. It reads from PGDATA and uploads
+    directly to the cloud, with no relaying through an intermediate storage. It
+    delegates the complete backup process to
+    :class:`~barman.cloud.CloudBackupUploader.coordinate_backup()`, which handles the
+    full backup lifecycle including starting the backup, reading and uploading data,
+    stopping the backup, uploading the backup_label, and finalizing the upload.
+
+    .. note::
+        This class inherits directly from :class:`BackupExecutor` rather than
+        :class:`ExternalBackupExecutor` due to ``backup_label`` sequencing requirements.
+        The :class:`ExternalBackupExecutor` flow (start_backup -> backup_copy ->
+        stop_backup) would provide the ``backup_label`` only after ``backup_copy``
+        completes. However, :class:`~barman.cloud.CloudBackupUploader` needs to upload
+        the ``backup_label`` before finalizing the upload controller.
+
+        By inheriting directly from :class:`BackupExecutor` and delegating to
+        :meth:`~barman.cloud.CloudBackupUploader.coordinate_backup()`, we reuse
+        existing cloud backup logic without duplication while respecting the required
+        sequencing constraints.
+
+    .. note::
+        We could not simply reuse the entire :class:`CloudBackupUploader` because
+        ``barman backup`` works on top of `BackupExecutor` which defines a specific
+        interface and flow for backup execution, and the :class:`CloudBackupUploader`
+        class is based on :class:`CloudBackup`, which has a some overlapping but not
+        identical logic to the backup flow defined by `BackupExecutor`.
+    """
+
+    def __init__(self, backup_manager):
+        """
+        Constructor
+
+        :param barman.backup.BackupManager backup_manager: the BackupManager
+            assigned to the executor
+        """
+        super(CloudBackupExecutor, self).__init__(backup_manager, "local-to-cloud")
+        # We set a strategy only because it's required by the BackupExecutor interface,
+        # but the actual backup logic is implemented in the backup() method of this
+        # class, which reuses part of the logic of CloudBackupUploader.
+        self.strategy = ConcurrentBackupStrategy(self.server.postgres, self.config.name)
+
+    def backup(self, backup_info):
+        """
+        Perform a backup for the server.
+
+        This implementation uploads the backup directly to cloud storage using part of
+        the logic from the :class:`CloudBackupUploader` class.
+
+        :param barman.infofile.LocalBackupInfo backup_info: backup information
+        """
+        from barman.cloud import CloudBackupUploader
+
+        _logger.info("Starting cloud backup for server %s", self.config.name)
+
+        postgres = self.server.postgres
+        cloud_interface = self.server.get_backup_cloud_interface()
+
+        # Create the uploader with proper configuration
+        with closing(cloud_interface):
+            with closing(postgres):
+                uploader = CloudBackupUploader(
+                    server_name=self.config.name,
+                    cloud_interface=cloud_interface,
+                    max_archive_size=107374182400,  # Same default as cloud scripts (100GB)
+                    postgres=postgres,
+                    backup_name=getattr(backup_info, "backup_name", None),
+                )
+
+                # Set the backup_info that was already started by BackupExecutor.
+                # CloudBackupUploader normally creates its own, but we reuse the one
+                # from BackupManager. We do that because the manager sets the fields the
+                # way it expects to use them later, which diverges a bit from the way
+                # CloudBackupUploader would set them. That way we avoid possible
+                # inconsistencies later when running other barman commands through the
+                # server.
+                uploader.backup_info = backup_info
+
+                # Create the upload controller. Normally, when using the method
+                # 'uploader.backup', it would take care of that.
+                uploader.controller = uploader.create_upload_controller(
+                    backup_info.backup_id
+                )
+
+                # Coordinate the entire backup
+                # This handles: start_backup -> upload data -> stop_backup -> upload
+                #   label -> close controller
+                try:
+                    uploader.coordinate_backup()
+                except SystemExit as exc:
+                    raise BackupException(
+                        "Cloud backup failed with error. Please check the logs for details."
+                    ) from exc
+
+                # Copy timing info back to executor
+                self.copy_start_time = uploader.copy_start_time
+                self.copy_end_time = uploader.copy_end_time
+
+        # If this is the first backup, purge eventually unused WAL files
+        self._purge_unused_wal_files(backup_info)
+
+
 class PostgresBackupExecutor(BackupExecutor):
     """
     Concrete class for backup via pg_basebackup (plain format).

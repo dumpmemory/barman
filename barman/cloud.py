@@ -1338,10 +1338,10 @@ class CloudBackup(with_metaclass(ABCMeta)):
 
     This class handles the coordination of the physical backup copy with the PostgreSQL
     server via the PostgreSQL low-level backup API. This is handled by the
-    _coordinate_backup method.
+    coordinate_backup method.
 
     Concrete classes will need to implement the following abstract methods which are
-    called during the _coordinate_backup method:
+    called during the coordinate_backup method:
 
         _take_backup
         _upload_backup_label
@@ -1349,7 +1349,7 @@ class CloudBackup(with_metaclass(ABCMeta)):
         _add_stats_to_backup_info
 
     Implementations must also implement the public backup method which should carry
-    out any prepartion and invoke _coordinate_backup.
+    out any prepartion and invoke coordinate_backup.
     """
 
     def __init__(self, server_name, cloud_interface, postgres, backup_name=None):
@@ -1381,7 +1381,7 @@ class CloudBackup(with_metaclass(ABCMeta)):
         Perform the actions necessary to create the backup.
 
         This method must be called between pg_backup_start and pg_backup_stop which
-        is guaranteed to happen if the _coordinate_backup method is used.
+        is guaranteed to happen if the coordinate_backup method is used.
         """
 
     @abstractmethod
@@ -1410,7 +1410,7 @@ class CloudBackup(with_metaclass(ABCMeta)):
 
         When providing an implementation of this method, concrete classes *must* set
         `self.backup_info` before coordinating the backup. Implementations *should*
-        call `self._coordinate_backup` to carry out the backup process.
+        call `self.coordinate_backup` to carry out the backup process.
         """
 
     # The following concrete methods are independent of backup copy mechanism.
@@ -1493,7 +1493,7 @@ class CloudBackup(with_metaclass(ABCMeta)):
             human_readable_timedelta(datetime.datetime.now() - self.copy_start_time),
         )
 
-    def _coordinate_backup(self):
+    def coordinate_backup(self):
         """
         Coordinate taking the backup with the PostgreSQL server.
         """
@@ -1628,7 +1628,7 @@ class CloudBackupUploader(CloudBackup):
         """
         return tablespace.location
 
-    def _create_upload_controller(self, backup_id):
+    def create_upload_controller(self, backup_id):
         """
         Create an upload controller from the specified backup_id
 
@@ -1824,11 +1824,11 @@ class CloudBackupUploader(CloudBackup):
         """
         server_name = "cloud"
         self.backup_info = self._get_backup_info(server_name)
-        self.controller = self._create_upload_controller(self.backup_info.backup_id)
+        self.controller = self.create_upload_controller(self.backup_info.backup_id)
 
         self._check_postgres_version()
 
-        self._coordinate_backup()
+        self.coordinate_backup()
 
 
 class CloudBackupUploaderBarman(CloudBackupUploader):
@@ -1934,7 +1934,7 @@ class CloudBackupUploaderBarman(CloudBackupUploader):
         Upload a Backup to cloud storage
 
         This deviates from other CloudBackup classes because it does not make use of
-        the self._coordinate_backup function. This is because there is no need to
+        the self.coordinate_backup function. This is because there is no need to
         coordinate the backup with a live PostgreSQL server, create a restore point
         or upload the backup label independently of the backup (it will already be in
         the base backup directoery).
@@ -1942,7 +1942,7 @@ class CloudBackupUploaderBarman(CloudBackupUploader):
         # Read the backup_info file from disk as the backup has already been created
         self.backup_info = BackupInfo(self.backup_id)
         self.backup_info.load(filename=self.backup_info_path)
-        self.controller = self._create_upload_controller(self.backup_id)
+        self.controller = self.create_upload_controller(self.backup_id)
         try:
             self.copy_start_time = datetime.datetime.now()
             self._take_backup()
@@ -2120,7 +2120,7 @@ class CloudBackupSnapshot(CloudBackup):
 
         self._check_postgres_version()
 
-        self._coordinate_backup()
+        self.coordinate_backup()
 
 
 class BackupFileInfo(object):
