@@ -2664,6 +2664,30 @@ class TestVerifyBackup:
         )
 
 
+class TestCloudBackup(object):
+    """Test handling of cloud backups by BackupManager."""
+
+    @patch("barman.backup.CloudBackupExecutor")
+    def test_cloud_backup_method(self, mock_cloud_executor):
+        """
+        Verify that a CloudBackupExecutor is created for backup_method "cloud".
+        """
+        # GIVEN a server with backup_method = "cloud"
+        server = build_mocked_server(
+            "test_server",
+            main_conf={
+                "backup_method": "local-to-cloud",
+                "basebackups_directory": "s3://bucket/path",
+            },
+        )
+        # WHEN a BackupManager is created for that server
+        manager = BackupManager(server=server)
+        # THEN its executor is a CloudBackupExecutor
+        assert manager.executor == mock_cloud_executor.return_value
+        # AND CloudBackupExecutor was called with the backup manager
+        mock_cloud_executor.assert_called_once_with(manager)
+
+
 class TestSnapshotBackup(object):
     """Test handling of snapshot backups by BackupManager."""
 

@@ -4603,7 +4603,7 @@ class TestCloudBackupUploader(object):
         )
 
     @pytest.mark.parametrize("backup_should_fail", (False, True))
-    @mock.patch("barman.cloud.CloudBackupUploader._create_upload_controller")
+    @mock.patch("barman.cloud.CloudBackupUploader.create_upload_controller")
     @mock.patch("barman.cloud.CloudBackupUploader._backup_data_files")
     @mock.patch("barman.cloud.ConcurrentBackupStrategy")
     @mock.patch("barman.cloud.BackupInfo")
@@ -4612,7 +4612,7 @@ class TestCloudBackupUploader(object):
         mock_backup_info,
         _mock_backup_strategy,
         _mock_backup_data_files,
-        _mock_create_upload_controller,
+        _mockcreate_upload_controller,
         backup_should_fail,
     ):
         """Verifies backup name is added to backup info if it is set."""
@@ -4644,7 +4644,7 @@ class TestCloudBackupUploader(object):
         )
 
     @pytest.mark.parametrize("backup_should_fail", (False, True))
-    @mock.patch("barman.cloud.CloudBackupUploader._create_upload_controller")
+    @mock.patch("barman.cloud.CloudBackupUploader.create_upload_controller")
     @mock.patch("barman.cloud.CloudBackupUploader._backup_data_files")
     @mock.patch("barman.cloud.ConcurrentBackupStrategy")
     @mock.patch("barman.cloud.BackupInfo")
@@ -4653,7 +4653,7 @@ class TestCloudBackupUploader(object):
         mock_backup_info,
         _mock_backup_strategy,
         _mock_backup_data_files,
-        _mock_create_upload_controller,
+        _mockcreate_upload_controller,
         backup_should_fail,
     ):
         """Verifies backup name is added to backup info if it is set."""

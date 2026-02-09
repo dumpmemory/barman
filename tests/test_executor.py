@@ -33,6 +33,7 @@ from testing_helpers import (
 )
 
 from barman.backup_executor import (
+    CloudBackupExecutor,
     CloudPostgresBackupExecutor,
     ExclusiveBackupStrategy,
     PostgresBackupExecutor,
@@ -2306,6 +2307,142 @@ class TestCloudPostgresBackupExecutor(object):
         tablespace_file = "/tmp/barman/plain/39484/PG_17_2024/5/271"
         # THEN it returns the tablespace its OID
         assert executor._get_tarball_name(tablespace_file) == "39484"
+
+
+class TestCloudBackupExecutor(object):
+    """
+    Tests for the CloudBackupExecutor class.
+    """
+
+    @patch("barman.backup_executor.ConcurrentBackupStrategy")
+    def test__init__(self, mock_strategy):
+        """
+        Test the construction of a CloudBackupExecutor
+        """
+        # GIVEN a server with cloud configuration
+        server = build_mocked_server(
+            main_conf={
+                "backup_method": "local-to-cloud",
+                "basebackups_directory": "s3://bucket/path",
+            }
+        )
+        # Set the strategy mode to None for testing
+        mock_strategy.return_value.mode = None
+        # WHEN a CloudBackupExecutor is created
+        executor = CloudBackupExecutor(server.backup_manager)
+        # THEN a ConcurrentBackupStrategy is created
+        mock_strategy.assert_called_once_with(
+            executor.server.postgres, executor.config.name
+        )
+        assert executor.strategy == mock_strategy.return_value
+        # AND the executor mode is set to "local-to-cloud"
+        assert executor.mode == "local-to-cloud"
+
+    @patch("barman.cloud.CloudBackupUploader")
+    @patch("barman.backup_executor.CloudBackupExecutor.__init__", return_value=None)
+    def test_backup(self, _, mock_uploader_class):
+        """
+        Test that the backup method properly delegates to CloudBackupUploader
+        """
+        # GIVEN a CloudBackupExecutor with necessary attributes
+        executor = CloudBackupExecutor(None)
+        executor.server = mock.Mock()
+        mock_config = mock.Mock()
+        mock_config.name = "test_server"
+        executor.config = mock_config
+
+        # Mock the postgres connection and cloud interface
+        mock_postgres = mock.Mock()
+        mock_cloud_interface = mock.Mock()
+        executor.server.postgres = mock_postgres
+        executor.server.get_backup_cloud_interface.return_value = mock_cloud_interface
+
+        # Mock the uploader instance
+        mock_uploader = mock.Mock()
+        mock_uploader.copy_start_time = "2026-02-09 12:00:00"
+        mock_uploader.copy_end_time = "2026-02-09 13:00:00"
+        mock_uploader_class.return_value = mock_uploader
+
+        # Mock the upload controller
+        mock_controller = mock.Mock()
+        mock_uploader.create_upload_controller.return_value = mock_controller
+
+        # Create a mock backup_info
+        backup_info = mock.Mock()
+        backup_info.backup_name = "test_backup"
+        backup_info.backup_id = "20260209T120000"
+
+        # Mock _purge_unused_wal_files method
+        executor._purge_unused_wal_files = mock.Mock()
+
+        # WHEN backup is called
+        executor.backup(backup_info)
+
+        # THEN CloudBackupUploader is instantiated with correct parameters
+        mock_uploader_class.assert_called_once_with(
+            server_name="test_server",
+            cloud_interface=mock_cloud_interface,
+            max_archive_size=107374182400,
+            postgres=mock_postgres,
+            backup_name="test_backup",
+        )
+
+        # AND the backup_info is set on the uploader
+        assert mock_uploader.backup_info == backup_info
+
+        # AND the upload controller is created
+        mock_uploader.create_upload_controller.assert_called_once_with(
+            "20260209T120000"
+        )
+        assert mock_uploader.controller == mock_controller
+
+        # AND the backup is coordinated
+        mock_uploader.coordinate_backup.assert_called_once()
+
+        # AND timing info is copied back
+        assert executor.copy_start_time == "2026-02-09 12:00:00"
+        assert executor.copy_end_time == "2026-02-09 13:00:00"
+
+        # AND cloud interface and postgres are closed
+        mock_cloud_interface.close.assert_called_once()
+        mock_postgres.close.assert_called_once()
+
+        # AND unused WAL files are purged
+        executor._purge_unused_wal_files.assert_called_once_with(backup_info)
+
+    @patch("barman.cloud.CloudBackupUploader")
+    @patch("barman.backup_executor.CloudBackupExecutor.__init__", return_value=None)
+    def test_backup_handles_exception(self, _, mock_uploader_class):
+        """
+        Test that the backup method properly handles SystemExit exceptions
+        """
+        # GIVEN a CloudBackupExecutor
+        executor = CloudBackupExecutor(None)
+        executor.server = mock.Mock()
+        mock_config = mock.Mock()
+        mock_config.name = "test_server"
+        executor.config = mock_config
+
+        # Mock the postgres connection and cloud interface
+        mock_postgres = mock.Mock()
+        mock_cloud_interface = mock.Mock()
+        executor.server.postgres = mock_postgres
+        executor.server.get_backup_cloud_interface.return_value = mock_cloud_interface
+
+        # Mock the uploader to raise SystemExit
+        mock_uploader = mock.Mock()
+        mock_uploader.coordinate_backup.side_effect = SystemExit("Test error")
+        mock_uploader_class.return_value = mock_uploader
+        mock_uploader.create_upload_controller.return_value = mock.Mock()
+
+        backup_info = mock.Mock(backup_name="test_backup", backup_id="20260209T120000")
+
+        # WHEN backup is called and an exception occurs
+        # THEN a BackupException is raised
+        with pytest.raises(BackupException) as exc_info:
+            executor.backup(backup_info)
+
+        assert "Cloud backup failed with error" in str(exc_info.value)
 
 
 class TestSnapshotBackupExecutor(object):

@@ -4049,7 +4049,7 @@ class TestServer(object):
                 None,
                 "rsync",
                 "off",
-                "cloud backup destination is only supported with 'backup_method = postgres'",
+                "cloud backup destination is only supported with 'backup_method = postgres' or 'backup_method = local-to-cloud'",
             ),
             (
                 None,
@@ -4064,6 +4064,14 @@ class TestServer(object):
                 None,
                 None,
                 "postgres",
+                "off",
+                None,
+            ),
+            (
+                None,
+                None,
+                None,
+                "local-to-cloud",
                 "off",
                 None,
             ),
