@@ -1,0 +1,30 @@
+---
+- summary: Add `local-to-cloud` backup method to `barman` CLI
+  description: |
+    Introduced support for direct cloud backups through the main `barman` CLI by
+    adding a new `local-to-cloud` backup method. Previously, cloud backups were only
+    available through standalone `barman-cloud-*` scripts.
+
+    With this enhancement, you can now configure cloud backups directly in the barman
+    configuration file using `backup_method = local-to-cloud` along with a cloud storage
+    URL in `basebackups_directory` (e.g., `s3://bucket/path`). This provides a unified
+    interface for all backup methods and is the first step toward deprecating the
+    standalone `barman-cloud-*` scripts.
+
+    The new `CloudBackupExecutor` integrates seamlessly with the existing barman
+    backup infrastructure, coordinating with PostgreSQL using the low-level backup
+    API and uploading backups directly to cloud object storage.
+
+    Example configuration:
+    ```
+    [myserver]
+    backup_method = local-to-cloud
+    basebackups_directory = s3://my-bucket/barman/backups
+    conninfo = host=postgres-host dbname=postgres
+    ```
+
+    This is the first step toward unifying the barman cloud experience and simplifying
+    cloud backup operations.
+  type: notable_change
+  jira_tickets:
+    - BAR-1095
