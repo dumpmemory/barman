@@ -419,13 +419,15 @@ class TestBackup(object):
         # Ensure the annotation was deleted
         mock_delete_annotation.assert_called_once_with(b_info.backup_id)
 
-    def test_delete_cloud_backup_data(self):
+    @patch("barman.backup.os.unlink")
+    @patch("barman.backup.os.path.exists", return_value=True)
+    def test_delete_cloud_backup_data(self, _, mock_unlink):
         """
         Test deletion of backup data from cloud storage.
         """
         # GIVEN a BackupManager with a mocked cloud interface
         backup_manager = build_backup_manager(name="my-server")
-        backup_info = build_test_backup_info(backup_id="test_backup_id")
+        backup_info = Mock(backup_id="test_backup_id")
         cloud_interface_mock = Mock(
             path="my-backups",
             list_bucket=Mock(
@@ -449,6 +451,40 @@ class TestBackup(object):
                 "my-backups/my-server/base/%s/tbs1.tar" % backup_info.backup_id,
                 "my-backups/my-server/base/%s/backup.info" % backup_info.backup_id,
             ]
+        )
+        # AND the backup manifest file is deleted from the local meta directory
+        manifest_path = os.path.join(
+            backup_manager.server.meta_directory,
+            "%s-backup_manifest" % backup_info.backup_id,
+        )
+        mock_unlink.assert_called_once_with(manifest_path)
+
+    @patch("barman.backup.output")
+    @patch("barman.backup.os.unlink", side_effect=OSError("Some error"))
+    @patch("barman.backup.os.path.exists", return_value=True)
+    def test_delete_cloud_backup_data_deleting_manifest_fails(
+        self, _, mock_unlink, mock_output
+    ):
+        """
+        Test that if an error occurs while deleting the backup manifest file during
+        cloud backup deletion, the error is logged.
+        """
+        # GIVEN a BackupManager with a mocked cloud interface
+        backup_manager = build_backup_manager(name="my-server")
+        backup_info = Mock(backup_id="test_backup_id")
+        cloud_interface_mock = Mock(path="my-backups", list_bucket=lambda x: [])
+        backup_manager.server.get_backup_cloud_interface = lambda: cloud_interface_mock
+        # WHEN _delete_cloud_backup_data is called
+        backup_manager._delete_cloud_backup_data(Mock(backup_id="test_backup_id"))
+        # THEN when deleting the manifest file an error occurs and is logged
+        manifest_path = os.path.join(
+            backup_manager.server.meta_directory,
+            "%s-backup_manifest" % backup_info.backup_id,
+        )
+        mock_output.warning.assert_called_once_with(
+            "Failed to delete backup manifest file: %s. Please manually delete "
+            "this file if it still exists.",
+            manifest_path,
         )
 
     @patch("os.stat")
