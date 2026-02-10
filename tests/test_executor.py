@@ -54,6 +54,7 @@ from barman.exceptions import (
 from barman.infofile import BackupInfo, LocalBackupInfo, Tablespace
 from barman.postgres_plumbing import EXCLUDE_LIST, PGDATA_EXCLUDE_LIST
 from barman.server import CheckOutputStrategy, CheckStrategy
+from barman.utils import total_seconds
 
 
 # noinspection PyMethodMayBeStatic
@@ -1621,7 +1622,7 @@ class TestCloudPostgresBackupExecutor(object):
         executor._cloud_staging_dir = "/tmp/barman"
         executor._plain_dest = "/tmp/barman/plain"
         executor._tarball_dest = "/tmp/barman/tarballs"
-        executor._upload_controller = mock.Mock(statistics=lambda: {})
+        executor._upload_controller = mock.Mock(statistics=lambda: {}, size=12345)
         executor._cloud_interface = mock.Mock()
         # WHEN backup_copy is called with a BackupInfo
         backup_info = mock.Mock()
@@ -1659,6 +1660,15 @@ class TestCloudPostgresBackupExecutor(object):
         mock_shutil.rmtree.assert_called_once_with(
             executor._cloud_staging_dir, ignore_errors=True
         )
+        # AND time and size stats are saved
+        assert backup_info.copy_stats is not None
+        assert backup_info.copy_stats["total_time"] == total_seconds(
+            executor.copy_end_time - executor.copy_start_time
+        )
+        assert backup_info.set_attribute.call_args_list == [
+            mock.call("size", executor._upload_controller.size),
+            mock.call("deduplicated_size", executor._upload_controller.size),
+        ]
 
     @patch("barman.cloud.CloudUploadController")
     @patch(
