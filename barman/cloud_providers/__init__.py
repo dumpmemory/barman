@@ -191,6 +191,7 @@ def get_cloud_interface_from_server_config(config, cloud_provider, base_url):
     if cloud_provider == "aws-s3":
         from barman.cloud_providers.aws_s3 import S3CloudInterface
 
+        cloud_interface_kwargs["profile_name"] = config.aws_profile
         return S3CloudInterface(**cloud_interface_kwargs)
     elif cloud_provider == "azure-blob-storage":
         from barman.cloud_providers.azure_blob_storage import AzureCloudInterface
