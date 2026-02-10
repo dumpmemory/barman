@@ -478,12 +478,6 @@ Postgres instance resides, with backed up data stored on a separate volume from
 ``PGDATA`` and, where applicable, tablespaces. Usually, these backup volumes reside on
 network storage appliances, with filesystems like NFS.
 
-This architecture is not endorsed by the Barman team. For an enhanced business
-continuity experience of Postgres, with better results in terms of :term:`RPO` and
-:term:`RTO`, we still recommend the shared-nothing architecture with a remote
-installation of Barman, capable of acting like a witness server for replication and
-monitoring purposes.
-
 The only requirement for local backups is that Barman runs with the same user as the
 Postgres server, which is normally ``postgres``. Given that the community packages by
 default install Barman under the ``barman`` user, this use case requires manual
@@ -491,13 +485,23 @@ installation procedures that include:
 
 * cron configurations
 * log configurations, including logrotate
+* Barman home configuration
 
-.. hint::
+The recommended way to set up Barman for local backups is to follow these steps
+after installing Barman:
 
-  Use the ``barman_user`` option in the ``barman.conf`` file to set a different
-  user for Barman. To avoid permissions issues, also remember to change its home, log,
-  and lock directories accordingly to paths accesible by the new user. Refer to
-  :ref:`Configuration options <configuration-options-general>` for more details.
+1. Set ``barman_user = postgres`` (or the operating system user running the server if
+   using a different one) in the global configuration file to ensure Barman has access
+   to read the data files.
+2. Configure the backup directory and other relevant directories to be accessible by the
+   same user. This can be done by setting the appropriate options in the configuration file
+   (e.g., ``backup_directory``, ``barman_home``, ``log_filename``, etc.) to point to paths
+   with the correct permissions. Don't use the default paths provided by the community
+   packages, as they are owned by the ``barman`` user, and permissions and ownership of those
+   directories will be restored to the original state during package updates, which can
+   cause issues.
+
+Refer to :ref:`Configuration options <configuration-options-general>` for more details.
 
 In order to use local backup for a given server in Barman, you need to set
 ``backup_method`` to ``local-rsync``. The feature is essentially identical to its
