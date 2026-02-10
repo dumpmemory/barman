@@ -1023,6 +1023,8 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         backup_info.copy_stats["total_time"] = total_seconds(
             self.copy_end_time - self.copy_start_time
         )
+        backup_info.set_attribute("size", self._upload_controller.size)
+        backup_info.set_attribute("deduplicated_size", self._upload_controller.size)
 
     def _init_upload_controller(self, backup_info):
         """

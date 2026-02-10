@@ -392,6 +392,9 @@ class CloudUploadController(object):
         self.copy_end_time = None
         """Copy end time"""
 
+        self.size = 0
+        """Total size of the backup"""
+
     def _build_dest_name(self, name, count=0):
         """
         Get the destination tar name
@@ -526,6 +529,11 @@ class CloudUploadController(object):
                 # have been already closed
                 self.tar_list[name][-1].close()
                 self.upload_stats[name] = [tar.stats for tar in self.tar_list[name]]
+                # Calculate the total size of the backup by summing
+                # the size of all uploaded tarballs
+                for tar in self.tar_list[name]:
+                    self.size += tar.size
+
             self.tar_list[name] = None
 
         # Store the end time
