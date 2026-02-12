@@ -3034,6 +3034,44 @@ class Server(RemoteStatusMixin):
                 if os.path.exists(item.tmp_path):
                     os.unlink(item.tmp_path)
 
+    def cloud_wal_archive(self, wal_path):
+        """
+        Archive a WAL file to a cloud object storage.
+
+        :param str wal_path: the path of the WAL file to archive
+        """
+        output.debug(
+            "Starting cloud-wal-archive for WAL file %s on server %s",
+            wal_path,
+            self.config.name,
+        )
+
+        if self.config.backup_method != "local-to-cloud":
+            output.error(
+                "cloud-wal-archive is only supported for servers with 'backup_method' set to "
+                "'local-to-cloud'. Please check the configuration of server %s.",
+                self.config.name,
+            )
+            return
+
+        if not self.use_wal_cloud_storage:
+            output.error(
+                "cloud-wal-archive is not supported for server %s because no cloud storage "
+                "configuration is set in 'wals_directory'. Please check the "
+                "configuration of server %s.",
+                self.config.name,
+                self.config.name,
+            )
+            return
+
+        self.backup_manager.cloud_wal_archive(wal_path)
+
+        output.debug(
+            "Finished cloud-wal-archive for WAL file %s on server %s",
+            wal_path,
+            self.config.name,
+        )
+
     def cron(self, wals=True, retention_policies=True, keep_descriptors=False):
         """
         Maintenance operations
@@ -4950,6 +4988,25 @@ class Server(RemoteStatusMixin):
             # Spawn the receive-wal sub-process
             self.background_receive_wal(keep_descriptors=False)
 
+    def _get_errors_dst(self, file_name, suffix):
+        """
+        Get the destination path for an unknown or (mismatching) duplicate WAL file in
+        the ``errors`` directory.
+
+        :param str file_name: Name of the incoming file.
+        :param str suffix: String which identifies the kind of the issue.
+
+            * ``duplicate``: if *src* is a (mismatching) duplicate WAL file.
+            * ``unknown``: if *src* is not an WAL file.
+
+        :return str: The destination path for the incoming file in the ``errors`` directory.
+        """
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        return os.path.join(
+            self.config.errors_directory,
+            "%s.%s.%s" % (file_name, stamp, suffix),
+        )
+
     def move_wal_file_to_errors_directory(self, src, file_name, suffix):
         """
         Move an unknown or (mismatching) duplicate WAL file to the ``errors`` directory.
@@ -4977,15 +5034,31 @@ class Server(RemoteStatusMixin):
             * ``duplicate``: if *src* is a (mismatching) duplicate WAL file.
             * ``unknown``: if *src* is not an WAL file.
         """
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        error_dst = os.path.join(
-            self.config.errors_directory,
-            "%s.%s.%s" % (file_name, stamp, suffix),
-        )
+        error_dst = self._get_errors_dst(file_name, suffix)
         # TODO: cover corner case of duplication (unlikely,
         # but theoretically possible)
         try:
             shutil.move(src, error_dst)
+        except IOError as e:
+            if e.errno == errno.ENOENT:
+                _logger.warning("%s not found" % src)
+
+    def copy_wal_file_to_errors_directory(self, src, file_name, suffix):
+        """
+        Copy an unknown or (mismatching) duplicate WAL file to the ``errors`` directory.
+
+        .. note:
+            We aim to solve the same issue as :meth:`move_wal_file_to_errors_directory`,
+            but we want to keep the original file in place.
+
+            This is useful when running WAL archiving directly from ``pg_wal``, like we
+            do when using ``barman cloud-wal-archive``. Given the WAL file is inside
+            ``pg_wal``, we shouldn't move it to a different directory, but rather copy
+            it.
+        """
+        error_dst = self._get_errors_dst(file_name, suffix)
+        try:
+            shutil.copy(src, error_dst)
         except IOError as e:
             if e.errno == errno.ENOENT:
                 _logger.warning("%s not found" % src)

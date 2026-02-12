@@ -111,13 +111,14 @@ class WalStorageStrategy(metaclass=ABCMeta):
         self.server = server
 
     @abstractmethod
-    def save(self, compressor, encryption, wal_info):
+    def save(self, compressor, encryption, wal_info, **kwargs):
         """
         Effectively persist a WAL file according to the configured destination.
 
         :param compressor: the compressor for the file (if any)
         :param None|Encryption encryption: the encryptor for the file (if any)
         :param WalFileInfo wal_info: the WAL file is being processed
+        :param kwargs: additional parameters for the storage strategy, if any
         """
 
     @abstractmethod
@@ -394,7 +395,7 @@ class LocalWalStorageStrategy(WalStorageStrategy):
         # Fsync the target directory to ensure the presence of the new file
         fsync_dir(dst_dir)
 
-    def save(self, compressor, encryption, wal_info):
+    def save(self, compressor, encryption, wal_info, **kwargs):
         """
         Effectively persist a WAL file according to the configured destination.
 
@@ -403,6 +404,7 @@ class LocalWalStorageStrategy(WalStorageStrategy):
         :param compressor: the compressor for the file (if any)
         :param None|Encryption encryption: the encryptor for the file (if any)
         :param WalFileInfo wal_info: the WAL file is being processed
+        :param kwargs: additional parameters for the storage strategy, if any
         :raises DuplicateWalFile: if the destination file exists and is
             different from the source file
         :raises MatchingDuplicateWalFile: if the destination file exists and is
@@ -550,13 +552,17 @@ class CloudWalStorageStrategy(WalStorageStrategy):
             else:
                 raise DuplicateWalFile(wal_info)
 
-    def save(self, compressor, encryption, wal_info):
+    def save(self, compressor, encryption, wal_info, **kwargs):
         """
         Effectively persist a WAL file according to the configured destination.
 
         :param compressor: the compressor for the file (if any)
         :param None|Encryption encryption: the encryptor for the file (if any)
         :param WalFileInfo wal_info: the WAL file is being processed
+        :param kwargs: additional parameters for the storage strategy, if any:
+
+            * "skip_delete": if ``True``, the source file will not be deleted after a
+              successful upload.
 
         .. note::
             Compression and encryption are still not implemented for cloud storage,
@@ -586,8 +592,9 @@ class CloudWalStorageStrategy(WalStorageStrategy):
         finally:
             self._run_post_archive_scripts(wal_info, wal_info.orig_filename, error)
 
-        os.unlink(wal_info.orig_filename)
-        wal_info.orig_filename = None
+        if not kwargs.get("skip_delete", False):
+            os.unlink(wal_info.orig_filename)
+            wal_info.orig_filename = None
 
     def delete(self, wals_to_delete):
         wal_objects_to_delete = []

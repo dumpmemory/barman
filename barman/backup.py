@@ -57,7 +57,9 @@ from barman.exceptions import (
     BackupException,
     CommandFailedException,
     CompressionIncompatibility,
+    DuplicateWalFile,
     LockFileBusy,
+    MatchingDuplicateWalFile,
     SshCommandException,
     UnknownBackupIdException,
 )
@@ -81,6 +83,7 @@ from barman.utils import (
     human_readable_timedelta,
     pretty_size,
 )
+from barman.wal_archiver import CloudWalStorageStrategy
 
 _logger = logging.getLogger(__name__)
 
@@ -1219,6 +1222,88 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         """
         for archiver in self.server.archivers:
             archiver.archive(verbose)
+
+    def cloud_wal_archive(self, wal_path):
+        """
+        Archive a WAL file to cloud storage.
+
+        Intended to be used as ``archive_command`` in Postgres.
+
+        Performs archiving similar to :class:`WalArchiver`, but with the specific
+        purpose of archiving a WAL file to cloud storage directly from ``pg_wal``,
+        meaning WAL files are not staged in ``incoming`` directory and do not go through
+        the usual WAL archiving process. This is done that way because the
+        ``barman cloud-wal-archive`` command is intended to replace the script
+        ``barman-cloud-wal-archive`` when the Barman server runs in the same host as
+        Postgres. Also, this avoids having to use `cp` as `archive_command`, which could
+        send much more WALs to the ``incoming`` directory than what Barman is actually
+        able to archive in a timely manner -- besides the fact that `barman wal-archive`
+        is awaken only by `barman cron` every 1 minute, while `archive_command` is
+        called by Postgres for every WAL file generated.
+
+        .. note::
+            This method assumes validation of the WAL file and of the server
+            configuration has already been performed. At this point, we can simply
+            archive the WAL to cloud object storage.
+
+        .. important::
+            This method cannot be used with :class:`LocalWalStorageStrategy` because
+            that strategy modifies and/or removes the source WAL file as part of the
+            ``save()`` call, which is not acceptable here given we are using the WAL
+            from ``pg_wal``.
+
+        :param str wal_path: the path of the WAL file to archive
+        """
+        # Get a WAL file info and the compressor/encryptor, similar to what is done
+        # through WalArchiver when running 'barman archive-wal'.
+        wal_info = WalFileInfo.from_file(
+            filename=wal_path,
+            compression_manager=self.compression_manager,
+            unidentified_compression=None,
+            encryption_manager=self.encryption_manager,
+            encryption=None,
+        )
+        compressor = self.compression_manager.get_default_compressor()
+        encryption = self.encryption_manager.get_encryption()
+
+        wal_storage = self.server.wal_storage
+
+        # In the docstring we mention we don't perform validation here, but we still
+        # want to make sure that the WAL storage strategy is compatible with this
+        # method, otherwise we can end up in a situation where the WAL file is
+        # removed/modified without being archived in cloud storage, which can cause data
+        # loss.
+        if not isinstance(wal_storage, CloudWalStorageStrategy):
+            output.error(
+                "The 'cloud-wal-archive' command can only be used with cloud WAL "
+                "storage strategies. Please check your server configuration and ensure "
+                "that the `wals_directory` points to a cloud object storage."
+            )
+            return
+
+        try:
+            # We skip the delete because the WAL file is expected to be inside 'pg_wal',
+            # not inside the 'incoming' directory.
+            wal_storage.save(compressor, encryption, wal_info, skip_delete=True)
+            output.info("WAL file %s archived in cloud storage.", wal_info.name)
+        except MatchingDuplicateWalFile:
+            output.info(
+                "WAL file %s is already archived in cloud storage, skipping.",
+                wal_info.name,
+            )
+        except DuplicateWalFile:
+            output.warning(
+                "WAL file %s is already archived in cloud storage of server %s but "
+                "with different content",
+                wal_info.name,
+                self.config.name,
+            )
+            # We copy instead of moving the WAL file to the errors directory because
+            # 'wal_info.path' points to a WAL inside 'pg_wal', and should not be
+            # modified by Barman.
+            self.server.copy_wal_file_to_errors_directory(
+                wal_info.orig_filename, wal_info.name, "duplicate"
+            )
 
     def cron_retention_policy(self):
         """

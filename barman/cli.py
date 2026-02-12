@@ -70,7 +70,7 @@ from barman.utils import (
     parse_log_level,
     parse_target_tli,
 )
-from barman.xlog import check_archive_usable
+from barman.xlog import check_archive_usable, is_any_xlog_file
 
 if sys.version_info.major < 3:
     from argparse import Action, _ActionsContainer, _SubParsersAction
@@ -2348,6 +2348,50 @@ def config_update(args):
             )
             if server:
                 server.restart_processes()
+
+
+@command(
+    [
+        argument(
+            "server_name",
+            completer=server_completer,
+            help="specifies the server name for the command",
+        ),
+        argument(
+            "wal_path",
+            help="the value of the '%%p' keyword (according to 'archive_command').",
+        ),
+    ]
+)
+def cloud_wal_archive(args):
+    """
+    Push a WAL file from the local disk to a configured cloud object storage.
+
+    This command is intended to be used as 'archive_command' in Postgres when using the
+    'local-to-cloud' backup method for taking base backups.
+    """
+    if os.path.isdir(args.wal_path):
+        output.error(f"wal_path cannot be a directory: {args.wal_path}")
+        output.close_and_exit()
+
+    if not os.path.exists(args.wal_path):
+        output.error(f"WAL file does not exist: {args.wal_path}")
+        output.close_and_exit()
+
+    if not is_any_xlog_file(args.wal_path):
+        output.error(f"File is not a valid WAL file: {args.wal_path}")
+        output.close_and_exit()
+
+    server = get_server(
+        args,
+        skip_inactive=True,
+        skip_passive=True,
+    )
+
+    with closing(server):
+        server.cloud_wal_archive(args.wal_path)
+
+    output.close_and_exit()
 
 
 def pretty_args(args):
