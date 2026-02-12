@@ -1,0 +1,14 @@
+---
+- summary: Add 'barman cloud-wal-archive' command for local-to-cloud WAL archiving
+  description: |
+    Introduced a new `barman cloud-wal-archive` command that enables direct WAL file
+    archiving from the PostgreSQL `pg_wal` directory to cloud object storage when
+    using the 'local-to-cloud' backup method. This command is designed to be used
+    as the PostgreSQL `archive_command` when the Barman server runs on the same
+    host as the PostgreSQL instance.
+
+    It provides a similar functionality to the standalone `barman-cloud-wal-archive`
+    script for deployments where Barman and Postgres are co-located.
+  type: notable_change
+  jira_tickets:
+    - BAR-1098
