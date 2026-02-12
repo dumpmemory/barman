@@ -292,31 +292,31 @@ class TestRecoveryExecutor(object):
 
         # setup should create a temporary directory
         # and teardown should delete it
-        ret = executor._setup(backup_info, None, recovery_dir, None, None)
+        ret = executor._setup(backup_info, None, recovery_dir, None, None, None)
         assert os.path.exists(ret["tempdir"])
         executor.close()
         assert not os.path.exists(ret["tempdir"])
         assert ret["wal_dest"].endswith("/pg_xlog")
 
         # no postgresql.auto.conf on version 9.3
-        ret = executor._setup(backup_info, None, recovery_dir, None, None)
+        ret = executor._setup(backup_info, None, recovery_dir, None, None, None)
         executor.close()
         assert "postgresql.auto.conf" not in ret["configuration_files"]
 
         # Check the present for postgresql.auto.conf on version 9.4
         backup_info.version = 90400
-        ret = executor._setup(backup_info, None, recovery_dir, None, None)
+        ret = executor._setup(backup_info, None, recovery_dir, None, None, None)
         executor.close()
         assert "postgresql.auto.conf" in ret["configuration_files"]
 
         # Receive a error if the remote command is invalid
         with pytest.raises(SystemExit):
             executor.server.path = None
-            executor._setup(backup_info, "invalid", recovery_dir, None, None)
+            executor._setup(backup_info, "invalid", recovery_dir, None, None, None)
 
         # Test for PostgreSQL 10
         backup_info.version = 100000
-        ret = executor._setup(backup_info, None, recovery_dir, None, None)
+        ret = executor._setup(backup_info, None, recovery_dir, None, None, None)
         executor.close()
         assert ret["wal_dest"].endswith("/pg_wal")
 
@@ -355,7 +355,12 @@ class TestRecoveryExecutor(object):
 
         # WHEN _setup is called on the recovery executor
         recovery_info = executor._setup(
-            backup_info, None, "/path/to/recovery/dir", recovery_conf_filename, None
+            backup_info,
+            None,
+            "/path/to/recovery/dir",
+            recovery_conf_filename,
+            None,
+            None,
         )
         executor.close()
 
@@ -762,6 +767,7 @@ class TestRecoveryExecutor(object):
             "recovery_option_port": None,
             "target_datetime": "2015-06-03 16:11:03.71038+02",
             "wal_dest": wal_dest,
+            "custom_restore_command": None,
         }
         backup_info = testing_helpers.build_test_backup_info()
 
@@ -975,6 +981,7 @@ class TestRecoveryExecutor(object):
             "get_wal": False,
             "target_datetime": "2015-06-03 16:11:03.71038+02",
             "wal_dest": wal_dest,
+            "custom_restore_command": None,
         }
         backup_info = testing_helpers.build_test_backup_info(
             version=120000,
@@ -1623,6 +1630,7 @@ class TestRecoveryExecutor(object):
             "is_pitr": False,
             "get_wal": False,
             "recovery_option_port": None,
+            "custom_restore_command": None,
         }
         # test remote recovery
         with closing(executor):
@@ -1671,6 +1679,7 @@ class TestRecoveryExecutor(object):
             "is_pitr": False,
             "get_wal": False,
             "recovery_option_port": None,
+            "custom_restore_command": None,
         }
         # test failed rsync
         rsync_pg_mock.side_effect = CommandFailedException()
@@ -1895,6 +1904,157 @@ class TestRecoveryExecutor(object):
             expected_file_list, temp_dir, ":" + recovery_dir
         )
 
+    def test_custom_restore_command_with_get_wal_enabled(self, tmpdir):
+        """Test custom restore command works when get_wal is enabled."""
+        # GIVEN a recovery setup with custom restore command and get_wal enabled
+        dest = tmpdir.mkdir("destination")
+        wal_dest = os.path.join(dest, "barman_wal")
+        custom_command = "/custom/script.sh %f %p"
+        recovery_info = {
+            "configuration_files": ["postgresql.conf", "postgresql.auto.conf"],
+            "tempdir": tmpdir.strpath,
+            "results": {"changes": [], "warnings": []},
+            "get_wal": True,  # get_wal enabled
+            "recovery_option_port": None,
+            "target_datetime": "2015-06-03 16:11:03.71038+02",
+            "wal_dest": wal_dest,
+            "custom_restore_command": custom_command,
+            "is_pitr": True,  # Enable PITR for file generation
+            "safe_horizon": None,
+        }
+        backup_info = (
+            testing_helpers.build_test_backup_info()
+        )  # Use default version (9.3)
+
+        # GIVEN a RecoveryExecutor
+        server = testing_helpers.build_real_server()
+        executor = RecoveryExecutor(server.backup_manager)
+
+        # WHEN recovery configuration is generated
+        executor._generate_recovery_conf(
+            recovery_info,
+            backup_info,
+            dest.strpath,
+            True,
+            True,
+            None,  # no remote command
+            None,  # target_name
+            "2015-06-03 16:11:03.71038",  # target_time
+            "2",  # target_tli
+            "",  # target_xid
+            "",  # target_lsn
+            None,  # standby_mode
+        )
+
+        # THEN the custom command should be written to recovery.conf
+        recovery_conf_file = dest.join("recovery.conf")
+        assert recovery_conf_file.check()
+        recovery_conf_content = recovery_conf_file.read()
+        assert custom_command in recovery_conf_content
+        assert "restore_command = '/custom/script.sh %f %p'" in recovery_conf_content
+
+    def test_custom_restore_command_with_get_wal_disabled_ignored(self, tmpdir):
+        """Test custom restore command is ignored when get_wal is disabled."""
+        # GIVEN a recovery setup with custom restore command but get_wal disabled
+        dest = tmpdir.mkdir("destination")
+        wal_dest = os.path.join(dest, "barman_wal")
+        custom_command = "/custom/script.sh %f %p"
+        recovery_info = {
+            "configuration_files": ["postgresql.conf", "postgresql.auto.conf"],
+            "tempdir": tmpdir.strpath,
+            "results": {"changes": [], "warnings": []},
+            "get_wal": False,  # get_wal disabled
+            "recovery_option_port": None,
+            "target_datetime": "2015-06-03 16:11:03.71038+02",
+            "wal_dest": wal_dest,
+            "custom_restore_command": custom_command,
+            "is_pitr": True,  # Enable PITR for file generation
+            "safe_horizon": None,
+        }
+        backup_info = (
+            testing_helpers.build_test_backup_info()
+        )  # Use default version (9.3)
+
+        # GIVEN a RecoveryExecutor
+        server = testing_helpers.build_real_server()
+        executor = RecoveryExecutor(server.backup_manager)
+
+        # WHEN recovery configuration is generated
+        executor._generate_recovery_conf(
+            recovery_info,
+            backup_info,
+            dest.strpath,
+            True,
+            True,
+            None,  # no remote command
+            None,  # target_name
+            "2015-06-03 16:11:03.71038",  # target_time
+            "2",  # target_tli
+            "",  # target_xid
+            "",  # target_lsn
+            None,  # standby_mode
+        )
+
+        # THEN the custom command should be ignored and default cp command used
+        recovery_conf_file = dest.join("recovery.conf")
+        assert recovery_conf_file.check()
+        recovery_conf_content = recovery_conf_file.read()
+        # Should use cp command for local staging when get_wal=False
+        assert f"cp {wal_dest}/%f %p" in recovery_conf_content
+        # Should NOT contain the custom command
+        assert custom_command not in recovery_conf_content
+
+    def test_no_custom_restore_command_uses_default(self, tmpdir):
+        """Test that when no custom restore command is provided, default is used."""
+        # GIVEN a recovery setup without custom restore command
+        dest = tmpdir.mkdir("destination")
+        wal_dest = os.path.join(dest, "barman_wal")
+        recovery_info = {
+            "configuration_files": ["postgresql.conf", "postgresql.auto.conf"],
+            "tempdir": tmpdir.strpath,
+            "results": {"changes": [], "warnings": []},
+            "get_wal": True,
+            "recovery_option_port": None,
+            "target_datetime": "2015-06-03 16:11:03.71038+02",
+            "wal_dest": wal_dest,
+            "custom_restore_command": None,
+            "is_pitr": True,  # Enable PITR for file generation
+            "safe_horizon": None,
+            # No custom_restore_command
+        }
+        backup_info = (
+            testing_helpers.build_test_backup_info()
+        )  # Use default version (9.3)
+
+        # GIVEN a RecoveryExecutor
+        server = testing_helpers.build_real_server()
+        executor = RecoveryExecutor(server.backup_manager)
+
+        # WHEN recovery configuration is generated
+        executor._generate_recovery_conf(
+            recovery_info,
+            backup_info,
+            dest.strpath,
+            True,
+            True,
+            None,  # no remote command
+            None,  # target_name
+            "2015-06-03 16:11:03.71038",  # target_time
+            "2",  # target_tli
+            "",  # target_xid
+            "",  # target_lsn
+            None,  # standby_mode
+        )
+
+        # THEN default barman get-wal command should be used
+        recovery_conf_file = dest.join("recovery.conf")
+        assert recovery_conf_file.check()
+        recovery_conf_content = recovery_conf_file.read()
+        assert (
+            "barman get-wal" in recovery_conf_content
+            or "barman-wal-restore" in recovery_conf_content
+        )
+
 
 class TestRemoteConfigRecoveryExecutor(object):
     """Test functions for managing remote configuration files during recovery."""
@@ -2022,6 +2182,7 @@ class TestSnapshotRecoveryExecutor(object):
             standby_mode=None,
             recovery_conf_filename=None,
             recovery_option_port=None,
+            custom_restore_command=None,
         )
 
     @pytest.mark.parametrize(
