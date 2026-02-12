@@ -3585,6 +3585,92 @@ class TestServer(object):
         # Use a round(2) comparison because float is not precise in Python 2.x
         assert round(wal.mtime(), 2) == round(dest_file.mtime(), 2)
 
+    @patch("barman.server.output")
+    def test_cloud_wal_archive_wrong_backup_method(self, mock_output):
+        """
+        Test that the cloud_wal_archive method logs an error and aborts when backup_method
+        is not as expected.
+        """
+        # GIVEN a server configured for without local-to-cloud backup method
+        server = build_real_server(
+            main_conf={
+                "backup_method": "postgres",
+            },
+        )
+        server.backup_manager = Mock()
+
+        # WHEN cloud_wal_archive is called
+        server.cloud_wal_archive("some_wal_file")
+
+        # THEN expected error is logged
+        mock_output.error.assert_called_once_with(
+            "cloud-wal-archive is only supported for servers with 'backup_method' set "
+            "to 'local-to-cloud'. Please check the configuration of server %s.",
+            server.config.name,
+        )
+
+        # AND the manager is not called to archive the WAL file
+        server.backup_manager.cloud_wal_archive.assert_not_called()
+
+    @patch("barman.server.output")
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=PropertyMock)
+    def test_cloud_wal_archive_no_cloud_storage(
+        self, mock_use_wal_cloud_storage, mock_output
+    ):
+        """
+        Test that the cloud_wal_archive method logs an error and aborts when no cloud storage
+        is configured for the server.
+        """
+        # GIVEN a server configured for local-to-cloud backup method but without cloud
+        # storage
+        server = build_real_server(
+            main_conf={
+                "backup_method": "local-to-cloud",
+            },
+        )
+        server.backup_manager = Mock()
+        mock_use_wal_cloud_storage.return_value = False
+
+        # WHEN cloud_wal_archive is called
+        server.cloud_wal_archive("some_wal_file")
+
+        # THEN expected error is logged
+        mock_output.error.assert_called_once_with(
+            "cloud-wal-archive is not supported for server %s because no cloud storage "
+            "configuration is set in 'wals_directory'. Please check the "
+            "configuration of server %s.",
+            server.config.name,
+            server.config.name,
+        )
+
+        # AND the manager is not called to archive the WAL file
+        server.backup_manager.cloud_wal_archive.assert_not_called()
+
+    @patch("barman.server.output")
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=PropertyMock)
+    def test_cloud_wal_archive_success(self, mock_use_wal_cloud_storage, mock_output):
+        """
+        Test that the cloud_wal_archive method successfully archives the WAL file when the
+        server is properly configured.
+        """
+        # GIVEN a server configured for local-to-cloud backup method with cloud storage
+        server = build_real_server(
+            main_conf={
+                "backup_method": "local-to-cloud",
+            },
+        )
+        server.backup_manager = Mock()
+        mock_use_wal_cloud_storage.return_value = True
+
+        # WHEN cloud_wal_archive is called
+        server.cloud_wal_archive("some_wal_file")
+
+        # THEN the manager's cloud_wal_archive method is called with the correct file name
+        server.backup_manager.cloud_wal_archive.assert_called_once_with("some_wal_file")
+
+        # AND no error is logged
+        mock_output.error.assert_not_called()
+
     def test_get_systemid_file_path(self):
         # Basic test for the get_systemid_file_path function
         server = build_real_server()
@@ -4326,8 +4412,44 @@ class TestServer(object):
         "suffix",
         ["duplicate", "unknown"],
     )
+    @patch("barman.server.datetime")
+    def test_get_errors_dst(self, mock_datetime, suffix):
+        """
+        Test the _get_errors_dst method generates correct destination paths
+        """
+        errors_dir = "path/to/errors"
+        server = build_real_server(
+            main_conf={
+                "backup_options": "concurrent_backup",
+                "errors_directory": errors_dir,
+            }
+        )
+
+        # Mock datetime to return a fixed timestamp
+        mock_now = Mock()
+        mock_now.strftime.return_value = "20260212T093045Z"
+        mock_datetime.datetime.now.return_value = mock_now
+
+        filename = "000000010000000000000001"
+        result = server._get_errors_dst(filename, suffix)
+
+        # Verify datetime.now was called with timezone.utc
+        mock_datetime.datetime.now.assert_called_once_with(mock_datetime.timezone.utc)
+
+        # Verify the returned path has the correct format
+        expected = "%s/%s.%s.%s" % (errors_dir, filename, "20260212T093045Z", suffix)
+        assert result == expected
+
+    @pytest.mark.parametrize(
+        "suffix",
+        ["duplicate", "unknown"],
+    )
     @patch("barman.server.shutil")
     def test_move_wal_file_to_errors_directory(self, mock_shutil, suffix):
+        """
+        Test the move_wal_file_to_errors_directory method generates correct destination
+        paths and moves the file to the errors directory.
+        """
         errors_dir = "path/to/errors"
         server = build_real_server(
             main_conf={
@@ -4342,6 +4464,33 @@ class TestServer(object):
         error_dst = "%s/%s.%s.%s" % (errors_dir, filename, stamp, suffix)
         server.move_wal_file_to_errors_directory(src, filename, suffix)
         mock_shutil.move.assert_called_once_with(src, error_dst)
+        mock_shutil.copy.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "suffix",
+        ["duplicate", "unknown"],
+    )
+    @patch("barman.server.shutil")
+    def test_copy_wal_file_to_errors_directory(self, mock_shutil, suffix):
+        """
+        Test the copy_wal_file_to_errors_directory method generates correct destination
+        paths and copies the file to the errors directory.
+        """
+        errors_dir = "path/to/errors"
+        server = build_real_server(
+            main_conf={
+                "backup_options": "concurrent_backup",
+                "errors_directory": errors_dir,
+            }
+        )
+
+        src = "original_file"
+        filename = "filename"
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        error_dst = "%s/%s.%s.%s" % (errors_dir, filename, stamp, suffix)
+        server.copy_wal_file_to_errors_directory(src, filename, suffix)
+        mock_shutil.copy.assert_called_once_with(src, error_dst)
+        mock_shutil.move.assert_not_called()
 
 
 class TestCheckStrategy(object):

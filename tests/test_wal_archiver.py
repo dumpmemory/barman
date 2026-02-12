@@ -2153,6 +2153,7 @@ class TestCloudWalStorageStrategy:
             mock_tempfile.return_value.__enter__.return_value.name,
         )
 
+    @pytest.mark.parametrize("skip_delete", [None, False, True])
     @patch("barman.wal_archiver.CloudWalStorageStrategy._run_pre_archive_scripts")
     @patch("barman.wal_archiver.CloudWalStorageStrategy._run_post_archive_scripts")
     @patch("barman.wal_archiver.CloudWalStorageStrategy._check_duplicate")
@@ -2165,6 +2166,7 @@ class TestCloudWalStorageStrategy:
         mock_check_duplicate,
         mock_run_post_scripts,
         mock_run_pre_scripts,
+        skip_delete,
     ):
         """
         Test that :meth:`save` correctly uploads WAL files to cloud storage.
@@ -2182,7 +2184,12 @@ class TestCloudWalStorageStrategy:
 
         # WHEN save is called
         compressor, encryption = None, None
-        wal_storage.save(compressor, encryption, mock_wal_info)
+        if skip_delete is None:
+            wal_storage.save(compressor, encryption, mock_wal_info)
+        else:
+            wal_storage.save(
+                compressor, encryption, mock_wal_info, skip_delete=skip_delete
+            )
 
         # THEN the pre-archive scripts are run with correct arguments
         mock_run_pre_scripts.assert_called_once_with(
@@ -2206,8 +2213,11 @@ class TestCloudWalStorageStrategy:
         mock_run_post_scripts.assert_called_once_with(
             mock_wal_info, "/src/path/000000010000000000000001", None
         )
-        # AND the source file is unlinked after the upload
-        mock_unlink.assert_called_once_with("/src/path/000000010000000000000001")
+        # AND the source file is unlinked after the upload, if not requested to skip deletion
+        if skip_delete:
+            mock_unlink.assert_not_called()
+        else:
+            mock_unlink.assert_called_once_with("/src/path/000000010000000000000001")
         # Lastly, ensure that no duplicate check was performed, as no exception was
         # raised by the upload_fileobj method
         mock_check_duplicate.assert_not_called()

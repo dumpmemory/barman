@@ -41,6 +41,7 @@ from barman.cli import (
     check,
     check_target_action,
     check_wal_archive,
+    cloud_wal_archive,
     command,
     config_switch,
     generate_manifest,
@@ -2718,3 +2719,91 @@ class TestConfigSwitchCli:
         )
         mock_apply_model.assert_not_called()
         mock_reset_model.assert_called_once_with()
+
+
+class TestCloudWalArchiveCli:
+    """Test ``barman cloud_wal_archive`` outcomes."""
+
+    @pytest.fixture
+    def mock_args(self):
+        return MagicMock(
+            server_name="SOME_SERVER", wal_path="/pg_wal/000000010000000000000001"
+        )
+
+    @patch("barman.cli.output")
+    def test_cloud_wal_archive_wal_path_is_dir(self, mock_output, mock_args):
+        """
+        Test :func:`cloud_wal_archive`.
+
+        It should error out if the provided WAL path is a directory.
+        """
+        mock_output.close_and_exit.side_effect = SystemExit(1)
+
+        with patch("os.path.isdir", return_value=True):
+            with pytest.raises(SystemExit):
+                cloud_wal_archive(mock_args)
+
+        mock_output.error.assert_called_once_with(
+            "wal_path cannot be a directory: /pg_wal/000000010000000000000001"
+        )
+        mock_output.close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output")
+    def test_cloud_wal_archive_wal_path_does_not_exist(self, mock_output, mock_args):
+        """
+        Test :func:`cloud_wal_archive`.
+
+        It should error out if the provided WAL path does not exist.
+        """
+        mock_output.close_and_exit.side_effect = SystemExit(1)
+
+        with patch("os.path.isdir", return_value=False), patch(
+            "os.path.exists", return_value=False
+        ):
+            with pytest.raises(SystemExit):
+                cloud_wal_archive(mock_args)
+
+        mock_output.error.assert_called_once_with(
+            "WAL file does not exist: /pg_wal/000000010000000000000001"
+        )
+        mock_output.close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output")
+    def test_cloud_wal_archive_wal_path_not_valid_wal_file(
+        self, mock_output, mock_args
+    ):
+        """
+        Test :func:`cloud_wal_archive`.
+
+        It should error out if the provided WAL path is not a valid WAL file.
+        """
+        mock_output.close_and_exit.side_effect = SystemExit(1)
+
+        with patch("os.path.isdir", return_value=False), patch(
+            "os.path.exists", return_value=True
+        ), patch("barman.cli.is_any_xlog_file", return_value=False):
+            with pytest.raises(SystemExit):
+                cloud_wal_archive(mock_args)
+
+        mock_output.error.assert_called_once_with(
+            "File is not a valid WAL file: /pg_wal/000000010000000000000001"
+        )
+        mock_output.close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.get_server")
+    def test_cloud_wal_archive_success(self, mock_get_server, mock_args):
+        """
+        Test :func:`cloud_wal_archive`.
+
+        It should call cloud_wal_archive on the server with the provided WAL path if
+        all validations pass.
+        """
+        with patch("os.path.isdir", return_value=False), patch(
+            "os.path.exists", return_value=True
+        ), patch("barman.cli.is_any_xlog_file", return_value=True):
+            with pytest.raises(SystemExit):
+                cloud_wal_archive(mock_args)
+
+        mock_get_server.return_value.cloud_wal_archive.assert_called_once_with(
+            "/pg_wal/000000010000000000000001"
+        )
