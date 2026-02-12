@@ -562,7 +562,7 @@ def backup_completer(prefix, parsed_args, **kwargs):
         ),
         argument(
             "--cloud-staging-directory",
-            help="A staging directory when sending backups to a cloud destination",
+            help="A staging directory for when sending backups to a cloud destination",
             type=parse_staging_path,
         ),
         argument(

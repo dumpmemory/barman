@@ -804,6 +804,8 @@ class ServerConfig(BaseConfig):
         "basebackup_retry_times",
         "check_timeout",
         "cloud_delete_batch_size",
+        "cloud_staging_directory",
+        "cloud_staging_max_size",
         "compression",
         "compression_level",
         "configuration_files_directory",
