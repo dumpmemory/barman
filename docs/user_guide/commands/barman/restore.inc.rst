@@ -28,6 +28,7 @@ Synopsis
         [ --staging-location STAGING_LOCATION ]
         [ --combine-mode COMBINE_MODE ]
         [ --remote-ssh-command STRING ]
+        [ --restore-command COMMAND ]
         [ --retry-sleep SECONDS ]
         [ --retry-times NUMBER ]
         [ --snapshot-recovery-instance INSTANCE_NAME ]
@@ -190,6 +191,13 @@ Parameters
     This option enables remote restore by specifying the secure shell command to
     execute on a remote host. It functions similarly to the ``ssh_command`` server
     option in the configuration file for remote restore, that is, ``'ssh USER@SERVER'``.
+
+``--restore-command``
+    Specify a custom restore command to override Barman's default restore_command in
+    the PostgreSQL recovery configuration. While the default restore_command built by
+    Barman is suitable for most cases, this option allows you to specify an alternative
+    command if your setup requires it. Can be used only when running a restore with
+    ``get-wal`` mode.
 
 ``--retry-sleep``
     Specify the number of seconds to wait after a failed copy before retrying. This
