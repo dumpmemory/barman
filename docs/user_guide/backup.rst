@@ -361,6 +361,9 @@ To configure streaming backups, set the ``backup_method`` to ``postgres``:
 
     backup_method = postgres
 
+
+.. _backup-streaming-backup-block-level-incremental:
+
 Block-level Incremental Backup
 """"""""""""""""""""""""""""""
 
@@ -392,6 +395,63 @@ To use block-level incremental backups in Barman, you must:
     If you enable ``data_checksums`` between block-level incremental backups, it's
     advisable to take a new full backup. Divergent checksum configurations can
     potentially cause issues during recovery.
+
+
+.. _backup-streaming-backup-cloud:
+
+Streaming backups to the cloud
+""""""""""""""""""""""""""""""
+
+When configured with ``backup_method = postgres``, Barman supports streaming backups
+directly to a cloud storage. In this mode, backups are streamed from the Postgres
+server via ``pg_basebackup`` and dynamically pushed to the cloud in chunks, without
+ever storing the complete backup locally. WAL files are streamed from the Postgres
+server to the Barman server and uploaded to the cloud whenever archiving is triggered,
+which happens periodically or when manually running the ``barman archive-wal`` command.
+
+This is currently the only method that enables block-level incremental backups in a
+cloud environment.
+
+To configure this feature, set ``backup_method = postgres`` as well as
+``basebackups_directory`` and ``wals_directory`` to cloud storage URLs. For example,
+if using an S3-compatible storage:
+
+.. code-block:: text
+
+    backup_method = postgres
+    basebackups_directory = s3://mybucket/barman/
+    wals_directory = s3://mybucket/barman/
+
+Once configured, you can leverage all the capabilities of a Barman server, which
+includes incremental backups, retention policies, and more, while having your data
+safely stored in the cloud.
+
+.. note::
+
+  Although it is possible to set different URLs for ``basebackups_directory`` and
+  ``wals_directory``, it is highly recommended to use the same URL, and possibly the
+  same path, for both options. This ensures a consistent storage structure in the cloud
+  as Barman organizes data of each server in dedicated subdirectories.
+
+When using this feature, Barman requires a local staging space to process chunks before
+uploading them to the cloud. The amount of staging space allowed to be used as well as
+its location can be configured with the options ``cloud_staging_max_size`` and
+``cloud_staging_directory``, or overridden at runtime with the
+``--cloud-staging-max-size`` and ``--cloud-staging-directory`` CLI options.
+
+This is an experimental feature. For this reason, a few limitations apply:
+
+1. Restoring backups taken with this method is currently not supported directly in Barman, and it's the user's responsibility to perform this manually or through custom scripts/processes. Restoring such backups will come in a future release;
+2. Currently, only S3-compatible storages are supported as destination;
+3. Encryption of backups and WALs is not supported;
+4. Compression of backups is not supported. WAL compression is supported except when
+   using ``pigz`` or ``custom`` as compression methods. 
+5. Barman subcommands which require access to the backup or WAL files, such as
+   ``verify-backup``, ``generate-manifest``, ``rebuild-xlogdb`` and ``get-wal``, are
+   not supported and will fail if executed.
+6. The Barman :ref:`geographical-redundancy` feature and its related commands are not
+   supported.
+
 
 .. _backup-rsync-backup:
 

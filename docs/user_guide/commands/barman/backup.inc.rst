@@ -10,6 +10,8 @@ Synopsis
     
     backup 
         [ --bwlimit KBPS ]
+        [ --cloud-staging-directory PATH ]
+        [ --cloud-staging-max-size SIZE ]
         [ { -h | --help } ]
         [ --incremental BACKUP_ID ]
         [ --immediate-checkpoint ]
@@ -47,9 +49,31 @@ Parameters
     Specify the maximum transfer rate in kilobytes per second. A value of 0 indicates no
     limit. This setting overrides the ``bandwidth_limit`` configuration option.
 
+``--cloud-staging-directory``
+    A staging directory for when sending backups to a cloud object storage using
+    ``backup_method = postgres``. It is used as a temporary location for storing chunks
+    of the backup before they are sent to the cloud. Defaults to
+    ``/tmp/barman/cloud-staging``.
+
+``--cloud-staging-max-size``
+    The maximum size that ``--cloud-staging-directory`` can grow to before Barman stops
+    generating new backup chunks. This is used to prevent the staging directory from
+    growing in case the speed of uploading chunks does not keep up with the speed of
+    streaming them from Postgres. The default value is ``30G``.
+
+    Extremely low values are discouraged as they may lead to performance degradation.
+    We recommend a minimum of at least ``10G``. The optimal value will depend on the
+    transfer speed of the backup to Barman and from Barman to the cloud, as well as the
+    size of the backup.
+
+    The accepted format is ``n {k|Ki|M|Mi|G|Gi|T|Ti}`` and case-sensitive, where ``n``
+    is an integer greater than zero, with an optional SI or IEC suffix. k stands for
+    kilo with k = 1000, while Ki stands for kilobytes Ki = 1024. The rest of the options
+    have the same reasoning for greater units of measure.
+
 ``-h`` / ``--help``
     Show a help message and exit. Provides information about command usage.
-    
+
 ``--incremental``
     Execute a block-level incremental backup. You must provide a ``BACKUP_ID`` or a
     shortcut to a previous backup, which will serve as the parent backup for the

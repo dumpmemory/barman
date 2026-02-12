@@ -601,8 +601,9 @@ Scope: Global / Server / Model.
 
 **basebackups_directory**
 
-Specifies the directory where base backups are stored. Defaults to
-``<backup_directory>/base``.
+Destination for base backup files. It can be a local path if storing backups locally,
+or a cloud storage URL if streaming backups to the cloud as described in
+:ref:`backup-streaming-backup-cloud`. Defaults to ``<backup_directory>/base``.
 
 Scope: Server.
 
@@ -877,6 +878,33 @@ This option accepts human-readable size formats using SI or IEC suffixes (e.g., 
   Only supported when ``backup_method`` is ``postgres`` or ``local-to-cloud``, and
   ``basebackups_directory`` points to cloud storage.
 
+**cloud_staging_directory**
+
+A staging directory for when sending backups to a cloud object storage using
+``backup_method = postgres``. It is used as a temporary location for storing chunks of
+the backup before they are sent to the cloud. Defaults to ``/tmp/barman/cloud-staging``.
+
+Scope: Global / Server / Model.
+
+**cloud_staging_max_size**
+
+The maximum size that ``cloud_staging_directory`` can grow to before Barman stops
+generating new backup chunks. This is used to prevent the staging directory from
+growing in case the speed of uploading chunks does not keep up with the speed of
+streaming them from Postgres. The default value is ``30G``.
+
+Extremely low values are discouraged as they may lead to performance degradation. We
+recommend a minimum of at least ``10G``. The optimal value will depend on the transfer
+speed of the backup to Barman and from Barman to the cloud, as well as the size of the
+backup.
+
+The accepted format is ``n {k|Ki|M|Mi|G|Gi|T|Ti}`` and case-sensitive, where ``n`` is
+an integer greater than zero, with an optional SI or IEC suffix. k stands for kilo with
+k = 1000, while Ki stands for kilobytes Ki = 1024. The rest of the options have the same
+reasoning for greater units of measure.
+
+.. note::
+
 Scope: Global / Server / Model.
 
 **gcp_project**
@@ -925,11 +953,12 @@ Scope: Server / Model.
 
 The name of the cloud provider to use for creating snapshots. Supported value:
 ``aws``, ``azure`` and ``gcp``.
-  
+
 .. note::
   Required when ``backup_method = snapshot``.
 
 Scope: Global / Server / Model.
+
 
 .. _configuration-options-hook-scripts:
 
@@ -1323,7 +1352,9 @@ Scope: Server / Model.
 
 **wals_directory**
 
-Directory containing WAL files. Defaults to ``<backup_directory>/wals``.
+Destination for archived WAL files. It can be a local path if storing WAL files locally,
+or a cloud storage URL if storing WAL files in the cloud as described in
+:ref:`backup-streaming-backup-cloud`. Defaults to ``<backup_directory>/wals``.
 
 Scope: Server.
 
