@@ -346,6 +346,10 @@ class CloudBackupExecutor(BackupExecutor):
                 self.copy_start_time = uploader.copy_start_time
                 self.copy_end_time = uploader.copy_end_time
 
+                # Fill size information in backup_info
+                backup_info.set_attribute("size", uploader.controller.size)
+                backup_info.set_attribute("deduplicated_size", uploader.controller.size)
+
         # If this is the first backup, purge eventually unused WAL files
         self._purge_unused_wal_files(backup_info)
 
