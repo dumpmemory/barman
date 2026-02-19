@@ -2375,6 +2375,7 @@ class TestCloudBackupExecutor(object):
 
         # Mock the upload controller
         mock_controller = mock.Mock()
+        mock_controller.size = 1024000
         mock_uploader.create_upload_controller.return_value = mock_controller
 
         # Create a mock backup_info
@@ -2412,6 +2413,10 @@ class TestCloudBackupExecutor(object):
         # AND timing info is copied back
         assert executor.copy_start_time == "2026-02-09 12:00:00"
         assert executor.copy_end_time == "2026-02-09 13:00:00"
+
+        # AND size information is set on backup_info
+        backup_info.set_attribute.assert_any_call("size", 1024000)
+        backup_info.set_attribute.assert_any_call("deduplicated_size", 1024000)
 
         # AND cloud interface and postgres are closed
         mock_cloud_interface.close.assert_called_once()
