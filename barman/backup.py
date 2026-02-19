@@ -952,6 +952,8 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             # Cloud backups size are calculated during the backup in the executor
             if not self.server.use_backup_cloud_storage:
                 self.backup_fsync_and_set_sizes(backup_info)
+            else:
+                output.info("Backup size: %s" % pretty_size(backup_info.size))
 
             # Mark the backup as WAITING_FOR_WALS
             backup_info.set_attribute("status", BackupInfo.WAITING_FOR_WALS)
