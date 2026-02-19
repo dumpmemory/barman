@@ -1015,6 +1015,7 @@ class PgBaseBackup(PostgreSQLClient):
         compression=None,
         parent_backup_manifest_path=None,
         no_sync=False,
+        whpg_db_id=None,
         args=None,
         **kwargs
     ):
@@ -1038,6 +1039,7 @@ class PgBaseBackup(PostgreSQLClient):
           the path to a backup_manifest file from a previous backup which can
           be used to perform an incremental backup
         :param bool no_sync: avoid fsync calls if specified
+        :param int whpg_db_id: the WarehousePG database id
         :param List[str] args: additional arguments
         """
         PostgreSQLClient.__init__(
@@ -1052,6 +1054,9 @@ class PgBaseBackup(PostgreSQLClient):
 
         # Set the backup destination
         self.args += ["-v", "--no-password", "--pgdata=%s" % destination]
+
+        if whpg_db_id is not None:
+            self.args.append(f"--target-gp-dbid={whpg_db_id}")
 
         if version and version >= Version("10"):
             # If version of the client is >= 10 it would use
