@@ -1913,6 +1913,14 @@ def get_wal(args):
         disabled_is_error=True,
     )
 
+    if server.use_wal_cloud_storage:
+        output.error(
+            "Cannot retrieve WAL file for server '%s' because it is configured with a "
+            "cloud object storage. WAL retrieval is only supported for local storages.",
+            args.server_name,
+        )
+        output.close_and_exit()
+
     if getattr(args, "test", None):
         output.info(
             "Ready to retrieve WAL files from the server %s", server.config.name
@@ -2153,9 +2161,20 @@ def generate_manifest(args):
     Generate a manifest-backup for the given server and backup id
     """
     server = get_server(args)
+
     # Raises an error if wrong backup
     backup_info = parse_backup_id(server, args)
     # know context (remote backup? local?)
+
+    if server.use_backup_cloud_storage:
+        output.error(
+            "Cannot generate backup manifest for backup '%s' of server '%s' because "
+            "a cloud backup storage is configured. The manifest generation is only "
+            "supported for local backup storage.",
+            args.backup_id,
+            args.server_name,
+        )
+        output.close_and_exit()
 
     local_file_manager = LocalFileManager()
     backup_manifest = BackupManifest(
