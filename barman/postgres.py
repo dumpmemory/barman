@@ -869,7 +869,11 @@ class PostgreSQLConnection(PostgreSQL):
             # while we prefer a raw value such as 300.
             cur.execute("SELECT setting FROM pg_settings WHERE name='archive_timeout'")
             result = cur.fetchone()
-            archive_timeout = int(result[0])
+            archive_timeout = 0
+            # Only on WarehousePG segments we won't get any value returned as for some
+            # reason archive_timeout is not available in pg_settings there.
+            if result is not None:
+                archive_timeout = int(result[0])
 
             return archive_timeout
         except ValueError as e:
