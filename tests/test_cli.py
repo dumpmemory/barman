@@ -1673,13 +1673,14 @@ class TestCli(object):
     @patch("barman.cli.parse_backup_id")
     @patch("barman.cli.get_server")
     def test_generate_manifest(
-        self, _mock_get_server, _mock_parse_backup_id, _mock_backup_manifest, capsys
+        self, mock_get_server, _mock_parse_backup_id, _mock_backup_manifest, capsys
     ):
         """Verify expected log message is received on success."""
         # GIVEN a backup for a server
         args = Mock()
         args.server_name = "test_server"
         args.backup_id = "test_backup_id"
+        mock_get_server.return_value = Mock(use_backup_cloud_storage=False)
 
         # WHEN a backup manifest is successfully created
         with pytest.raises(SystemExit):
@@ -1691,6 +1692,35 @@ class TestCli(object):
             "Backup manifest for backup '%s' successfully generated for server %s"
             % (args.backup_id, args.server_name)
             in out
+        )
+
+    @patch("barman.cli.output", wraps=output)
+    @patch(
+        "barman.cli.get_server",
+    )
+    @patch("barman.cli.parse_backup_id")
+    def test_generate_manifest_not_supported_in_cloud(
+        self, _, mock_get_server, mock_output
+    ):
+        """Verify appropriate error is raised when trying to generate a manifest in cloud."""
+        # GIVEN a server with a cloud storage as backup
+        mock_get_server.return_value = Mock(use_backup_cloud_storage=True)
+        # AND the following args
+        args = Mock()
+        args.server_name = "test_server"
+        args.backup_id = "test_backup_id"
+
+        # WHEN generate_manifest is called
+        with pytest.raises(SystemExit):
+            generate_manifest(args)
+
+        # THEN the expected error message is logged
+        mock_output.error.assert_called_once_with(
+            "Cannot generate backup manifest for backup '%s' of server '%s' because "
+            "a cloud backup storage is configured. The manifest generation is only "
+            "supported for local backup storage.",
+            args.backup_id,
+            args.server_name,
         )
 
     @pytest.mark.parametrize(
