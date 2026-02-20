@@ -762,7 +762,7 @@ class PostgresBackupExecutor(BackupExecutor):
             err_handler=self._err_handler,
             out_handler=PgBaseBackup.make_logging_handler(logging.INFO),
             parent_backup_manifest_path=parent_backup_manifest_path,
-            whpg_db_id=self.server.config.whpg_db_id,
+            warehousepg_dbid=self.config.warehousepg_dbid,
         )
 
         # Do the actual copy

@@ -839,7 +839,7 @@ class ServerConfig(BaseConfig):
         "streaming_backup_name",
         "tablespace_bandwidth_limit",
         "wal_retention_policy",
-        "whpg_db_id",
+        "warehousepg_dbid",
         "worm_mode",
         "xlogdb_directory",
     ]
@@ -951,7 +951,7 @@ class ServerConfig(BaseConfig):
         "streaming_archiver_batch_size": int,
         "slot_name": parse_slot_name,
         "wals_directory": parse_directory_or_cloud_provider,
-        "whpg_db_id": int,
+        "warehousepg_dbid": int,
         "worm_mode": parse_boolean,
     }
 

@@ -1174,6 +1174,7 @@ class TestPostgresBackupExecutor(object):
                 err_handler=mock.ANY,
                 out_handler=mock.ANY,
                 parent_backup_manifest_path=None,
+                warehousepg_dbid=None,
             ),
             mock.call()(),
         ]
@@ -1213,6 +1214,7 @@ class TestPostgresBackupExecutor(object):
                 err_handler=mock.ANY,
                 out_handler=mock.ANY,
                 parent_backup_manifest_path=None,
+                warehousepg_dbid=None,
             ),
             mock.call()(),
         ]
@@ -1251,6 +1253,7 @@ class TestPostgresBackupExecutor(object):
                 err_handler=mock.ANY,
                 out_handler=mock.ANY,
                 parent_backup_manifest_path=None,
+                warehousepg_dbid=None,
             ),
             mock.call()(),
         ]
@@ -1284,6 +1287,7 @@ class TestPostgresBackupExecutor(object):
                 err_handler=mock.ANY,
                 out_handler=mock.ANY,
                 parent_backup_manifest_path=None,
+                warehousepg_dbid=None,
             ),
             mock.call()(),
         ]
@@ -1339,6 +1343,138 @@ class TestPostgresBackupExecutor(object):
                 err_handler=mock.ANY,
                 out_handler=mock.ANY,
                 parent_backup_manifest_path="/SOME/MANIFEST",
+                warehousepg_dbid=None,
+            ),
+            mock.call()(),
+        ]
+
+    @patch("barman.backup_executor.PgBaseBackup")
+    @patch("barman.backup_executor.PostgresBackupExecutor.fetch_remote_status")
+    def test_backup_copy_with_warehousepg_dbid(
+        self, remote_mock, pg_basebackup_mock, tmpdir, capsys
+    ):
+        """
+        Test that warehousepg_dbid is correctly passed to PgBaseBackup.
+
+        :param remote_mock: mock for the fetch_remote_status method
+        :param pg_basebackup_mock: mock for the PgBaseBackup object
+        :param tmpdir: pytest temp directory
+        :param capsys: pytest capture output
+        """
+        backup_manager = build_backup_manager(
+            global_conf={
+                "barman_home": tmpdir.mkdir("home").strpath,
+                "backup_method": "postgres",
+                "warehousepg_dbid": "42",
+            }
+        )
+        remote_mock.return_value = {
+            "pg_basebackup_version": "14",
+            "pg_basebackup_path": "/fake/path",
+            "pg_basebackup_bwlimit": True,
+        }
+        server_mock = backup_manager.server
+        streaming_mock = server_mock.streaming
+        streaming_mock.get_connection_string.return_value = "fake=connstring"
+        streaming_mock.conn_parameters = {
+            "host": "fakeHost",
+            "port": "fakePort",
+            "user": "fakeUser",
+        }
+        backup_info = build_test_backup_info(
+            server=backup_manager.server, backup_id="fake_backup_id"
+        )
+        backup_manager.executor.backup_copy(backup_info)
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == ""
+
+        # Verify that warehousepg_dbid was passed to PgBaseBackup
+        assert pg_basebackup_mock.mock_calls == [
+            mock.call.make_logging_handler(logging.INFO),
+            mock.call(
+                connection=mock.ANY,
+                version="14",
+                app_name="barman_streaming_backup",
+                destination=mock.ANY,
+                command="/fake/path",
+                tbs_mapping=mock.ANY,
+                bwlimit=None,
+                immediate=False,
+                retry_times=0,
+                retry_sleep=30,
+                retry_handler=mock.ANY,
+                path=mock.ANY,
+                compression=None,
+                err_handler=mock.ANY,
+                out_handler=mock.ANY,
+                parent_backup_manifest_path=None,
+                warehousepg_dbid=42,
+            ),
+            mock.call()(),
+        ]
+
+    @patch("barman.backup_executor.PgBaseBackup")
+    @patch("barman.backup_executor.PostgresBackupExecutor.fetch_remote_status")
+    def test_backup_copy_without_warehousepg_dbid(
+        self, remote_mock, pg_basebackup_mock, tmpdir, capsys
+    ):
+        """
+        Test that warehousepg_dbid is None when not configured.
+
+        :param remote_mock: mock for the fetch_remote_status method
+        :param pg_basebackup_mock: mock for the PgBaseBackup object
+        :param tmpdir: pytest temp directory
+        :param capsys: pytest capture output
+        """
+        backup_manager = build_backup_manager(
+            global_conf={
+                "barman_home": tmpdir.mkdir("home").strpath,
+                "backup_method": "postgres",
+            }
+        )
+        remote_mock.return_value = {
+            "pg_basebackup_version": "14",
+            "pg_basebackup_path": "/fake/path",
+            "pg_basebackup_bwlimit": True,
+        }
+        server_mock = backup_manager.server
+        streaming_mock = server_mock.streaming
+        streaming_mock.get_connection_string.return_value = "fake=connstring"
+        streaming_mock.conn_parameters = {
+            "host": "fakeHost",
+            "port": "fakePort",
+            "user": "fakeUser",
+        }
+        backup_info = build_test_backup_info(
+            server=backup_manager.server, backup_id="fake_backup_id"
+        )
+        backup_manager.executor.backup_copy(backup_info)
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == ""
+
+        # Verify that warehousepg_dbid was passed as None to PgBaseBackup
+        assert pg_basebackup_mock.mock_calls == [
+            mock.call.make_logging_handler(logging.INFO),
+            mock.call(
+                connection=mock.ANY,
+                version="14",
+                app_name="barman_streaming_backup",
+                destination=mock.ANY,
+                command="/fake/path",
+                tbs_mapping=mock.ANY,
+                bwlimit=None,
+                immediate=False,
+                retry_times=0,
+                retry_sleep=30,
+                retry_handler=mock.ANY,
+                path=mock.ANY,
+                compression=None,
+                err_handler=mock.ANY,
+                out_handler=mock.ANY,
+                parent_backup_manifest_path=None,
+                warehousepg_dbid=None,
             ),
             mock.call()(),
         ]

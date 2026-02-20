@@ -1603,6 +1603,72 @@ class TestPgBaseBackup(object):
         for expected_arg in unexpected_args:
             assert not any(expected_arg == arg.split("=")[0] for arg in cmd.args)
 
+    def test_warehousepg_dbid_parameter_not_set(self):
+        """
+        Test that warehousepg_dbid parameter is not added when not provided.
+        """
+        connection_mock = mock.MagicMock()
+        connection_mock.get_connection_string.return_value = "fake_connstring"
+        cmd = command_wrappers.PgBaseBackup(
+            destination="/fake/target",
+            command=self.pg_basebackup_path,
+            connection=connection_mock,
+            version="14",
+            app_name="test_app_name",
+            warehousepg_dbid=None,
+        )
+
+        # Assert that the --target-gp-dbid argument is not present
+        assert not any(arg.startswith("--target-gp-dbid=") for arg in cmd.args)
+
+    def test_warehousepg_dbid_parameter_set(self):
+        """
+        Test that warehousepg_dbid parameter is correctly added when provided.
+        """
+        connection_mock = mock.MagicMock()
+        connection_mock.get_connection_string.return_value = "fake_connstring"
+        warehousepg_dbid = 42
+        cmd = command_wrappers.PgBaseBackup(
+            destination="/fake/target",
+            command=self.pg_basebackup_path,
+            connection=connection_mock,
+            version="14",
+            app_name="test_app_name",
+            warehousepg_dbid=warehousepg_dbid,
+        )
+
+        # Assert that the --target-gp-dbid argument is present with correct value
+        assert "--target-gp-dbid=42" in cmd.args
+
+    def test_warehousepg_dbid_parameter_with_different_values(self):
+        """
+        Test that warehousepg_dbid parameter works with different integer values.
+        """
+        connection_mock = mock.MagicMock()
+        connection_mock.get_connection_string.return_value = "fake_connstring"
+
+        # Test with value 0
+        cmd = command_wrappers.PgBaseBackup(
+            destination="/fake/target",
+            command=self.pg_basebackup_path,
+            connection=connection_mock,
+            version="14",
+            app_name="test_app_name",
+            warehousepg_dbid=0,
+        )
+        assert "--target-gp-dbid=0" in cmd.args
+
+        # Test with large value
+        cmd = command_wrappers.PgBaseBackup(
+            destination="/fake/target",
+            command=self.pg_basebackup_path,
+            connection=connection_mock,
+            version="14",
+            app_name="test_app_name",
+            warehousepg_dbid=999999,
+        )
+        assert "--target-gp-dbid=999999" in cmd.args
+
 
 # noinspection PyMethodMayBeStatic
 class TestReceiveXlog(object):

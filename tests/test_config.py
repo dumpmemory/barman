@@ -374,6 +374,7 @@ class TestConfig(object):
                 "max_incoming_wals_queue": None,
                 "primary_conninfo": None,
                 "primary_checkpoint_timeout": 0,
+                "warehousepg_dbid": None,
             }
         )
         assert main.__dict__ == expected
@@ -420,6 +421,7 @@ class TestConfig(object):
                 "max_incoming_wals_queue": None,
                 "primary_conninfo": None,
                 "primary_checkpoint_timeout": 0,
+                "warehousepg_dbid": None,
             }
         )
         assert web.__dict__ == expected
@@ -1495,6 +1497,7 @@ class TestModelConfig:
             "wal_conninfo": None,
             "wal_retention_policy": None,
             "wal_streaming_conninfo": None,
+            "warehousepg_dbid": None,
         }
         assert model_config.to_json() == expected
 
@@ -1613,6 +1616,7 @@ class TestModelConfig:
             "wal_conninfo": {"source": "SOME_SOURCE", "value": None},
             "wal_retention_policy": {"source": "SOME_SOURCE", "value": None},
             "wal_streaming_conninfo": {"source": "SOME_SOURCE", "value": None},
+            "warehousepg_dbid": {"source": "SOME_SOURCE", "value": None},
         }
         assert model_config.to_json(True) == expected
 
