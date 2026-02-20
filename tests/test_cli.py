@@ -662,6 +662,8 @@ class TestCli(object):
         monkeypatch,
         capsys,
     ):
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = False
         parse_backup_id_mock.return_value = mock_backup_info
 
         monkeypatch.setattr(
@@ -702,6 +704,8 @@ class TestCli(object):
         monkeypatch,
         capsys,
     ):
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = False
         parse_backup_id_mock.return_value = mock_backup_info
 
         monkeypatch.setattr(
@@ -738,6 +742,8 @@ class TestCli(object):
         monkeypatch,
         capsys,
     ):
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = False
         parse_backup_id_mock.return_value = mock_backup_info
 
         monkeypatch.setattr(
@@ -824,6 +830,9 @@ class TestCli(object):
             "__config__",
             (config,),
         )
+        # AND the server is NOT configured for cloud storage
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = False
 
         # WHEN the specified --get-wal / --no-get-wal combinations are used
         if get_wal_arg:
@@ -908,6 +917,9 @@ class TestCli(object):
             "__config__",
             (config,),
         )
+        # AND the server is NOT configured for cloud storage
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = False
 
         # WHEN the specified --delta-restore / --no-delta-restore combinations are used
         if delta_restore_arg:
@@ -962,6 +974,10 @@ class TestCli(object):
             "__config__",
             (config,),
         )
+        # AND the server is NOT configured for cloud storage
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = False
+
         # 1. Local restore with incremental backup
         mock_backup_info.is_incremental = True
         mock_restore_args.remote_ssh_command = False
@@ -1039,6 +1055,9 @@ class TestCli(object):
             "__config__",
             (config,),
         )
+        # AND the server is NOT configured for cloud storage
+        mock_get_server.return_value.use_backup_cloud_storage = False
+        mock_get_server.return_value.use_wal_cloud_storage = False
 
         mock_restore_args.staging_path = "/some/staging/path"
 
@@ -1078,6 +1097,9 @@ class TestCli(object):
             "__config__",
             (config,),
         )
+        # AND the server is NOT configured for cloud storage
+        mock_get_server.return_value.use_backup_cloud_storage = False
+        mock_get_server.return_value.use_wal_cloud_storage = False
 
         # Case 1: When remote-ssh-command is not set
         mock_restore_args.staging_location = "remote"
@@ -1173,6 +1195,9 @@ class TestCli(object):
             "__config__",
             (config,),
         )
+        # AND the server is NOT configured for cloud storage
+        mock_get_server.return_value.use_backup_cloud_storage = False
+        mock_get_server.return_value.use_wal_cloud_storage = False
 
         # Set the staging path options
         mock_restore_args.staging_path = staging_path
@@ -1240,6 +1265,8 @@ class TestCli(object):
         server = build_mocked_server(name="test_server")
 
         get_server_mock.return_value = server
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = False
 
         backup_info = build_test_backup_info(
             server=server,
@@ -1348,6 +1375,9 @@ class TestCli(object):
         extra_recovery_args.update(snapshot_recovery_args)
         for k, v in extra_recovery_args.items():
             setattr(mock_restore_args, k, v)
+        # AND the server is NOT configured for cloud storage
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = False
 
         # WHEN barman recover is called
         with pytest.raises(SystemExit):
@@ -1386,6 +1416,9 @@ class TestCli(object):
         # AND the args do not specify any other snapshot provider options
         mock_restore_args.azure_resource_group = None
         mock_restore_args.gcp_zone = None
+        # AND the server is NOT configured for cloud storage
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = False
 
         # WHEN barman recover is called
         with pytest.raises(SystemExit):
@@ -1429,6 +1462,9 @@ class TestCli(object):
         # AND the backup being recovered is a snapshot backup
         mock_backup_info.snapshots_info = Mock(snapshots=[])
         parse_backup_id_mock.return_value = mock_backup_info
+        # AND the server is NOT configured for cloud storage
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = False
 
         # WHEN recover is called without overriding the config
         setattr(mock_restore_args, arg, None)
@@ -1485,6 +1521,8 @@ class TestCli(object):
         """
         server = build_mocked_server(name="test_server")
         mock_get_server.return_value = server
+        mock_get_server.return_value.use_backup_cloud_storage = False
+        mock_get_server.return_value.use_wal_cloud_storage = False
         # Testing mutual exclusiveness of target options
         args = mock_restore_args
         setattr(args, "backup_id", "auto")
@@ -1547,6 +1585,8 @@ class TestCli(object):
         """
         server = build_mocked_server(name="test_server")
         mock_get_server.return_value = server
+        mock_get_server.return_value.use_backup_cloud_storage = False
+        mock_get_server.return_value.use_wal_cloud_storage = False
         # Testing mutual exclusiveness of target options
         args = mock_restore_args
         setattr(args, "backup_id", "auto")
@@ -1583,6 +1623,8 @@ class TestCli(object):
         """
         server = build_mocked_server(name="test_server")
         mock_get_server.return_value = server
+        mock_get_server.return_value.use_backup_cloud_storage = False
+        mock_get_server.return_value.use_wal_cloud_storage = False
         args = mock_restore_args
         target_option = "target_lsn"
         target = "3/5F000000"
