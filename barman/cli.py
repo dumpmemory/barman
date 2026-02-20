@@ -1068,6 +1068,16 @@ def restore(args):
         disabled_is_error=True,
     )
 
+    if server.use_backup_cloud_storage or server.use_wal_cloud_storage:
+        output.error(
+            "Cannot restore backup %s of server '%s' because it is configured with a "
+            "cloud storage. Restoring a backup stored in a cloud environment is "
+            "currently not supported",
+            args.backup_id,
+            server.config.name,
+        )
+        output.close_and_exit()
+
     # PostgreSQL supports multiple parameters to specify when the recovery
     # process will end, and in that case the last entry in recovery
     # configuration files will be used. See [1]
