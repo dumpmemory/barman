@@ -534,6 +534,25 @@ the standard compression behavior.
 
 Scope: Global / Server / Model.
 
+**warehousepg_dbid**
+
+Specifies the integer identifier for a WarehousePG database. When set, this value is
+passed to ``pg_basebackup`` via the ``--target-gp-dbid`` parameter for WarehousePG
+compatibility. This option is required when backing up WarehousePG segments.
+
+.. important::
+  This option is only relevant for WarehousePG databases and should not be set for
+  standard PostgreSQL databases.
+
+  Furthermore, Barman does not handle backups and restores for WarehousePG clusters.
+  The orchestration of backup and restore operations for WarehousePG clusters must be
+  managed externally by the user.
+
+.. note::
+  Only supported when ``backup_method = postgres``.
+
+Scope: Global / Server / Model.
+
 .. _configuration-options-backups-backup-directory:
 
 **backup_directory**
