@@ -1,0 +1,14 @@
+---
+- summary: Experimental support for WarehousePG database ID configuration
+  description: |
+    Addition of experimental support for WarehousePG, which includes a new configuration
+    option `warehousepg_dbid` that allows users to specify the database ID of the
+    WarehousePG segment when using the PostgreSQL backup method. This configuration is
+    intended to enable better integration with WarehousePG for backup and restore
+    operations.
+
+    There's also an improvement in the collection of Postgres parameters due to
+    `archive_timeout` not being exposed in `pg_settings` on WarehousePG segments.
+  type: minor_change
+  jira_tickets:
+    - BAR-1092
