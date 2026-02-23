@@ -1410,6 +1410,7 @@ class TestModelConfig:
             "archiver_batch_size": None,
             "autogenerate_manifest": None,
             "aws_await_snapshots_timeout": None,
+            "aws_read_timeout": None,
             "aws_snapshot_lock_mode": None,
             "aws_snapshot_lock_duration": None,
             "aws_snapshot_lock_cool_off_period": None,
@@ -1514,6 +1515,7 @@ class TestModelConfig:
             "archiver_batch_size": {"source": "SOME_SOURCE", "value": None},
             "autogenerate_manifest": {"source": "SOME_SOURCE", "value": None},
             "aws_await_snapshots_timeout": {"source": "SOME_SOURCE", "value": None},
+            "aws_read_timeout": {"source": "SOME_SOURCE", "value": None},
             "aws_snapshot_lock_mode": {"source": "SOME_SOURCE", "value": None},
             "aws_snapshot_lock_duration": {"source": "SOME_SOURCE", "value": None},
             "aws_snapshot_lock_cool_off_period": {
