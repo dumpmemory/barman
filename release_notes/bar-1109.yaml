@@ -1,0 +1,25 @@
+---
+- summary: Add aws_read_timeout configuration option for S3 operations
+  description: |
+    Introduced a new `aws_read_timeout` configuration option that allows users to
+    specify a custom read timeout for S3 operations. When set in the server
+    configuration, this value is passed to the S3 client for all commands that
+    interact with backup data on cloud object storage.
+
+    This option provides feature parity with the `--read-timeout` argument from
+    `barman-cloud-*` scripts and supports advanced and non-standard S3 workflows.
+    If not set, the default boto3 read timeout behavior applies.
+
+    Example configuration:
+    ```
+    [myserver]
+    backup_method = local-to-cloud
+    basebackups_directory = s3://my-bucket/barman/backups
+    aws_read_timeout = 120
+    ```
+
+    This change is part of the effort to unify cloud options between the main
+    `barman` CLI and standalone `barman-cloud-*` scripts.
+  type: minor_change
+  jira_tickets:
+    - BAR-1109
