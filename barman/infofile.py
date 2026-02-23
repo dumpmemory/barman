@@ -1058,7 +1058,7 @@ class LocalBackupInfo(BackupInfo):
             or None if it does not exist or is empty.
         """
         if self.is_incremental:
-            backup_info = LocalBackupInfo(
+            backup_info = BackupInfoFactory.build_backup_info(
                 self.server,
                 backup_id=self.parent_backup_id,
             )
@@ -1083,7 +1083,7 @@ class LocalBackupInfo(BackupInfo):
         """
         if self.children_backup_ids:
             if child_backup_id in self.children_backup_ids:
-                backup_info = LocalBackupInfo(
+                backup_info = BackupInfoFactory.build_backup_info(
                     self.server,
                     backup_id=child_backup_id,
                 )
@@ -1107,10 +1107,9 @@ class LocalBackupInfo(BackupInfo):
         :yields: a generator of :class:`LocalBackupInfo` objects for each
             backup, walking from the leaves to self.
         """
-
         if self.children_backup_ids:
             for child_backup_id in self.children_backup_ids:
-                backup_info = LocalBackupInfo(
+                backup_info = BackupInfoFactory.build_backup_info(
                     self.server,
                     backup_id=child_backup_id,
                 )
@@ -1195,35 +1194,18 @@ class LocalBackupInfo(BackupInfo):
 
         backup_info_path = self.get_filename()
 
-        # NOTE: Historically, LocalBackupInfo handled local metadata while BackupInfo
-        # is used by the cloud scripts. As we are now merging them together, we are
-        # temporarily storing backup.info in both locations. For that reason,
-        # LocalBackupInfo is also checking for orphan files in the cloud in the logic
-        # below, as even though the backup is not local, the metadata still is.
+        # In the >= 3.13.2 structure, it is considered orphan if the backup.info exists
+        # in the server meta directory while no directory related to the backup exists
+        backup_dir = self.get_basebackup_directory()
+        if os.path.exists(backup_info_path) and not os.path.exists(backup_dir):
+            return True
 
-        # For cloud backups it is considered orphan if the backup.info exists
-        # in the server meta directory while no object related to the backup exists
-        if self.server.use_backup_cloud_storage:
-            cloud_interface = self.server.get_backup_cloud_interface()
-            object_key = os.path.join(
-                cloud_interface.path, self.config.name, "base", self.backup_id
-            )
-            has_content = bool(cloud_interface.list_bucket(prefix=(object_key + "/")))
-            if os.path.exists(backup_info_path) and not has_content:
+        # In the < 3.13.2 structure, the backup.info lived inside the backup directory.
+        # In this case, it is considered orphan if the backup.info exists alone in there
+        old_backup_info_path = os.path.join(backup_dir, "backup.info")
+        if os.path.exists(backup_dir) and os.path.exists(old_backup_info_path):
+            if len(os.listdir(backup_dir)) == 1:
                 return True
-        else:
-            # In the >= 3.13.2 structure, it is considered orphan if the backup.info exists
-            # in the server meta directory while no directory related to the backup exists
-            backup_dir = self.get_basebackup_directory()
-            if os.path.exists(backup_info_path) and not os.path.exists(backup_dir):
-                return True
-
-            # In the < 3.13.2 structure, the backup.info lived inside the backup directory.
-            # In this case, it is considered orphan if the backup.info exists alone in there
-            old_backup_info_path = os.path.join(backup_dir, "backup.info")
-            if os.path.exists(backup_dir) and os.path.exists(old_backup_info_path):
-                if len(os.listdir(backup_dir)) == 1:
-                    return True
 
         return False
 
@@ -1320,3 +1302,117 @@ class VolatileBackupInfo(LocalBackupInfo):
         if not file_object:
             raise ValueError("VolatileBackupInfo does not support saving to a file")
         super(LocalBackupInfo, self).save(filename=filename, file_object=file_object)
+
+
+class CloudLocalBackupInfo(LocalBackupInfo):
+    """
+    This class is used to represent a backup that is stored in the cloud but has its
+    metadata locally available. It inherits from :class:`LocalBackupInfo` and can be
+    used in the same way.
+    """
+
+    def __init__(self, server, *args, **kwargs):
+        """
+        Initialize the CloudLocalBackupInfo object.
+        """
+        self._backup_cloud_interface = server.get_backup_cloud_interface()
+        self._wal_cloud_interface = server.get_wal_cloud_interface()
+        super(CloudLocalBackupInfo, self).__init__(server, *args, **kwargs)
+
+    def get_base_directory(self):
+        """
+        Retrieve the base directory for this backup.
+
+        For cloud backups, this is the path key in the cloud storage where the backup
+        is stored.
+
+        :return str: The base directory for this backup.
+        """
+        return os.path.join(
+            self._backup_cloud_interface.path,
+            self.config.name,
+            "base",
+        )
+
+    def get_data_directory(self, tablespace_oid=None):
+        """
+        Get the path to the backup data directory.
+
+        For cloud backups, there is no data subdirectory under the backup directory as
+        the backup is stored in tarballs. Hence this method only returns the
+        backup directory itself i.e. the same as :meth:`get_basebackup_directory`.
+        """
+        return super(CloudLocalBackupInfo, self).get_basebackup_directory()
+
+    def get_backup_manifest_path(self):
+        """
+        Get the full path to the backup manifest file.
+
+        For cloud backups, the backup manifest file is stored in the server meta
+        directory with a name that includes the backup ID to ensure uniqueness and
+        avoid conflicts.
+
+        :returns str: the full path to the backup manifest file.
+        """
+        manifest_filename = "%s-backup_manifest" % self.backup_id
+        return os.path.join(self.server.meta_directory, manifest_filename)
+
+    @property
+    def is_orphan(self):
+        """
+        Determine if the backup is an orphan.
+
+        For cloud backups, an orphan backup is defined as a backup that has its
+        metadata locally available but does not have any corresponding objects in the
+        cloud storage. This may indicate an incomplete delete operation or a failure in
+        the upload process.
+
+        :return bool: ``True`` if the backup is an orphan, ``False`` otherwise.
+        """
+        if self.status == BackupInfo.EMPTY:
+            return False
+        # For cloud backups it is considered orphan if the backup.info exists
+        # in the server meta directory while no object related to the backup exists
+        object_key = self.get_data_directory()
+        has_content = bool(
+            self._backup_cloud_interface.list_bucket(prefix=(object_key + "/"))
+        )
+        if os.path.exists(self.get_filename()) and not has_content:
+            return True
+        return False
+
+
+class BackupInfoFactory:
+    """
+    Factory class to create BackupInfo objects.
+
+    This class is responsible for creating BackupInfo objects based on the provided
+    parameters. It abstracts away the logic of determining which type of BackupInfo
+    to create (e.g., LocalBackupInfo, CloudLocalBackupInfo) based on the server's
+    configuration.
+
+    .. note::
+        Even though :class:`VolatileBackupInfo` is a valid type of BackupInfo, it is
+        something that is created at will for temporary usage in specific cases,
+        such as in-memory operations during recovery. For that reason, it is not
+        instantiated through this factory.
+    """
+
+    @staticmethod
+    def build_backup_info(server, info_file=None, backup_id=None, **kwargs):
+        """
+        Create a BackupInfo object based on the provided parameters.
+
+        :param barman.server.Server server: The server for which to create the BackupInfo.
+        :param str|file|None info_file: The path to an existing backup info file or a file-like object.
+        :param str|None backup_id: The backup ID to use for creating the BackupInfo.
+
+        :return BackupInfo: An instance of BackupInfo (or its subclass) representing the backup information.
+        """
+        if server.use_backup_cloud_storage:
+            return CloudLocalBackupInfo(
+                server, info_file=info_file, backup_id=backup_id, **kwargs
+            )
+        return LocalBackupInfo(
+            server, info_file=info_file, backup_id=backup_id, **kwargs
+        )

@@ -70,7 +70,7 @@ from barman.exceptions import (
 )
 from barman.fs import unix_command_factory
 from barman.hooks import HookScriptRunner, RetryHookScriptRunner
-from barman.infofile import BackupInfo, LocalBackupInfo, WalFileInfo
+from barman.infofile import BackupInfo, BackupInfoFactory, WalFileInfo
 from barman.lockfile import ServerBackupIdLock, ServerBackupSyncLock
 from barman.recovery_executor import recovery_executor_factory
 from barman.remote_status import RemoteStatusMixin
@@ -193,14 +193,14 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         # in the backup catalog, where we will find backup.info files in both
         # locations because of backups taken with < 3.13.2
         for filename in glob("%s/*/backup.info" % self.config.basebackups_directory):
-            backup = LocalBackupInfo(self.server, filename)
+            backup = BackupInfoFactory.build_backup_info(self.server, filename)
             self._backup_cache[backup.backup_id] = backup
         # In version 3.13.2, Barman changed the location of backup.info files.
         # That was done so we have common location for the metadata, which
         # should always be in a mutable storage, independently if worm_mode
         # is enabled or not. So, this new approach takes precedence.
         for filename in glob("%s/*-backup.info" % self.server.meta_directory):
-            backup = LocalBackupInfo(self.server, filename)
+            backup = BackupInfoFactory.build_backup_info(self.server, filename)
             self._backup_cache[backup.backup_id] = backup
 
     def backup_cache_add(self, backup_info):
@@ -278,7 +278,7 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         """
         if not isinstance(status_filter, tuple):
             status_filter = tuple(status_filter)
-        backup = LocalBackupInfo(self.server, backup_id=backup_id)
+        backup = BackupInfoFactory.build_backup_info(self.server, backup_id=backup_id)
         available_backups = self.get_available_backups(status_filter + (backup.status,))
         return self.find_previous_backup_in(available_backups, backup_id, status_filter)
 
@@ -411,7 +411,7 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         """
         if not isinstance(status_filter, tuple):
             status_filter = tuple(status_filter)
-        backup = LocalBackupInfo(self.server, backup_id=backup_id)
+        backup = BackupInfoFactory.build_backup_info(self.server, backup_id=backup_id)
         available_backups = self.get_available_backups(status_filter + (backup.status,))
         return self.find_next_backup_in(available_backups, backup_id, status_filter)
 
@@ -947,7 +947,7 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         backup_info = None
         try:
             # Create the BackupInfo object representing the backup
-            backup_info = LocalBackupInfo(
+            backup_info = BackupInfoFactory.build_backup_info(
                 self.server,
                 backup_id=datetime.datetime.now().strftime("%Y%m%dT%H%M%S"),
                 backup_name=name,
@@ -1495,21 +1495,18 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
 
         :param barman.infofile.LocalBackupInfo backup: the backup to delete
         """
-        # Construct the cloud path e.g. if basebackups_directory is s3://my-backups
-        # then this will be my-backups/<server_name>/base/<backup_id>
-        cloud_interface = self.server.get_backup_cloud_interface()
-        backup_path = os.path.join(
-            cloud_interface.path, self.config.name, "base", backup.backup_id
-        )
+        # get_basebackup_directory returns the cloud path e.g. if basebackups_directory
+        # is s3://my-backups then it will be my-backups/<server_name>/base/<backup_id>
+        backup_path = backup.get_basebackup_directory()
         # Get all the objects keys under the backup path and pass them to delete_objects
         # In the future we might replace this with just calling the cloud interface's
         # delete_under_prefix method instead, but currently that is only implemented for S3
+        cloud_interface = self.server.get_backup_cloud_interface()
         objects_keys = [k for k in cloud_interface.list_bucket(backup_path + "/")]
         _logger.debug("Deleting all backup data from cloud path: %s" % backup_path)
         cloud_interface.delete_objects(objects_keys)
         # Lastly delete the backup manifest from the local meta dir, if it exists
-        manifest_filename = "%s-backup_manifest" % backup.backup_id
-        manifest_path = os.path.join(self.server.meta_directory, manifest_filename)
+        manifest_path = backup.get_backup_manifest_path()
         if os.path.exists(manifest_path):
             _logger.debug("Deleting backup manifest file: %s" % manifest_path)
             try:
@@ -1806,7 +1803,9 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         backup_id = self.get_last_backup_id()
         if backup_id:
             # Get the backup object
-            backup = LocalBackupInfo(self.server, backup_id=backup_id)
+            backup = BackupInfoFactory.build_backup_info(
+                self.server, backup_id=backup_id
+            )
             now = datetime.datetime.now(dateutil.tz.tzlocal())
             # Evaluate the point of validity
             validity_time = now - last_backup_maximum_age
@@ -1839,7 +1838,9 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         backup_id = self.get_last_backup_id()
         if backup_id:
             # Get the backup object
-            backup = LocalBackupInfo(self.server, backup_id=backup_id)
+            backup = BackupInfoFactory.build_backup_info(
+                self.server, backup_id=backup_id
+            )
             if backup.size < last_backup_minimum_size:
                 return False, backup.size
             else:

@@ -70,7 +70,7 @@ from barman.exceptions import (
     SnapshotBackupException,
     UnsupportedCompressionFormat,
 )
-from barman.infofile import BackupInfo, LocalBackupInfo, VolatileBackupInfo
+from barman.infofile import BackupInfo, BackupInfoFactory, VolatileBackupInfo
 from barman.utils import (
     force_str,
     get_major_version,
@@ -259,7 +259,9 @@ class RecoveryExecutor(object):
             # backup info again and check whether it has been validated.
             # Notify the user if it is still not DONE.
             if backup_info.status == BackupInfo.WAITING_FOR_WALS:
-                data = LocalBackupInfo(self.server, backup_info.filename)
+                data = BackupInfoFactory.build_backup_info(
+                    self.server, backup_info.filename
+                )
                 if data.status == BackupInfo.WAITING_FOR_WALS:
                     output.warning(
                         "IMPORTANT: The backup we have restored IS NOT "
@@ -653,7 +655,7 @@ class RecoveryExecutor(object):
             dest_info_txt = recovery_info["cmd"].get_file_content(
                 os.path.join(dest, ".barman-recover.info")
             )
-            dest_info = LocalBackupInfo(
+            dest_info = BackupInfoFactory.build_backup_info(
                 self.server, info_file=BytesIO(dest_info_txt.encode("utf-8"))
             )
             dest_begin_time = dest_info.begin_time

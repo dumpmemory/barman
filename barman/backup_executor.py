@@ -1064,13 +1064,11 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         """
         from barman.cloud import CloudUploadController
 
-        # The exact location in the bucket where tarballs and backup.info will be stored
-        # E.g. if basebackups_directory is s3://my-backups then its key prefix will be
-        # my-backups/<server_name>/base/<backup_id>
+        # get_basebackup_directory returns the exact location in the bucket where
+        # tarballs and backup.info will be stored e.g. if basebackups_directory is
+        # s3://my-backups then its key prefix will be my-backups/<server_name>/base/<backup_id>
         # This follows the same structure used by the Barman cloud scripts
-        key_prefix = os.path.join(
-            self._cloud_interface.path, self.config.name, "base", backup_info.backup_id
-        )
+        key_prefix = backup_info.get_basebackup_directory()
         self._upload_controller = CloudUploadController(
             cloud_interface=self._cloud_interface,
             key_prefix=key_prefix,
