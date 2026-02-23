@@ -15,7 +15,7 @@ on:
   schedule:
     # Lint code base every Monday 12:00 am. The idea here is to catch possible
     # issues that were not detected during the normal development workflow.
-    - cron: '0 0 * * 1'
+    - cron: "0 0 * * 1"
 
   workflow_dispatch:
     inputs:
@@ -52,15 +52,16 @@ jobs:
         uses: actions/setup-python@v5
 
       - name: Super-linter
-        uses: super-linter/super-linter/slim@v7
+        uses: super-linter/super-linter/slim@v8
         env:
           # To report GitHub Actions status checks
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Linters configuration.
-          LINTER_RULES_PATH: '.'
-          # We are not interested in linting files from the old docs, which are going
-          # to be removed soon:
-          FILTER_REGEX_EXCLUDE: 'old_docs/.*\.md'
+          LINTER_RULES_PATH: "."
+          # We are not interested in linting these files:
+          # * Markdown files under `doc` or `sphinx` directories, which belong to the
+          #   old docs, and are going to be replaced soon.
+          FILTER_REGEX_EXCLUDE: '(doc|sphinx)/.*\.md'
           DOCKERFILE_HADOLINT_FILE_NAME: .hadolint.yaml
           GITLEAKS_CONFIG_FILE: .gitleaks.toml
           MARKDOWN_CONFIG_FILE: .markdownlint.yml
