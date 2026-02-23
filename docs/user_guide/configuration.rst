@@ -689,6 +689,22 @@ Indicates the AWS region where the EC2 VM and storage volumes, as defined by
 
 Scope: Global / Server / Model.
 
+**aws_read_timeout**
+
+Specifies the read timeout in seconds for S3 operations when using cloud storage.
+This value is passed to the S3 client for all commands that interact with backup
+data on cloud object storage. If not set, the default boto3 read timeout behavior
+applies.
+
+This option is useful for advanced and non-standard S3 workflows where the default
+timeout may not be sufficient.
+
+.. note::
+  Only supported when ``backup_method`` is ``postgres`` or ``local-to-cloud``, and
+  ``basebackups_directory`` and/or ``wals_directory`` point to S3.
+
+Scope: Global / Server / Model.
+
 **aws_snapshot_lock_mode**
 
 The lock mode for the snapshot. This is only valid if ``snapshot_instance`` and
