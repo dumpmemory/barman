@@ -186,7 +186,11 @@ def get_cloud_interface_from_server_config(config, cloud_provider, base_url):
     :rtype: CloudInterface
     :returns: A CloudInterface for the specified cloud_provider.
     """
-    cloud_interface_kwargs = {"url": base_url, "jobs": config.parallel_jobs}
+    cloud_interface_kwargs = {
+        "url": base_url,
+        "jobs": config.parallel_jobs,
+        "delete_batch_size": config.cloud_delete_batch_size,
+    }
 
     if cloud_provider == "aws-s3":
         from barman.cloud_providers.aws_s3 import S3CloudInterface
