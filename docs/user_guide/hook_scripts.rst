@@ -201,6 +201,11 @@ To configure this, add the following line to your server configuration in Barman
     recommended to run backups with the ``-w`` / ``--wait`` option to ensure the hook
     script is not executed while the backup status is ``WAITING_FOR_WALS``.
 
+.. warning::
+    When using ``barman-cloud-backup`` as a hook script, it is not possible to set a backup
+    name. It's also not possible to use it on backups with compression. Attempting to do so
+    will result in an error.
+
 Additionally, set up ``barman-cloud-wal-archive`` as a pre-WAL archive script by
 adding the following line to the Barman configuration for your Postgres server:
 
