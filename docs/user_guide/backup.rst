@@ -110,9 +110,9 @@ matching tablespace is found, the specified bandwidth limit will be applied. If 
 is found, the default bandwidth limit for the server will be used.
 
 .. important::
-    The ``bandwidth_limit`` option is available with ``rsync`` and ``postgres`` backup
-    methods, but the ``tablespace_bandwidth_limit`` option is only applicable when using
-    ``rsync``.
+    The ``bandwidth_limit`` option is available with ``rsync``, ``postgres`` and
+    ``local-to-cloud`` backup methods, but the ``tablespace_bandwidth_limit`` option is
+    only applicable when using ``rsync``.
 
 .. _backup-network-compression:
 

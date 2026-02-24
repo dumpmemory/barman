@@ -142,7 +142,7 @@ Specifies the maximum transfer rate in kilobytes per second for backup and recov
 operations. A value of ``0`` indicates no limit (default).
 
 .. note::
-  Applies only when ``backup_method = postgres | rsync``.
+  Applies only when ``backup_method = postgres | rsync | local-to-cloud``.
 
 Scope: Global / Server / Model.
 
