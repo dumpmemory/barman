@@ -689,6 +689,24 @@ Indicates the AWS region where the EC2 VM and storage volumes, as defined by
 
 Scope: Global / Server / Model.
 
+**aws_encryption**
+
+Specifies the server-side encryption algorithm to use when storing objects in S3.
+This value is passed to the S3 client for all upload operations to cloud object storage.
+
+Allowed options:
+
+* ``AES256``: Use S3-managed encryption keys (SSE-S3).
+* ``aws:kms``: Use AWS Key Management Service encryption keys (SSE-KMS).
+
+If not set, S3's default encryption settings for the bucket will be used.
+
+.. note::
+  Only supported when ``backup_method`` is ``postgres`` or ``local-to-cloud``, and
+  ``basebackups_directory`` and/or ``wals_directory`` point to S3.
+
+Scope: Global / Server / Model.
+
 **aws_read_timeout**
 
 Specifies the read timeout in seconds for S3 operations when using cloud storage.
