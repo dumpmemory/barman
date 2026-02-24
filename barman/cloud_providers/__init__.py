@@ -195,11 +195,17 @@ def get_cloud_interface_from_server_config(config, cloud_provider, base_url):
     if cloud_provider == "aws-s3":
         from barman.cloud_providers.aws_s3 import S3CloudInterface
 
+        if config.aws_sse_kms_key_id and config.aws_encryption != "aws:kms":
+            raise ConfigurationException(
+                'aws_encryption must be "aws:kms" if aws_sse_kms_key_id is specified'
+            )
+
         cloud_interface_kwargs.update(
             {
                 "profile_name": config.aws_profile,
                 "read_timeout": config.aws_read_timeout,
                 "encryption": config.aws_encryption,
+                "sse_kms_key_id": config.aws_sse_kms_key_id,
             }
         )
         return S3CloudInterface(**cloud_interface_kwargs)
