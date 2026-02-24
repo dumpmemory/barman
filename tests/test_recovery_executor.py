@@ -1773,10 +1773,10 @@ class TestRecoveryExecutor(object):
     @mock.patch("barman.recovery_executor.RsyncPgData")
     @mock.patch("barman.recovery_executor.output")
     @mock.patch("barman.recovery_executor.RsyncCopyController")
-    @mock.patch("barman.recovery_executor.LocalBackupInfo")
+    @mock.patch("barman.recovery_executor.BackupInfoFactory.build_backup_info")
     def test_recover_waiting_for_wals(
         self,
-        backup_info_mock,
+        build_backup_info_mock,
         rsync_copy_controller_mock,
         output_mock,
         rsync_pgdata_mock,
@@ -1785,8 +1785,8 @@ class TestRecoveryExecutor(object):
     ):
         # This backup is waiting for WALs and it remains in that status
         # even after having copied the data files
-        backup_info_mock.WAITING_FOR_WALS = "WAITING_FOR_WALS"
-        backup_info_mock.return_value.status = BackupInfo.WAITING_FOR_WALS
+        build_backup_info_mock.WAITING_FOR_WALS = "WAITING_FOR_WALS"
+        build_backup_info_mock.return_value.status = BackupInfo.WAITING_FOR_WALS
         backup_info = testing_helpers.build_test_backup_info()
         backup_manager = testing_helpers.build_backup_manager()
         executor = RecoveryExecutor(backup_manager)
@@ -1796,7 +1796,7 @@ class TestRecoveryExecutor(object):
             executor.recover(backup_info, destination, standby_mode=None)
 
         # The backup info has been read again
-        backup_info_mock.assert_called()
+        build_backup_info_mock.assert_called()
 
         # The following two warning messages have been emitted
         output_mock.warning.assert_has_calls(
@@ -1820,12 +1820,12 @@ class TestRecoveryExecutor(object):
         # the copy of the data files, so there is no need for the warning
         # message at the end of the recovery process to be emitted again
         output_mock.warning.reset_mock()
-        backup_info_mock.return_value.status = BackupInfo.DONE
+        build_backup_info_mock.return_value.status = BackupInfo.DONE
         with closing(executor):
             executor.recover(backup_info, destination, standby_mode=None)
 
         # The backup info has been read again
-        backup_info_mock.assert_called()
+        build_backup_info_mock.assert_called()
 
         # The following two warning messages have been emitted
         output_mock.warning.assert_has_calls(

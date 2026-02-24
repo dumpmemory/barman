@@ -1827,13 +1827,17 @@ class TestCloudPostgresBackupExecutor(object):
         executor.config.name = "test_server"
         executor._cloud_interface = mock.Mock(path="/my-bucket/backups")
         # WHEN _init_upload_controller is called with a BackupInfo
-        backup_info = mock.Mock(backup_id="fake_backup_id")
+        key_prefix = "/my-bucket/backups/test_server/base/fake_backup_id"
+        backup_info = mock.Mock(
+            backup_id="fake_backup_id",
+            get_basebackup_directory=lambda: key_prefix,
+        )
         executor._init_upload_controller(backup_info)
         # THEN a CloudUploadController is created with the expected parameters
         mock_upload_controller.assert_called_once_with(
             cloud_interface=executor._cloud_interface,
-            key_prefix="/my-bucket/backups/test_server/base/fake_backup_id",
             max_archive_size=100000000000,  # 100G
+            key_prefix=key_prefix,
             compression=None,
             min_chunk_size=5000000,  # 5M
             max_bandwidth=None,
@@ -1863,12 +1867,15 @@ class TestCloudPostgresBackupExecutor(object):
         executor.config.name = "test_server"
         executor._cloud_interface = mock.Mock(path="/my-bucket/backups")
         # WHEN _init_upload_controller is called with a BackupInfo
-        backup_info = mock.Mock(backup_id="fake_backup_id")
+        key_prefix = "/my-bucket/backups/test_server/base/fake_backup_id"
+        backup_info = mock.Mock(
+            backup_id="fake_backup_id", get_basebackup_directory=lambda: key_prefix
+        )
         executor._init_upload_controller(backup_info)
         # THEN a CloudUploadController is created with converted bandwidth_limit (512 kB/s → 512000 B/s)
         mock_upload_controller.assert_called_once_with(
             cloud_interface=executor._cloud_interface,
-            key_prefix="/my-bucket/backups/test_server/base/fake_backup_id",
+            key_prefix=key_prefix,
             max_archive_size=100000000000,
             compression=None,
             min_chunk_size=5000000,

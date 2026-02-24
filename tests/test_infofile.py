@@ -46,6 +46,7 @@ from barman.cloud_providers.google_cloud_storage import (
 )
 from barman.infofile import (
     BackupInfo,
+    CloudLocalBackupInfo,
     Field,
     FieldListFile,
     LocalBackupInfo,
@@ -702,54 +703,6 @@ class TestBackupInfo(object):
         b_info = LocalBackupInfo(server, backup_id="no_backup_info")
         assert b_info.is_orphan is False
 
-    def test_is_orphan_cloud(self, tmpdir):
-        """
-        Ensure :meth:`BackupInfo.is_orphan` returns the correct value for cloud backups.
-        """
-        server = build_mocked_server(
-            main_conf={
-                "basebackups_directory": tmpdir.strpath,
-                "backup_directory": tmpdir.join("main"),
-            },
-        )
-        server.use_backup_cloud_storage = True
-        server.get_backup_cloud_interface = mock.Mock(
-            return_value=mock.Mock(path="barman-backups")
-        )
-
-        # Case 1: Not orphan (status is empty)
-        backup_info = LocalBackupInfo(server, backup_id="not_orphan_backup")
-        backup_info.status = BackupInfo.EMPTY
-        assert backup_info.is_orphan is False
-
-        # Case 2: Orphan backup (only the backup.info file exists)
-        server_dir = tmpdir.mkdir("main")
-        meta_dir = server_dir.mkdir("meta")
-        backup_info_path = meta_dir.join("orphan_backup-backup.info")
-        backup_info_path.write("status = DONE\n")
-        backup_info = LocalBackupInfo(server, backup_id="orphan_backup")
-        backup_info.status = BackupInfo.DONE
-        # Mock the cloud interface to return no file on the backup path
-        server.get_backup_cloud_interface.return_value.list_bucket.return_value = []
-        assert backup_info.is_orphan is True
-        server.get_backup_cloud_interface.return_value.list_bucket.assert_called_with(
-            prefix="barman-backups/main/base/orphan_backup/"
-        )
-
-        server.get_backup_cloud_interface.reset_mock()
-
-        # Case 3: Not orphan (backup.info and other files exists)
-        backup_info = LocalBackupInfo(server, backup_id="not_orphan_backup2")
-        backup_info.status = BackupInfo.DONE
-        # Mock the cloud interface to return some file on the backup path
-        server.get_backup_cloud_interface.return_value.list_bucket.return_value = [
-            "barman-backups/fake_backup_id/random_file",
-        ]
-        assert backup_info.is_orphan is False
-        server.get_backup_cloud_interface.return_value.list_bucket.assert_called_with(
-            prefix="barman-backups/main/base/not_orphan_backup2/"
-        )
-
     def test_backup_info_save(self, tmpdir):
         """
         Test the save method of a BackupInfo object
@@ -1245,7 +1198,7 @@ class TestLocalBackupInfo:
         mock_is_incremental.return_value = True
         backup_info.parent_backup_id = "SOME_ID"
 
-        with patch("barman.infofile.LocalBackupInfo") as mock:
+        with patch("barman.infofile.BackupInfoFactory.build_backup_info") as mock:
             mock.return_value.status = BackupInfo.EMPTY
             assert backup_info.get_parent_backup_info() is None
             mock.assert_called_once_with(backup_info.server, backup_id="SOME_ID")
@@ -1259,7 +1212,7 @@ class TestLocalBackupInfo:
         mock_is_incremental.return_value = True
         backup_info.parent_backup_id = "SOME_ID"
 
-        with patch("barman.infofile.LocalBackupInfo") as mock:
+        with patch("barman.infofile.BackupInfoFactory.build_backup_info") as mock:
             mock.return_value.status = BackupInfo.DONE
             assert backup_info.get_parent_backup_info() is mock.return_value
             mock.assert_called_once_with(backup_info.server, backup_id="SOME_ID")
@@ -1287,7 +1240,7 @@ class TestLocalBackupInfo:
         """
         backup_info.children_backup_ids = ["SOME_CHILD_ID_1", "SOME_CHILD_ID_2"]
 
-        with patch("barman.infofile.LocalBackupInfo") as mock:
+        with patch("barman.infofile.BackupInfoFactory.build_backup_info") as mock:
             mock.return_value.status = BackupInfo.EMPTY
             assert backup_info.get_child_backup_info("SOME_CHILD_ID_1") is None
             mock.assert_called_once_with(
@@ -1302,7 +1255,7 @@ class TestLocalBackupInfo:
         """
         backup_info.children_backup_ids = ["SOME_CHILD_ID_1", "SOME_CHILD_ID_2"]
 
-        with patch("barman.infofile.LocalBackupInfo") as mock:
+        with patch("barman.infofile.BackupInfoFactory.build_backup_info") as mock:
             mock.return_value.status = BackupInfo.DONE
             assert (
                 backup_info.get_child_backup_info("SOME_CHILD_ID_1")
@@ -1347,7 +1300,7 @@ class TestLocalBackupInfo:
         # Create parent backup info objects
         backup_info.parent_backup_id = "parent_backup_id1"
         with mock.patch(
-            "barman.infofile.LocalBackupInfo",
+            "barman.infofile.BackupInfoFactory.build_backup_info",
             side_effect=provide_parent_backup_info,
         ):
             # Call the walk_to_root method
@@ -1363,7 +1316,7 @@ class TestLocalBackupInfo:
         # Test case for when the method is set to also return the current backup
         backup_info.backup_id = "incremental_backup_id"
         with mock.patch(
-            "barman.infofile.LocalBackupInfo",
+            "barman.infofile.BackupInfoFactory.build_backup_info",
             side_effect=provide_parent_backup_info,
         ):
             # Call the walk_to_root method with include_self=True
@@ -1427,7 +1380,7 @@ class TestLocalBackupInfo:
 
         # Mock the `LocalBackupInfo` constructor to return the corresponding backup info objects
         with patch(
-            "barman.infofile.LocalBackupInfo",
+            "barman.infofile.BackupInfoFactory.build_backup_info",
             side_effect=provide_child_backup_info,
         ):
             # Call the `walk_backups_tree` method on the root backup info
@@ -1727,3 +1680,110 @@ class TestVolatileBackupInfo:
 
         # Case 3: passing to file-like object works
         volatile_backup_info.save(file_object=io.BytesIO())
+
+
+class TestCloudLocalBackupInfo:
+    """
+    Unit tests for the :class:`CloudLocalBackupInfo` class.
+    """
+
+    @patch("barman.infofile.LocalBackupInfo.__init__", return_value=None)
+    def test__init__(self, mock_parent_init):
+        # Mock the server and its methods to return mock cloud interfaces
+        backup_cloud_interface, wal_cloud_interface = mock.Mock(), mock.Mock()
+        server = mock.Mock(
+            get_backup_cloud_interface=lambda: backup_cloud_interface,
+            get_wal_cloud_interface=lambda: wal_cloud_interface,
+        )
+        # WHEN initializing CloudLocalBackupInfo
+        backup_info = CloudLocalBackupInfo(server)
+        # THEN the backup and wal cloud interfaces are set from the server
+        assert backup_info._backup_cloud_interface == backup_cloud_interface
+        assert backup_info._wal_cloud_interface == wal_cloud_interface
+        # AND the parent __init__ method is called
+        mock_parent_init.assert_called_once_with(server)
+
+    @patch("barman.infofile.LocalBackupInfo.__init__", return_value=None)
+    def test_get_base_directory(self, _):
+        # Initialize CloudLocalBackupInfo with a mock server and backup_id
+        backup_info = CloudLocalBackupInfo(server=mock.Mock(), backup_id="fake_id")
+        # Set the backup cloud interface path and config name
+        backup_info._backup_cloud_interface = mock.Mock(path="barman-backups")
+        backup_info.config = mock.Mock()
+        backup_info.config.name = "my-server"
+        # Assert that the base directory is correctly constructed
+        # It should be <cloud_interface_path>/<server_name>/base
+        assert backup_info.get_base_directory() == "barman-backups/my-server/base"
+
+    @patch(
+        "barman.infofile.LocalBackupInfo.get_basebackup_directory",
+        return_value="/fake/base/directory"
+    )
+    @patch("barman.infofile.LocalBackupInfo.__init__", return_value=None)
+    def test_get_data_directory(self, _, __):
+        # Initialize CloudLocalBackupInfo with a mock server and backup_id
+        backup_info = CloudLocalBackupInfo(server=mock.Mock(), backup_id="fake_id")
+        # Assert that the data directory is the same as the base backup directory
+        assert backup_info.get_data_directory() == "/fake/base/directory"
+
+    @patch("barman.infofile.LocalBackupInfo.__init__", return_value=None)
+    def test_get_manifest_path(self, _):
+        # Mock the server and its meta_directory attribute
+        server = mock.Mock(meta_directory="/fake/meta/directory")
+        # Initialize CloudLocalBackupInfo. We need to set the server and backup_id
+        # attributes manually since we mocked the parent __init__ method
+        backup_info = CloudLocalBackupInfo(server=server, backup_id="fake_id")
+        backup_info.server = server
+        backup_info.backup_id = "fake_id"
+        # Assert that the manifest path is correctly constructed
+        # It should be <meta_directory>/<backup_id>-backup_manifest
+        expected_manifest_path = "/fake/meta/directory/fake_id-backup_manifest"
+        assert backup_info.get_backup_manifest_path() == expected_manifest_path
+
+    def test_is_orphan_cloud(self, tmpdir):
+        """
+        Ensure cloud orphan backups are correctly identified.
+        """
+        server = build_mocked_server(
+            main_conf={
+                "basebackups_directory": tmpdir.strpath,
+                "backup_directory": tmpdir.join("main"),
+            },
+        )
+        server.use_backup_cloud_storage = True
+        server.get_backup_cloud_interface = mock.Mock(
+            return_value=mock.Mock(path="barman-backups")
+        )
+
+        # Case 1: Not orphan (status is empty)
+        backup_info = CloudLocalBackupInfo(server, backup_id="not_orphan_backup")
+        backup_info.status = BackupInfo.EMPTY
+        assert backup_info.is_orphan is False
+
+        # Case 2: Orphan backup (only the backup.info file exists)
+        server_dir = tmpdir.mkdir("main")
+        meta_dir = server_dir.mkdir("meta")
+        backup_info_path = meta_dir.join("orphan_backup-backup.info")
+        backup_info_path.write("status = DONE\n")
+        backup_info = CloudLocalBackupInfo(server, backup_id="orphan_backup")
+        backup_info.status = BackupInfo.DONE
+        # Mock the cloud interface to return no file on the backup path
+        server.get_backup_cloud_interface.return_value.list_bucket.return_value = []
+        assert backup_info.is_orphan is True
+        server.get_backup_cloud_interface.return_value.list_bucket.assert_called_with(
+            prefix="barman-backups/main/base/orphan_backup/"
+        )
+
+        server.get_backup_cloud_interface.reset_mock()
+
+        # Case 3: Not orphan (backup.info and other files exists)
+        backup_info = CloudLocalBackupInfo(server, backup_id="not_orphan_backup2")
+        backup_info.status = BackupInfo.DONE
+        # Mock the cloud interface to return some file on the backup path
+        server.get_backup_cloud_interface.return_value.list_bucket.return_value = [
+            "barman-backups/fake_backup_id/random_file",
+        ]
+        assert backup_info.is_orphan is False
+        server.get_backup_cloud_interface.return_value.list_bucket.assert_called_with(
+            prefix="barman-backups/main/base/not_orphan_backup2/"
+        )

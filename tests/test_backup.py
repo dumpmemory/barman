@@ -56,9 +56,11 @@ from barman.wal_archiver import CloudWalStorageStrategy, LocalWalStorageStrategy
 # noinspection PyMethodMayBeStatic
 class TestBackup(object):
     @patch("barman.backup.datetime")
-    @patch("barman.backup.LocalBackupInfo")
+    @patch("barman.backup.BackupInfoFactory.build_backup_info")
     @patch("barman.backup.BackupManager.get_last_backup_id")
-    def test_backup_maximum_age(self, backup_id_mock, infofile_mock, datetime_mock):
+    def test_backup_maximum_age(
+        self, backup_id_mock, build_infofile_mock, datetime_mock
+    ):
         # BackupManager setup
         backup_manager = build_backup_manager()
         # setting basic configuration for this test
@@ -81,7 +83,7 @@ class TestBackup(object):
         # mocking the backup id to a custom value
         backup_id_mock.return_value = "Mock_backup"
         # simulate an existing backup using a mock obj
-        instance = infofile_mock.return_value
+        instance = build_infofile_mock.return_value
         # force the backup end date over 1 day over the limit
         instance.end_time = now - timedelta(days=8)
         # build the expected message
@@ -95,7 +97,7 @@ class TestBackup(object):
         # mocking the backup id to a custom value
         backup_id_mock.return_value = "Mock_backup"
         # simulate an existing backup using a mock obj
-        instance = infofile_mock.return_value
+        instance = build_infofile_mock.return_value
         # set the backup end date inside the limit
         instance.end_time = now - timedelta(days=2)
         # build the expected msg
@@ -105,8 +107,8 @@ class TestBackup(object):
         )
         assert (r[0], r[1]) == (True, msg)
 
-    @patch("barman.backup.LocalBackupInfo")
-    def test_keyboard_interrupt(self, mock_infofile):
+    @patch("barman.backup.BackupInfoFactory.build_backup_info")
+    def test_keyboard_interrupt(self, mock_build_infofile):
         """
         Unit test for a quick check on exception catching
         during backup operations
@@ -120,7 +122,7 @@ class TestBackup(object):
         """
         # BackupManager setup
         backup_manager = build_backup_manager()
-        instance = mock_infofile.return_value
+        instance = mock_build_infofile.return_value
         # Instruct the patched method to raise a general exception
         backup_manager.executor.start_backup = Mock(side_effect=Exception("abc"))
         # invoke backup method
@@ -425,9 +427,16 @@ class TestBackup(object):
         """
         Test deletion of backup data from cloud storage.
         """
-        # GIVEN a BackupManager with a mocked cloud interface
+        # GIVEN a BackupManager with a mocked backup info and cloud interface
         backup_manager = build_backup_manager(name="my-server")
-        backup_info = Mock(backup_id="test_backup_id")
+        manifest_path = os.path.join(
+            backup_manager.server.meta_directory, "test_backup_id-backup_manifest"
+        )
+        backup_info = Mock(
+            backup_id="test_backup_id",
+            get_backup_manifest_path=lambda: manifest_path,
+            get_basebackup_directory=lambda: "my-backups/my-server/base/test_backup_id",
+        )
         cloud_interface_mock = Mock(
             path="my-backups",
             list_bucket=Mock(
@@ -453,10 +462,6 @@ class TestBackup(object):
             ]
         )
         # AND the backup manifest file is deleted from the local meta directory
-        manifest_path = os.path.join(
-            backup_manager.server.meta_directory,
-            "%s-backup_manifest" % backup_info.backup_id,
-        )
         mock_unlink.assert_called_once_with(manifest_path)
 
     @patch("barman.backup.output")
@@ -469,18 +474,21 @@ class TestBackup(object):
         Test that if an error occurs while deleting the backup manifest file during
         cloud backup deletion, the error is logged.
         """
-        # GIVEN a BackupManager with a mocked cloud interface
+        # GIVEN a BackupManager with a mocked backup info and cloud interface
         backup_manager = build_backup_manager(name="my-server")
-        backup_info = Mock(backup_id="test_backup_id")
+        manifest_path = os.path.join(
+            backup_manager.server.meta_directory, "test_backup_id-backup_manifest"
+        )
+        backup_info = Mock(
+            backup_id="test_backup_id",
+            get_backup_manifest_path=lambda: manifest_path,
+            get_basebackup_directory=lambda: "my-backups/my-server/base/test_backup_id",
+        )
         cloud_interface_mock = Mock(path="my-backups", list_bucket=lambda x: [])
         backup_manager.server.get_backup_cloud_interface = lambda: cloud_interface_mock
         # WHEN _delete_cloud_backup_data is called
-        backup_manager._delete_cloud_backup_data(Mock(backup_id="test_backup_id"))
+        backup_manager._delete_cloud_backup_data(backup_info)
         # THEN when deleting the manifest file an error occurs and is logged
-        manifest_path = os.path.join(
-            backup_manager.server.meta_directory,
-            "%s-backup_manifest" % backup_info.backup_id,
-        )
         mock_output.warning.assert_called_once_with(
             "Failed to delete backup manifest file: %s. Please manually delete "
             "this file if it still exists.",
@@ -1228,7 +1236,7 @@ class TestBackup(object):
         assert expected_warning in caplog.text
 
     @pytest.mark.parametrize("should_fail", (True, False))
-    @patch("barman.backup.LocalBackupInfo.save")
+    @patch("barman.infofile.LocalBackupInfo.save")
     @patch("barman.backup.output")
     def test_backup_with_name(self, _mock_output, _mock_backup_info_save, should_fail):
         """Verify that backup name is written to backup info during the backup."""
@@ -1249,7 +1257,7 @@ class TestBackup(object):
         assert backup_info.backup_name == backup_name
 
     @pytest.mark.parametrize("should_fail", (True, False))
-    @patch("barman.backup.LocalBackupInfo.save")
+    @patch("barman.infofile.LocalBackupInfo.save")
     @patch("barman.backup.output")
     def test_backup_without_name(
         self, _mock_output, _mock_backup_info_save, should_fail
@@ -1270,7 +1278,7 @@ class TestBackup(object):
         # THEN backup name is None in the backup_info
         assert backup_info.backup_name is None
 
-    @patch("barman.backup.LocalBackupInfo.save")
+    @patch("barman.infofile.LocalBackupInfo.save")
     @patch("barman.backup.output")
     def test_backup_without_parent_backup_id(
         self,
@@ -1292,7 +1300,7 @@ class TestBackup(object):
         # THEN parent backup ID is None in the backup_info
         assert backup_info.parent_backup_id is None
 
-    @patch("barman.backup.LocalBackupInfo.save")
+    @patch("barman.infofile.LocalBackupInfo.save")
     @patch("barman.backup.output")
     def test_backup_with_parent_backup_id(
         self,
