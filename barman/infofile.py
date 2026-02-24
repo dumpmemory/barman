@@ -1381,6 +1381,36 @@ class CloudLocalBackupInfo(LocalBackupInfo):
             return True
         return False
 
+    def get_directory_entries(self, target, empty_dirs=False):
+        """
+        Get the list of backup files stored in the cloud.
+
+        :param str target: The type of entry to target. One among:
+
+            * ``data``: all files in the base backup path.
+            * ``wal``: all WAL files until the next backup.
+            * ``full``: same as ``data`` plus ``wal``.
+            * ``standalone``: same as ``data`` plus the WAL files required for the
+                consistency of this backup.
+
+        :param bool empty_dirs: Whether to include empty directories in the list.
+            Ignored here as there is no concept of empty directories in cloud storages.
+        :yield str: The path to a file or an empty directory.
+        """
+        if target in ("data", "standalone", "full"):
+            for key in self._backup_cloud_interface.list_bucket(
+                prefix=self.get_basebackup_directory() + "/"
+            ):
+                yield key
+        if target == "standalone":
+            for wal in self.get_required_wal_segments():
+                yield self.server.wal_storage.get_full_path(wal)
+        if target in ("wal", "full"):
+            for wal_info in self.server.get_wal_until_next_backup(
+                self, include_history=True
+            ):
+                yield self.server.wal_storage.get_full_path(wal_info.name)
+
 
 class BackupInfoFactory:
     """
