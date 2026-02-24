@@ -1818,7 +1818,9 @@ class TestCloudPostgresBackupExecutor(object):
         # GIVEN a CloudPostgresBackupExecutor with relevant attributes set
         executor = CloudPostgresBackupExecutor(None)
         executor._tarball_dest = "/tmp/barman/tarballs"
-        executor.config = mock.Mock(bandwidth_limit=None)
+        executor.config = mock.Mock(
+            bandwidth_limit=None, cloud_upload_max_archive_size=100000000000
+        )
         executor.config.name = "test_server"
         executor._cloud_interface = mock.Mock(path="/my-bucket/backups")
         # WHEN _init_upload_controller is called with a BackupInfo
@@ -1828,7 +1830,7 @@ class TestCloudPostgresBackupExecutor(object):
         mock_upload_controller.assert_called_once_with(
             cloud_interface=executor._cloud_interface,
             key_prefix="/my-bucket/backups/test_server/base/fake_backup_id",
-            max_archive_size=107374182400,  # 100 GB
+            max_archive_size=100000000000,  # 100G
             compression=None,
             max_bandwidth=None,
             staging_dir=executor._tarball_dest,
@@ -2495,6 +2497,7 @@ class TestCloudBackupExecutor(object):
         executor.server = mock.Mock()
         mock_config = mock.Mock()
         mock_config.name = "test_server"
+        mock_config.cloud_upload_max_archive_size = 100000000000
         executor.config = mock_config
 
         # Mock the postgres connection and cloud interface
@@ -2529,7 +2532,7 @@ class TestCloudBackupExecutor(object):
         mock_uploader_class.assert_called_once_with(
             server_name="test_server",
             cloud_interface=mock_cloud_interface,
-            max_archive_size=107374182400,
+            max_archive_size=100000000000,  # 100 GB
             postgres=mock_postgres,
             backup_name="test_backup",
         )
