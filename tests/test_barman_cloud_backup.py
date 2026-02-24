@@ -561,12 +561,14 @@ class TestCloudBackupHookScript(object):
             "BARMAN_STATUS": "DONE",
         },
     )
+    @mock.patch("barman.clients.cloud_backup.BackupInfo")
     @mock.patch("barman.clients.cloud_backup.get_cloud_interface")
     @mock.patch("barman.clients.cloud_backup.CloudBackupUploaderBarman")
     def test_uses_barman_backup_uploader_when_running_as_hook(
         self,
         uploader_mock,
         cloud_interface_mock,
+        backup_info_mock,
         rmtree_mock,
         tempfile_mock,
         barman_cloud_args,
@@ -574,6 +576,10 @@ class TestCloudBackupHookScript(object):
         expected_min_chunk_size,
         expected_max_bandwidth,
     ):
+        # GIVEN a backup without compression
+        backup_info_instance = backup_info_mock.return_value
+        backup_info_instance.compression = None
+
         uploader = uploader_mock.return_value
         cloud_backup.main(["cloud_storage_url", "test_server"] + barman_cloud_args)
         cloud_interface_mock.assert_called_once()
@@ -602,15 +608,21 @@ class TestCloudBackupHookScript(object):
             "BARMAN_STATUS": "DONE",
         },
     )
+    @mock.patch("barman.clients.cloud_backup.BackupInfo")
     @mock.patch("barman.clients.cloud_backup.get_cloud_interface")
     @mock.patch("barman.clients.cloud_backup.CloudBackupUploaderBarman")
     def test_uses_barman_backup_uploader_when_running_as_retry_hook(
         self,
         uploader_mock,
         cloud_interface_mock,
+        backup_info_mock,
         rmtree_mock,
         tempfile_mock,
     ):
+        # GIVEN a backup without compression
+        backup_info_instance = backup_info_mock.return_value
+        backup_info_instance.compression = None
+
         uploader = uploader_mock.return_value
         cloud_backup.main(["cloud_storage_url", "test_server"])
         cloud_interface_mock.assert_called_once()
@@ -807,4 +819,45 @@ class TestCloudBackupHookScript(object):
         assert (
             "Barman cloud backup exception: "
             "Cannot set backup name when running as a hook script" in caplog.messages
+        )
+
+    @mock.patch.dict(
+        os.environ,
+        {
+            "BARMAN_HOOK": "backup_script",
+            "BARMAN_PHASE": "post",
+            "BARMAN_BACKUP_DIR": EXAMPLE_BACKUP_DIR,
+            "BARMAN_BACKUP_ID": EXAMPLE_BACKUP_ID,
+            "BARMAN_BACKUP_INFO_PATH": EXAMPLE_BACKUP_INFO_PATH,
+            "BARMAN_STATUS": "DONE",
+        },
+    )
+    @mock.patch("barman.clients.cloud_backup.BackupInfo")
+    @mock.patch("barman.clients.cloud_backup.get_cloud_interface")
+    def test_error_if_compression_set_when_hook_script(
+        self,
+        _cloud_interface_mock,
+        backup_info_mock,
+        _rmtree_mock,
+        _tmpfile_mock,
+        caplog,
+    ):
+        # GIVEN a backup with compression enabled
+        backup_info_instance = backup_info_mock.return_value
+        backup_info_instance.compression = "gzip"
+
+        # WHEN barman-cloud-backup is run as a hook script on a compressed backup
+        # THEN a SystemExit occurs
+        with pytest.raises(SystemExit):
+            cloud_backup.main(["cloud_storage_url", "test_server"])
+
+        # AND the BackupInfo was loaded from the backup info file
+        backup_info_mock.assert_called_once_with(backup_id=EXAMPLE_BACKUP_ID)
+        backup_info_instance.load.assert_called_once_with(EXAMPLE_BACKUP_INFO_PATH)
+
+        # AND the expected error message occurs
+        assert (
+            "Barman cloud backup exception: "
+            "Compressed backups are not supported when running as a hook script"
+            in caplog.messages
         )
