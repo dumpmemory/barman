@@ -1717,7 +1717,7 @@ class TestCloudLocalBackupInfo:
 
     @patch(
         "barman.infofile.LocalBackupInfo.get_basebackup_directory",
-        return_value="/fake/base/directory"
+        return_value="/fake/base/directory",
     )
     @patch("barman.infofile.LocalBackupInfo.__init__", return_value=None)
     def test_get_data_directory(self, _, __):
@@ -1787,3 +1787,81 @@ class TestCloudLocalBackupInfo:
         server.get_backup_cloud_interface.return_value.list_bucket.assert_called_with(
             prefix="barman-backups/main/base/not_orphan_backup2/"
         )
+
+    @pytest.mark.parametrize("target", ["full", "standalone", "data", "wal"])
+    @patch("barman.infofile.LocalBackupInfo.__init__", return_value=None)
+    def test_get_directory_entries(self, _, target):
+        """
+        Assert that `get_directory_entries` yields the correct files for all targets
+        (full, standalone, data, wal).
+        """
+        # Initialize a CloudLocalBackupInfo
+        backup_info = CloudLocalBackupInfo(server=mock.Mock(), backup_id="fake_id")
+        # Set a mocked backup cloud interface with a list_bucket method that simulates
+        # the presence of backup files in the cloud storage
+        backup_path = "barman-backups/my-server/base/fake_id"
+        backup_info.get_basebackup_directory = lambda: backup_path
+        backup_info._backup_cloud_interface = mock.Mock(
+            list_bucket=lambda prefix: [
+                f"{backup_path}/data.tar",
+                f"{backup_path}/1234.tar",
+                f"{backup_path}/backup.info",
+            ],
+        )
+        # Set a mocked server which simulates the presence of WAL files until the next
+        # backup (by mocking get_wal_until_next_backup) and wal storage which correctly
+        # constructs the full path for a given WAL segment (by mocking wal_storage.get_full_path)
+        wal1, wal2, wal3 = mock.Mock(), mock.Mock(), mock.Mock()
+        wal1.name, wal2.name, wal3.name = (
+            "000000000000000000000001",
+            "000000000000000000000002",
+            "000000000000000000000003",
+        )
+        backup_info.server = mock.Mock(
+            get_wal_until_next_backup=lambda *args, **kwargs: [wal1, wal2, wal3],
+            wal_storage=mock.Mock(
+                get_full_path=lambda x: "barman-backups/my-server/wals/0000000100000001/%s"
+                % x
+            ),
+        )
+        # Mock get_required_wal_segments to return only wal1 and wal2 as required WAL
+        # segments for the backup i.e. wal3 is not required and only used for PITR
+        backup_info.get_required_wal_segments = lambda: [wal1.name, wal2.name]
+
+        # WHEN get_directory_entries is called with the current target
+        entries = list(backup_info.get_directory_entries(target))
+
+        # THEN if
+        # the target is "full", all files and WALs should be included
+        if target == "full":
+            assert entries == [
+                "barman-backups/my-server/base/fake_id/data.tar",
+                "barman-backups/my-server/base/fake_id/1234.tar",
+                "barman-backups/my-server/base/fake_id/backup.info",
+                "barman-backups/my-server/wals/0000000100000001/000000000000000000000001",
+                "barman-backups/my-server/wals/0000000100000001/000000000000000000000002",
+                "barman-backups/my-server/wals/0000000100000001/000000000000000000000003",
+            ]
+        # the target is "standalone", all files and only required WALs should be included
+        elif target == "standalone":
+            assert entries == [
+                "barman-backups/my-server/base/fake_id/data.tar",
+                "barman-backups/my-server/base/fake_id/1234.tar",
+                "barman-backups/my-server/base/fake_id/backup.info",
+                "barman-backups/my-server/wals/0000000100000001/000000000000000000000001",
+                "barman-backups/my-server/wals/0000000100000001/000000000000000000000002",
+            ]
+        # the target is "data", only backup files should be included, no WALs
+        elif target == "data":
+            assert entries == [
+                "barman-backups/my-server/base/fake_id/data.tar",
+                "barman-backups/my-server/base/fake_id/1234.tar",
+                "barman-backups/my-server/base/fake_id/backup.info",
+            ]
+        # the target is "wal", only WALs should be included, no backup files
+        elif target == "wal":
+            assert entries == [
+                "barman-backups/my-server/wals/0000000100000001/000000000000000000000001",
+                "barman-backups/my-server/wals/0000000100000001/000000000000000000000002",
+                "barman-backups/my-server/wals/0000000100000001/000000000000000000000003",
+            ]
