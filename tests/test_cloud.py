@@ -74,7 +74,7 @@ from barman.cloud_providers import (
 from barman.cloud_providers.aws_s3 import S3CloudInterface
 from barman.cloud_providers.azure_blob_storage import AzureCloudInterface
 from barman.cloud_providers.google_cloud_storage import GoogleCloudInterface
-from barman.exceptions import BackupPreconditionException
+from barman.exceptions import BackupPreconditionException, ConfigurationException
 from barman.infofile import BackupInfo, WalFileInfo
 
 if sys.version_info.major > 2:
@@ -3715,6 +3715,7 @@ class TestGetCloudInterface(object):
             parallel_jobs=8,
             aws_profile="some-profile",
             aws_encryption="AES256",
+            aws_sse_kms_key_id=None,
             aws_read_timeout=60,
             cloud_delete_batch_size=20,
         )
@@ -3725,6 +3726,7 @@ class TestGetCloudInterface(object):
                 jobs=8,
                 profile_name="some-profile",
                 encryption="AES256",
+                sse_kms_key_id=None,
                 read_timeout=60,
                 delete_batch_size=20,
             )
@@ -3743,6 +3745,65 @@ class TestGetCloudInterface(object):
                 delete_batch_size=20,
             )
             assert ret == mock_gcs_cloud_interface.return_value
+
+    @mock.patch("barman.cloud_providers.aws_s3.S3CloudInterface")
+    def test_get_cloud_interface_from_server_config_with_aws_sse_kms_key_id(
+        self, mock_s3_cloud_interface
+    ):
+        """Test that aws_sse_kms_key_id is passed to S3CloudInterface when aws_encryption is aws:kms"""
+        url = "http://some-bucket/some/path"
+        mock_config = MagicMock(
+            url=url,
+            parallel_jobs=8,
+            aws_profile="some-profile",
+            aws_encryption="aws:kms",
+            aws_sse_kms_key_id="arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+            aws_read_timeout=60,
+            cloud_delete_batch_size=20,
+        )
+        ret = get_cloud_interface_from_server_config(mock_config, "aws-s3", url)
+        mock_s3_cloud_interface.assert_called_once_with(
+            url=url,
+            jobs=8,
+            profile_name="some-profile",
+            encryption="aws:kms",
+            sse_kms_key_id="arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+            read_timeout=60,
+            delete_batch_size=20,
+        )
+        assert ret == mock_s3_cloud_interface.return_value
+
+    @pytest.mark.parametrize(
+        ("aws_encryption", "expected_error"),
+        [
+            (
+                None,
+                'aws_encryption must be "aws:kms" if aws_sse_kms_key_id is specified',
+            ),
+            (
+                "AES256",
+                'aws_encryption must be "aws:kms" if aws_sse_kms_key_id is specified',
+            ),
+        ],
+    )
+    @mock.patch("barman.cloud_providers.aws_s3.S3CloudInterface")
+    def test_get_cloud_interface_from_server_config_invalid_aws_sse_kms_key_id(
+        self, mock_s3_cloud_interface, aws_encryption, expected_error
+    ):
+        """Test that ConfigurationException is raised when aws_sse_kms_key_id is set without aws:kms encryption"""
+        url = "http://some-bucket/some/path"
+        mock_config = MagicMock(
+            url=url,
+            parallel_jobs=8,
+            aws_profile="some-profile",
+            aws_encryption=aws_encryption,
+            aws_sse_kms_key_id="arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+            aws_read_timeout=60,
+            cloud_delete_batch_size=20,
+        )
+        with pytest.raises(ConfigurationException) as exc:
+            get_cloud_interface_from_server_config(mock_config, "aws-s3", url)
+        assert expected_error == str(exc.value)
 
 
 class TestCloudBackupCatalog(object):
