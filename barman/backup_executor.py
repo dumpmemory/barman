@@ -312,7 +312,7 @@ class CloudBackupExecutor(BackupExecutor):
                 uploader = CloudBackupUploader(
                     server_name=self.config.name,
                     cloud_interface=cloud_interface,
-                    max_archive_size=107374182400,  # Same default as cloud scripts (100GB)
+                    max_archive_size=self.config.cloud_upload_max_archive_size,
                     postgres=postgres,
                     backup_name=getattr(backup_info, "backup_name", None),
                 )
@@ -1053,7 +1053,7 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         self._upload_controller = CloudUploadController(
             cloud_interface=self._cloud_interface,
             key_prefix=key_prefix,
-            max_archive_size=107374182400,  # Same default as cloud scripts (100GB)
+            max_archive_size=self.config.cloud_upload_max_archive_size,
             compression=None,
             max_bandwidth=self.config.bandwidth_limit,
             staging_dir=self._tarball_dest,
