@@ -784,6 +784,19 @@ Identifies the Azure subscription that owns the instance and storage volumes def
 
 Scope: Global / Server / Model.
 
+**cloud_delete_batch_size**
+
+Specifies the number of files to delete in a single batch when performing delete
+operations on cloud storage. This option is relevant for both backup and WAL file
+deletions. The default value is ``1000`` for S3, ``256`` for Azure Blob, and ``100`` for
+GCS.
+
+.. note::
+  Only supported when ``backup_method`` is ``postgres`` or ``local-to-cloud``, and
+  ``basebackups_directory`` and/or ``wals_directory`` point to cloud storage.
+
+Scope: Global / Server / Model.
+
 **cloud_upload_max_archive_size**
 
 Specifies the maximum size in bytes for individual archive files during cloud uploads.
