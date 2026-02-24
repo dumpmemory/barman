@@ -784,6 +784,21 @@ Identifies the Azure subscription that owns the instance and storage volumes def
 
 Scope: Global / Server / Model.
 
+**cloud_upload_max_archive_size**
+
+Specifies the maximum size in bytes for individual archive files during cloud uploads.
+When uploading backups to cloud storage, Barman splits the backup into multiple archive
+files if it exceeds this size. The default value is ``100G``.
+
+This option accepts human-readable size formats using SI or IEC suffixes (e.g., ``50G``,
+``100Gi``, ``1T``).
+
+.. note::
+  Only supported when ``backup_method`` is ``postgres`` or ``local-to-cloud``, and
+  ``basebackups_directory`` points to cloud storage.
+
+Scope: Global / Server / Model.
+
 **gcp_project**
 
 Specifies the ID of the GCP project that owns the instance and storage volumes defined
