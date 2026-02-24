@@ -244,6 +244,23 @@ def _parse_ssh_command(ssh_command):
     return ssh_command, ssh_options
 
 
+def _get_bandwidth_limit_in_bytes(bandwidth_limit_kb):
+    """
+    Convert a bandwidth limit from kB/s to B/s.
+
+    .. note::
+        This is useful when reusing the configuration option ``bandwidth_limit``, which
+        was originally designed for rsync and pg_basebackup backups (which take a value
+        in kB/s), for cloud uploads (which expect the bandwidth limit in B/s).
+
+    :param bandwidth_limit_kb: the bandwidth limit in kB/s
+    :return int: the bandwidth limit in B/s
+    """
+    if bandwidth_limit_kb is not None:
+        return bandwidth_limit_kb * 1000
+    return None
+
+
 class CloudBackupExecutor(BackupExecutor):
     """
     Backup executor for direct cloud backups (``backup_method = local-to-cloud``).
@@ -316,6 +333,9 @@ class CloudBackupExecutor(BackupExecutor):
                     postgres=postgres,
                     backup_name=getattr(backup_info, "backup_name", None),
                     min_chunk_size=self.config.cloud_upload_min_chunk_size,
+                    max_bandwidth=_get_bandwidth_limit_in_bytes(
+                        self.config.bandwidth_limit
+                    ),
                 )
 
                 # Set the backup_info that was already started by BackupExecutor.
@@ -1057,7 +1077,7 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             max_archive_size=self.config.cloud_upload_max_archive_size,
             compression=None,
             min_chunk_size=self.config.cloud_upload_min_chunk_size,
-            max_bandwidth=self.config.bandwidth_limit,
+            max_bandwidth=_get_bandwidth_limit_in_bytes(self.config.bandwidth_limit),
             staging_dir=self._tarball_dest,
         )
 
