@@ -199,6 +199,7 @@ def get_cloud_interface_from_server_config(config, cloud_provider, base_url):
             {
                 "profile_name": config.aws_profile,
                 "read_timeout": config.aws_read_timeout,
+                "encryption": config.aws_encryption,
             }
         )
         return S3CloudInterface(**cloud_interface_kwargs)

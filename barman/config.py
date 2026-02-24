@@ -101,6 +101,8 @@ STAGING_LOCATIONS = ["local", "remote"]
 
 COMBINE_MODES = ["copy", "link", "clone", "copy-file-range"]
 
+AWS_ENCRYPTIONS = ["AES256", "aws:kms"]
+
 
 class CsvOption(set):
     """
@@ -574,6 +576,22 @@ def parse_directory_or_cloud_provider(value):
     return value
 
 
+def parse_aws_encryption(value):
+    """
+    Parse a string to a valid ``aws_encryption`` value.
+
+    :param str value: aws_encryption value
+    :raises ValueError: if the *value* is invalid
+    """
+    if value is None:
+        return None
+    if value in AWS_ENCRYPTIONS:
+        return value
+    raise ValueError(
+        "Invalid value '%s' (must be one in: %s)" % (value, AWS_ENCRYPTIONS)
+    )
+
+
 class BaseConfig(object):
     """
     Contains basic methods for handling configuration of Servers and Models.
@@ -641,6 +659,7 @@ class ServerConfig(BaseConfig):
         "archiver",
         "archiver_batch_size",
         "autogenerate_manifest",
+        "aws_encryption",
         "aws_read_timeout",
         "aws_await_snapshots_timeout",
         "aws_snapshot_lock_mode",
@@ -759,6 +778,7 @@ class ServerConfig(BaseConfig):
         "archiver",
         "archiver_batch_size",
         "autogenerate_manifest",
+        "aws_encryption",
         "aws_read_timeout",
         "aws_await_snapshots_timeout",
         "aws_snapshot_lock_mode",
@@ -913,6 +933,7 @@ class ServerConfig(BaseConfig):
         "archiver": parse_boolean,
         "archiver_batch_size": int,
         "autogenerate_manifest": parse_boolean,
+        "aws_encryption": parse_aws_encryption,
         "aws_read_timeout": int,
         "aws_await_snapshots_timeout": int,
         "aws_snapshot_lock_duration": int,
