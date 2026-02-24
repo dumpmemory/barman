@@ -847,7 +847,7 @@ class TestServer(object):
         server.show()
 
         # Parse the output
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         result = dict(
             item.strip("\t\n\r").split(": ") for item in out.split("\n") if item != ""
         )
@@ -902,7 +902,7 @@ class TestServer(object):
         # Failures of WAL archiver:
         #   <failed_count> (<last_failed wal>, at <last_failed_time>)
         server.status()
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
 
         # Parse the output
         result = dict(
@@ -946,7 +946,7 @@ class TestServer(object):
 
         # Call the status method
         server_no_active.status()
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
 
         # Verify output.result is called with the correct parameters
         mock_output_result.assert_any_call(
@@ -977,7 +977,7 @@ class TestServer(object):
 
         # Call the status method
         server.status()
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
 
         # Verify output.result is called with the correct parameters
         mock_output_result.assert_any_call(
@@ -1016,7 +1016,7 @@ class TestServer(object):
 
         # Call the show method
         server_no_active.show()
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
 
         # Verify output.result is called with the correct parameters
         result_call_args = mock_output_result.call_args[0]
@@ -1046,7 +1046,7 @@ class TestServer(object):
 
         # Call the show method
         server.show()
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
 
         # Verify output.result is called with the correct parameters
         result_call_args = mock_output_result.call_args[0]
@@ -1064,7 +1064,7 @@ class TestServer(object):
         server = build_real_server()
         strategy = CheckOutputStrategy()
         server.check_postgres(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out
             == "	PostgreSQL: FAILED (unsupported version: PostgreSQL server is too old (x.y.z < 9.6.0))\n"
@@ -1085,7 +1085,7 @@ class TestServer(object):
         # Expect out: PostgreSQL: FAILED
         strategy = CheckOutputStrategy()
         server.check_postgres(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert out == "	PostgreSQL: FAILED\n"
         # Case: correct configuration
         postgres_mock.return_value = {
@@ -1102,7 +1102,7 @@ class TestServer(object):
         # Postgres version >= 9.0 - check wal_level
         server = build_real_server()
         server.check_postgres(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert out == "\tPostgreSQL: OK\n\twal_level: OK\n"
 
         # Postgres version < 9.0 - avoid wal_level check
@@ -1110,7 +1110,7 @@ class TestServer(object):
 
         server = build_real_server()
         server.check_postgres(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert out == "\tPostgreSQL: OK\n"
 
         # Case: wal_level and archive_command values are not acceptable
@@ -1125,7 +1125,7 @@ class TestServer(object):
         # Expect out: some parameters: FAILED
         strategy = CheckOutputStrategy()
         server.check_postgres(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tPostgreSQL: OK\n"
             "\twal_level: FAILED (please set it to a higher level "
@@ -1407,7 +1407,7 @@ class TestServer(object):
         # Case: Postgres version < 9.4
         strategy = CheckOutputStrategy()
         server._check_replication_slot(strategy, mock_remote_status)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert "\treplication slot:" not in out
 
         # Case: correct configuration
@@ -1425,7 +1425,7 @@ class TestServer(object):
         server.config.streaming_archiver = True
         server.config.slot_name = "test"
         server._check_replication_slot(strategy, mock_remote_status)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
 
         # Everything is ok
         assert "\treplication slot: OK\n" in out
@@ -1443,7 +1443,7 @@ class TestServer(object):
         server.config.slot_name = "test"
         server.config.streaming_archiver = True
         server._check_replication_slot(strategy, mock_remote_status)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         # Everything is ok
         assert (
             "\treplication slot: FAILED (slot '%s' not initialised: "
@@ -1464,7 +1464,7 @@ class TestServer(object):
         server.config.slot_name = "test"
         server.config.streaming_archiver = True
         server._check_replication_slot(strategy, mock_remote_status)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         # Everything is ok
         assert (
             "\treplication slot: FAILED (slot '%s' not active: "
@@ -1485,7 +1485,7 @@ class TestServer(object):
         server.config.slot_name = "test"
         server.config.streaming_archiver = False
         server._check_replication_slot(strategy, mock_remote_status)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         # Everything is ok
         assert (
             "\treplication slot: OK (WARNING: slot '%s' is initialised "
@@ -1506,7 +1506,7 @@ class TestServer(object):
         server.config.slot_name = "test"
         server.config.streaming_archiver = False
         server._check_replication_slot(strategy, mock_remote_status)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         # Everything is ok
         assert (
             "\treplication slot: OK (WARNING: slot '%s' is active "
@@ -2267,7 +2267,7 @@ class TestServer(object):
         # Execute the test (ALL)
         server.postgres.reset_mock()
         server.replication_status("all")
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert err == ""
         server.postgres.get_replication_stats.assert_called_once_with(
             PostgreSQLConnection.ANY_STREAMING_CLIENT
@@ -2276,7 +2276,7 @@ class TestServer(object):
         # Execute the test (WALSTREAMER)
         server.postgres.reset_mock()
         server.replication_status("wal-streamer")
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert err == ""
         server.postgres.get_replication_stats.assert_called_once_with(
             PostgreSQLConnection.WALSTREAMER
@@ -2288,7 +2288,7 @@ class TestServer(object):
             "9.1"
         )
         server.replication_status("all")
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert "Requires PostgreSQL 9.1 or higher" in out
         assert err == ""
         server.postgres.get_replication_stats.assert_called_once_with(
@@ -2299,7 +2299,7 @@ class TestServer(object):
         server.postgres.reset_mock()
         server.postgres.get_replication_stats.side_effect = PostgresSuperuserRequired
         server.replication_status("all")
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert "Requires superuser rights" in out
         assert err == ""
         server.postgres.get_replication_stats.assert_called_once_with(
@@ -2310,7 +2310,7 @@ class TestServer(object):
         del replication_stats_data["slot_name"]
         server.postgres.reset_mock()
         server.replication_status("all")
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert "Replication slot" not in out
 
     def test_timeline_has_children(self, tmpdir):
@@ -3748,7 +3748,7 @@ class TestServer(object):
         }
         strategy = CheckOutputStrategy()
         server.check_identity(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert out == "\tsystemid coherence: OK (no system Id available)\n"
         assert not os.path.exists(server.get_identity_file_path())
 
@@ -3760,7 +3760,7 @@ class TestServer(object):
         }
         strategy = CheckOutputStrategy()
         server.check_identity(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert out == "\tsystemid coherence: OK (no system Id stored on disk)\n"
         assert not os.path.exists(server.get_identity_file_path())
 
@@ -3773,7 +3773,7 @@ class TestServer(object):
         }
         strategy = CheckOutputStrategy()
         server.check_identity(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert out == "\tsystemid coherence: OK (no system Id stored on disk)\n"
         assert not os.path.exists(server.get_identity_file_path())
 
@@ -3785,7 +3785,7 @@ class TestServer(object):
         }
         strategy = CheckOutputStrategy()
         server.check_identity(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert out == "\tsystemid coherence: OK (no system Id stored on disk)\n"
         assert not os.path.exists(server.get_identity_file_path())
 
@@ -3797,7 +3797,7 @@ class TestServer(object):
         }
         strategy = CheckOutputStrategy()
         server.check_identity(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tsystemid coherence: FAILED (is the streaming "
             "DSN targeting the same server of the PostgreSQL "
@@ -3815,7 +3815,7 @@ class TestServer(object):
             fp.write('{"systemid": "test"}')
         strategy = CheckOutputStrategy()
         server.check_identity(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tsystemid coherence: FAILED "
             "(the system Id of the connected PostgreSQL "
@@ -3834,7 +3834,7 @@ class TestServer(object):
             fp.write('{"systemid": "1234567890"}')
         strategy = CheckOutputStrategy()
         server.check_identity(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert out == "\tsystemid coherence: OK\n"
 
     @pytest.fixture

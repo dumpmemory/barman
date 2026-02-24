@@ -406,7 +406,7 @@ class Command(object):
             err_handler=err_handler,
             check=False,
             *args,
-            **kwargs
+            **kwargs,
         )
 
         # If not requested to wait for the command termination, return now
@@ -719,7 +719,7 @@ class Rsync(Command):
         include=None,
         network_compression=None,
         path=None,
-        **kwargs
+        **kwargs,
     ):
         """
         :param str rsync: rsync executable name
@@ -1017,7 +1017,7 @@ class PgBaseBackup(PostgreSQLClient):
         no_sync=False,
         warehousepg_dbid=None,
         args=None,
-        **kwargs
+        **kwargs,
     ):
         """
         Constructor
@@ -1049,7 +1049,7 @@ class PgBaseBackup(PostgreSQLClient):
             version=version,
             app_name=app_name,
             check=check,
-            **kwargs
+            **kwargs,
         )
 
         # Set the backup destination
@@ -1164,7 +1164,7 @@ class PgReceiveXlog(PostgreSQLClient):
         check=True,
         slot_name=None,
         args=None,
-        **kwargs
+        **kwargs,
     ):
         """
         Constructor
@@ -1189,7 +1189,7 @@ class PgReceiveXlog(PostgreSQLClient):
             version=version,
             app_name=app_name,
             check=check,
-            **kwargs
+            **kwargs,
         )
 
         self.args += [
@@ -1227,7 +1227,7 @@ class PgVerifyBackup(PostgreSQLClient):
         app_name=None,
         check=True,
         args=None,
-        **kwargs
+        **kwargs,
     ):
         """
         Constructor
@@ -1248,7 +1248,7 @@ class PgVerifyBackup(PostgreSQLClient):
             version=version,
             app_name=app_name,
             check=check,
-            **kwargs
+            **kwargs,
         )
 
         self.args = ["-n", data_path]
@@ -1274,7 +1274,7 @@ class PgCombineBackup(PostgreSQLClient):
         app_name=None,
         check=True,
         args=None,
-        **kwargs
+        **kwargs,
     ):
         """
         Constructor
@@ -1299,7 +1299,7 @@ class PgCombineBackup(PostgreSQLClient):
             version=version,
             app_name=app_name,
             check=check,
-            **kwargs
+            **kwargs,
         )
 
         # Set the backup destination
@@ -1382,7 +1382,7 @@ class BarmanSubProcess(object):
             preexec_fn=os.setsid,
             close_fds=True,
             stdin=devnull,
-            **additional_arguments
+            **additional_arguments,
         )
         _logger.debug("BarmanSubProcess: subprocess started. pid: %s", proc.pid)
 
@@ -1448,7 +1448,7 @@ class GPG(Command):
         recipient=None,
         input_filepath=None,
         output_filepath=None,
-        **kwargs
+        **kwargs,
     ):
         """
         Initialize the GPG command wrapper.

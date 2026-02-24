@@ -96,7 +96,7 @@ class TestFileWalArchiver(object):
         }
         # Expect no output from check
         archiver.check(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert out == ""
         # Case: correct configuration
         remote_mock.return_value = {
@@ -107,7 +107,7 @@ class TestFileWalArchiver(object):
         }
         # Expect out: all parameters: OK
         archiver.check(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tarchive_mode: OK\n"
             "\tarchive_command: OK\n"
@@ -123,7 +123,7 @@ class TestFileWalArchiver(object):
         }
         # Expect out: some parameters: FAILED
         archiver.check(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tarchive_mode: OK\n"
             "\tarchive_command: FAILED "
@@ -138,7 +138,7 @@ class TestFileWalArchiver(object):
         }
         # Expect out: all parameters: OK
         archiver.check(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tarchive_mode: OK\n"
             "\tarchive_command: OK\n"
@@ -154,7 +154,7 @@ class TestFileWalArchiver(object):
         }
         # Expect out: the wals incoming queue is too big
         archiver.check(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tarchive_mode: OK\n"
             "\tarchive_command: OK\n"
@@ -835,7 +835,7 @@ class TestStreamingWalArchiver(object):
         # Expect out: all parameters: OK
         backup_manager.server.process_manager.list.return_value = []
         archiver.check(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tpg_receivexlog: OK\n"
             "\tpg_receivexlog compatible: OK\n"
@@ -854,7 +854,7 @@ class TestStreamingWalArchiver(object):
         # Expect out: some parameters: FAILED
         strategy = CheckOutputStrategy()
         archiver.check(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tpg_receivexlog: OK\n"
             "\tpg_receivexlog compatible: FAILED "
@@ -872,7 +872,7 @@ class TestStreamingWalArchiver(object):
         }
         # Expect out: all parameters: OK
         archiver.check(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tpg_receivexlog: OK\n"
             "\tpg_receivexlog compatible: FAILED "
@@ -888,7 +888,7 @@ class TestStreamingWalArchiver(object):
             )
         ]
         archiver.check(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tpg_receivexlog: OK\n"
             "\tpg_receivexlog compatible: FAILED "
@@ -899,7 +899,7 @@ class TestStreamingWalArchiver(object):
         # Case: streaming connection not configured
         backup_manager.server.streaming = None
         archiver.check(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tpg_receivexlog: OK\n"
             "\tpg_receivexlog compatible: FAILED "
@@ -917,7 +917,7 @@ class TestStreamingWalArchiver(object):
         }
         # Expect out: the wals incoming queue is too big
         archiver.check(strategy)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert (
             out == "\tpg_receivexlog: OK\n"
             "\tpg_receivexlog compatible: FAILED "

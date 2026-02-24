@@ -20,6 +20,7 @@
 This module represents a Server.
 Barman is able to manage multiple servers.
 """
+
 import datetime
 import errno
 import json

@@ -3732,12 +3732,10 @@ class TestCloudBackupCatalog(object):
 
     def get_backup_info_file_object(self):
         """Minimal backup info"""
-        return BytesIO(
-            b"""
+        return BytesIO(b"""
 backup_label=None
 end_time=2014-12-22 09:25:27.410470+01:00
-"""
-        )
+""")
 
     def raise_exception(self):
         raise Exception("something went wrong reading backup.info")
@@ -4126,17 +4124,13 @@ end_time=2014-12-22 09:25:27.410470+01:00
     @pytest.fixture
     def catalog_with_named_backup(self, in_memory_cloud_interface):
         backup_infos = {
-            "20221107T120000": BytesIO(
-                b"""backup_label=None
+            "20221107T120000": BytesIO(b"""backup_label=None
 end_time=2022-11-07 12:05:00
 backup_name=named backup
-"""
-            ),
-            "20221109T120000": BytesIO(
-                b"""backup_label=None
+"""),
+            "20221109T120000": BytesIO(b"""backup_label=None
 end_time=2022-11-09 12:05:00
-"""
-            ),
+"""),
         }
         in_memory_cloud_interface.path = ""
         for id, backup_info in backup_infos.items():

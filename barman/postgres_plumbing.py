@@ -24,7 +24,6 @@ on-disk structure and the name of the core functions in different PostgreSQL
 versions.
 """
 
-
 PGDATA_EXCLUDE_LIST = [
     # Exclude log files (pg_log was renamed to log in Postgres v10)
     "/pg_log/*",

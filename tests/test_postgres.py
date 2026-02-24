@@ -1831,8 +1831,7 @@ class TestPostgres(object):
 
         # THEN the correct query was executed if we weren't a superuser
         if not is_superuser:
-            cursor_mock.execute.assert_called_once_with(
-                """
+            cursor_mock.execute.assert_called_once_with("""
             SELECT
             (
                 pg_has_role(CURRENT_USER, 'pg_monitor', 'USAGE')
@@ -1842,8 +1841,7 @@ class TestPostgres(object):
                     AND pg_has_role(CURRENT_USER, 'pg_read_all_stats', 'USAGE')
                 )
             )
-            """
-            )
+            """)
 
         # AND the expected response is returned
         assert has_monitoring == expected_has_monitoring

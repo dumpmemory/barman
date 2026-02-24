@@ -218,7 +218,7 @@ class TestSync(object):
 
         # Call the status method capturing the output using capsys
         server.sync_status(None, None)
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         # prepare the expected results
         # (complex values have to be converted to json)
         expected = dict(EXPECTED_MINIMAL)
@@ -243,7 +243,7 @@ class TestSync(object):
         # test with an empty file
         tmp_path.write("")
         server.sync_status("000000010000000000000001")
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         result = json.loads(out)
         assert result["last_position"] == 0
         assert result["last_name"] == ""
@@ -462,7 +462,7 @@ class TestSync(object):
         rsync_mock.side_effect = CommandFailedException("TestFailure")
         server.sync_backup("wrong_backup_name")
 
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         # Check the stderr using capsys. we need only the first line
         # from stderr
         e = err.split("\n")
@@ -480,7 +480,7 @@ class TestSync(object):
         rsync_mock.reset_mock()
         server.sync_backup(backup_name)
         assert not rsync_mock.called
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert out.strip() == "Backup 1234567890 is already synced with main server"
 
     @mock.patch("barman.server.RsyncCopyController")
@@ -613,7 +613,7 @@ class TestSync(object):
         )
 
         server.sync_wals()
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert "Compression method on server %s " % server_name in err
 
         # Test 3: No base backup for server, exit with warning
@@ -627,7 +627,7 @@ class TestSync(object):
         )
 
         server.sync_wals()
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
 
         assert "WARNING: No base backup for server %s" % server.config.name in err
 
@@ -642,7 +642,7 @@ class TestSync(object):
             end_time=dateutil.parser.parse("Wed Jul 23 12:00:43 2014"),
         )
         server.sync_wals()
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
 
         assert (
             "WARNING: Skipping WAL synchronisation for "
@@ -663,7 +663,7 @@ class TestSync(object):
         rsync_mock.side_effect = CommandFailedException("TestFailure")
         server.sync_wals()
 
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         # check stdout for the Custom error message
         assert "TestFailure" in err
 
@@ -671,7 +671,7 @@ class TestSync(object):
         rsync_mock.side_effect = KeyboardInterrupt()
         server.sync_wals()
         # control the error message for KeyboardInterrupt
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert "KeyboardInterrupt" in err
 
         # Test 8: normal execution, expect no output. xlog.db
@@ -683,7 +683,7 @@ class TestSync(object):
 
         server.sync_wals()
         # check for no output on stdout and sterr
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         assert out == ""
         assert err == ""
         # check the xlog content for primary.info wals
@@ -740,7 +740,7 @@ class TestSync(object):
         # returning the test response
         command_mock.return_value.out = json.dumps(EXPECTED_MINIMAL)
         server.cron()
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         # Assertion block 1: the execution of the cron command for passive
         # node should be successful
         assert "Starting copy of backup" in out
@@ -752,7 +752,7 @@ class TestSync(object):
         primary_info["wals"] = []
         command_mock.return_value.out = json.dumps(primary_info)
         server.cron()
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         # Assertion block 2: No backup or wal synchronisation required
         assert "No backup synchronisation required" in out
         assert "No WAL synchronisation required for server" in out
@@ -766,7 +766,7 @@ class TestSync(object):
         primary_info["backups"]["1234567891"] = backup_info_dict
         command_mock.return_value.out = json.dumps(primary_info)
         server.cron()
-        (out, err) = capsys.readouterr()
+        out, err = capsys.readouterr()
         # Assertion block 3: start the copy the first backup
         # of the list (1234567890),
         # and not the one second one (1234567891)
@@ -787,7 +787,7 @@ class TestSync(object):
             primary_info["backups"]["1234567891"] = backup_info_dict
             command_mock.return_value.out = json.dumps(primary_info)
             server.sync_cron(keep_descriptors=False)
-            (out, err) = capsys.readouterr()
+            out, err = capsys.readouterr()
             assert "A synchronisation process for backup 1234567890" in out
             assert "WAL synchronisation already running" in out
 

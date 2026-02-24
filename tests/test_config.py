@@ -843,16 +843,14 @@ class TestConfig(object):
 
         Ensure ``False`` is returned if there is no ``model`` option configured.
         """
-        fp = StringIO(
-            """
+        fp = StringIO("""
             [barman]
             barman_home = /some/barman/home
             barman_user = barman
             log_file = %(barman_home)s/log/barman.log
 
             [SOME_MODEL]
-        """
-        )
+        """)
         c = Config(fp)
         assert c._is_model("SOME_MODEL") is False
 
@@ -861,8 +859,7 @@ class TestConfig(object):
 
         Ensure ``False`` is returned if there ``model = false`` is found.
         """
-        fp = StringIO(
-            """
+        fp = StringIO("""
             [barman]
             barman_home = /some/barman/home
             barman_user = barman
@@ -870,8 +867,7 @@ class TestConfig(object):
 
             [SOME_MODEL]
             model = false
-        """
-        )
+        """)
         c = Config(fp)
         assert c._is_model("SOME_MODEL") is False
 
@@ -880,8 +876,7 @@ class TestConfig(object):
 
         Ensure ``True`` is returned if there ``model = true`` is found.
         """
-        fp = StringIO(
-            """
+        fp = StringIO("""
             [barman]
             barman_home = /some/barman/home
             barman_user = barman
@@ -889,8 +884,7 @@ class TestConfig(object):
 
             [SOME_MODEL]
             model = true
-        """
-        )
+        """)
         c = Config(fp)
         assert c._is_model("SOME_MODEL") is True
 
@@ -900,8 +894,7 @@ class TestConfig(object):
 
         Ensure an exception is face if the parser function faces an exception.
         """
-        fp = StringIO(
-            """
+        fp = StringIO("""
             [barman]
             barman_home = /some/barman/home
             barman_user = barman
@@ -909,8 +902,7 @@ class TestConfig(object):
 
             [SOME_MODEL]
             model = true
-        """
-        )
+        """)
         c = Config(fp)
         mock_parse_boolean.side_effect = ValueError("SOME_ERROR")
 
