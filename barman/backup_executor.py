@@ -315,6 +315,7 @@ class CloudBackupExecutor(BackupExecutor):
                     max_archive_size=self.config.cloud_upload_max_archive_size,
                     postgres=postgres,
                     backup_name=getattr(backup_info, "backup_name", None),
+                    min_chunk_size=self.config.cloud_upload_min_chunk_size,
                 )
 
                 # Set the backup_info that was already started by BackupExecutor.
@@ -1055,6 +1056,7 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             key_prefix=key_prefix,
             max_archive_size=self.config.cloud_upload_max_archive_size,
             compression=None,
+            min_chunk_size=self.config.cloud_upload_min_chunk_size,
             max_bandwidth=self.config.bandwidth_limit,
             staging_dir=self._tarball_dest,
         )
