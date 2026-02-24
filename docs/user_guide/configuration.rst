@@ -707,6 +707,31 @@ If not set, S3's default encryption settings for the bucket will be used.
 
 Scope: Global / Server / Model.
 
+**aws_sse_kms_key_id**
+
+Specifies the AWS Key Management Service (KMS) key ID to use for server-side
+encryption of S3 objects. This option is only valid when ``aws_encryption`` is
+set to ``aws:kms``.
+
+Can be specified using the key ID on its own or using the full ARN for the key.
+
+If not set when using ``aws_encryption = aws:kms``, S3 will use the default AWS
+managed KMS key for S3.
+
+Example::
+
+  [myserver]
+  backup_method = local-to-cloud
+  basebackups_directory = s3://my-bucket/barman/backups
+  aws_encryption = aws:kms
+  aws_sse_kms_key_id = arn:aws:kms:us-east-1:123456789012:key/abcd1234-5678-90ab-cdef-EXAMPLEKEY
+
+.. note::
+  Only supported when ``backup_method`` is ``postgres`` or ``local-to-cloud``, and
+  ``basebackups_directory`` and/or ``wals_directory`` point to S3.
+
+Scope: Global / Server / Model.
+
 **aws_read_timeout**
 
 Specifies the read timeout in seconds for S3 operations when using cloud storage.
