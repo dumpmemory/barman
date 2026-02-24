@@ -799,6 +799,22 @@ This option accepts human-readable size formats using SI or IEC suffixes (e.g., 
 
 Scope: Global / Server / Model.
 
+**cloud_upload_min_chunk_size**
+
+Specifies the minimum size in bytes for individual chunks during multipart uploads to
+cloud storage. This controls the size of each part when uploading large files to cloud
+object storage. When not set, defaults to the chunk size of the cloud provider: ``5Mi``
+for S3, and ``64Ki`` for Azure Blob. Not applicable for GCS.
+
+This option accepts human-readable size formats using SI or IEC suffixes (e.g., ``5Mi``,
+``10M``, ``20Mi``).
+
+.. note::
+  Only supported when ``backup_method`` is ``postgres`` or ``local-to-cloud``, and
+  ``basebackups_directory`` points to cloud storage.
+
+Scope: Global / Server / Model.
+
 **gcp_project**
 
 Specifies the ID of the GCP project that owns the instance and storage volumes defined
