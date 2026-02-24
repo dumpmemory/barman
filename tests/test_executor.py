@@ -40,6 +40,7 @@ from barman.backup_executor import (
     PostgresBackupStrategy,
     RsyncBackupExecutor,
     SnapshotBackupExecutor,
+    _get_bandwidth_limit_in_bytes,
 )
 from barman.config import BackupOptions
 from barman.exceptions import (
@@ -1841,6 +1842,42 @@ class TestCloudPostgresBackupExecutor(object):
         # AND the executor's _upload_controller attribute is set
         assert executor._upload_controller == mock_upload_controller.return_value
 
+    @patch("barman.cloud.CloudUploadController")
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_init_upload_controller_with_bandwidth_limit(
+        self, _, mock_upload_controller
+    ):
+        """
+        Test that the upload controller correctly converts and applies bandwidth_limit.
+        """
+        # GIVEN a CloudPostgresBackupExecutor with bandwidth_limit set
+        executor = CloudPostgresBackupExecutor(None)
+        executor._tarball_dest = "/tmp/barman/tarballs"
+        executor.config = mock.Mock(
+            bandwidth_limit=512,  # 512 kB/s
+            cloud_upload_max_archive_size=100000000000,
+            cloud_upload_min_chunk_size=5000000,
+        )
+        executor.config.name = "test_server"
+        executor._cloud_interface = mock.Mock(path="/my-bucket/backups")
+        # WHEN _init_upload_controller is called with a BackupInfo
+        backup_info = mock.Mock(backup_id="fake_backup_id")
+        executor._init_upload_controller(backup_info)
+        # THEN a CloudUploadController is created with converted bandwidth_limit (512 kB/s → 512000 B/s)
+        mock_upload_controller.assert_called_once_with(
+            cloud_interface=executor._cloud_interface,
+            key_prefix="/my-bucket/backups/test_server/base/fake_backup_id",
+            max_archive_size=100000000000,
+            compression=None,
+            min_chunk_size=5000000,
+            max_bandwidth=512000,  # 512 kB/s converted to 512000 B/s
+            staging_dir=executor._tarball_dest,
+        )
+        # AND the executor's _upload_controller attribute is set
+        assert executor._upload_controller == mock_upload_controller.return_value
+
     @patch("barman.backup_executor.open")
     @patch(
         "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
@@ -2460,6 +2497,31 @@ class TestCloudPostgresBackupExecutor(object):
         assert executor._get_tarball_name(tablespace_file) == "39484"
 
 
+class TestGetBandwidthLimitInBytes(object):
+    """
+    Tests for the _get_bandwidth_limit_in_bytes helper function.
+    """
+
+    @pytest.mark.parametrize(
+        "input_kb, expected_bytes",
+        [
+            (None, None),  # Returns None when input is None
+            (100, 100000),  # Converts 100 kB/s to 100000 B/s
+            (1024, 1024000),  # Converts 1024 kB/s to 1024000 B/s
+            (1000000000, 1000000000000),  # Handles large values correctly
+        ],
+    )
+    def test_bandwidth_limit_conversion(self, input_kb, expected_bytes):
+        """
+        Test that _get_bandwidth_limit_in_bytes correctly converts kB/s to B/s
+        """
+        # WHEN _get_bandwidth_limit_in_bytes is called
+        result = _get_bandwidth_limit_in_bytes(input_kb)
+
+        # THEN it returns the expected result
+        assert result == expected_bytes
+
+
 class TestCloudBackupExecutor(object):
     """
     Tests for the CloudBackupExecutor class.
@@ -2502,6 +2564,7 @@ class TestCloudBackupExecutor(object):
         mock_config.name = "test_server"
         mock_config.cloud_upload_max_archive_size = 100000000000
         mock_config.cloud_upload_min_chunk_size = 5000000
+        mock_config.bandwidth_limit = None
         executor.config = mock_config
 
         # Mock the postgres connection and cloud interface
@@ -2540,6 +2603,7 @@ class TestCloudBackupExecutor(object):
             postgres=mock_postgres,
             backup_name="test_backup",
             min_chunk_size=5000000,  # 5 MB
+            max_bandwidth=None,
         )
 
         # AND the backup_info is set on the uploader
@@ -2580,6 +2644,9 @@ class TestCloudBackupExecutor(object):
         executor.server = mock.Mock()
         mock_config = mock.Mock()
         mock_config.name = "test_server"
+        mock_config.cloud_upload_max_archive_size = 100000000000
+        mock_config.cloud_upload_min_chunk_size = 5000000
+        mock_config.bandwidth_limit = None
         executor.config = mock_config
 
         # Mock the postgres connection and cloud interface
@@ -2602,6 +2669,61 @@ class TestCloudBackupExecutor(object):
             executor.backup(backup_info)
 
         assert "Cloud backup failed with error" in str(exc_info.value)
+
+    @patch("barman.cloud.CloudBackupUploader")
+    @patch("barman.backup_executor.CloudBackupExecutor.__init__", return_value=None)
+    def test_backup_with_bandwidth_limit(self, _, mock_uploader_class):
+        """
+        Test that bandwidth_limit is correctly converted and passed to CloudBackupUploader
+        """
+        # GIVEN a CloudBackupExecutor with bandwidth_limit set
+        executor = CloudBackupExecutor(None)
+        executor.server = mock.Mock()
+        mock_config = mock.Mock()
+        mock_config.name = "test_server"
+        mock_config.cloud_upload_max_archive_size = 100000000000
+        mock_config.cloud_upload_min_chunk_size = 5000000
+        mock_config.bandwidth_limit = 100  # 100 kB/s
+        executor.config = mock_config
+
+        # Mock the postgres connection and cloud interface
+        mock_postgres = mock.Mock()
+        mock_cloud_interface = mock.Mock()
+        executor.server.postgres = mock_postgres
+        executor.server.get_backup_cloud_interface.return_value = mock_cloud_interface
+
+        # Mock the uploader instance
+        mock_uploader = mock.Mock()
+        mock_uploader.copy_start_time = "2026-02-09 12:00:00"
+        mock_uploader.copy_end_time = "2026-02-09 13:00:00"
+        mock_uploader_class.return_value = mock_uploader
+
+        # Mock the upload controller
+        mock_controller = mock.Mock()
+        mock_controller.size = 1024000
+        mock_uploader.create_upload_controller.return_value = mock_controller
+
+        # Create a mock backup_info
+        backup_info = mock.Mock()
+        backup_info.backup_name = "test_backup"
+        backup_info.backup_id = "20260209T120000"
+
+        # Mock _purge_unused_wal_files method
+        executor._purge_unused_wal_files = mock.Mock()
+
+        # WHEN backup is called
+        executor.backup(backup_info)
+
+        # THEN CloudBackupUploader is instantiated with converted bandwidth_limit (100 kB/s → 100000 B/s)
+        mock_uploader_class.assert_called_once_with(
+            server_name="test_server",
+            cloud_interface=mock_cloud_interface,
+            max_archive_size=100000000000,
+            postgres=mock_postgres,
+            backup_name="test_backup",
+            min_chunk_size=5000000,
+            max_bandwidth=100000,  # 100 kB/s converted to 100000 B/s
+        )
 
 
 class TestSnapshotBackupExecutor(object):
