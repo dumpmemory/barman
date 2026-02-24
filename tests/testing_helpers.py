@@ -289,6 +289,7 @@ def build_config_dictionary(config_keys=None):
         "archiver_batch_size": 0,
         "autogenerate_manifest": False,
         "aws_await_snapshots_timeout": 3600,
+        "aws_encryption": None,
         "aws_read_timeout": None,
         "aws_snapshot_lock_mode": None,
         "aws_snapshot_lock_duration": None,

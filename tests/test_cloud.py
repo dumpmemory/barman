@@ -3714,6 +3714,7 @@ class TestGetCloudInterface(object):
             url=url,
             parallel_jobs=8,
             aws_profile="some-profile",
+            aws_encryption="AES256",
             aws_read_timeout=60,
             cloud_delete_batch_size=20,
         )
@@ -3723,6 +3724,7 @@ class TestGetCloudInterface(object):
                 url=url,
                 jobs=8,
                 profile_name="some-profile",
+                encryption="AES256",
                 read_timeout=60,
                 delete_batch_size=20,
             )

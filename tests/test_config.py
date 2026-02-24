@@ -37,6 +37,7 @@ from barman.config import (
     ModelConfig,
     RecoveryOptions,
     ServerConfig,
+    parse_aws_encryption,
     parse_backup_compression,
     parse_backup_compression_format,
     parse_backup_compression_location,
@@ -777,6 +778,27 @@ class TestConfig(object):
             with pytest.raises(ValueError):
                 parse_backup_compression(format)
 
+    @pytest.mark.parametrize(
+        ("encryption", "is_allowed"),
+        (
+            ("AES256", True),
+            ("aws:kms", True),
+            (None, True),
+            ("invalid", False),
+            ("aes256", False),  # Case-sensitive
+            ("AWS:KMS", False),  # Case-sensitive
+        ),
+    )
+    def test_parse_aws_encryption(self, encryption, is_allowed):
+        """
+        Test allowed and disallowed aws_encryption values
+        """
+        if is_allowed:
+            assert parse_aws_encryption(encryption) == encryption
+        else:
+            with pytest.raises(ValueError):
+                parse_aws_encryption(encryption)
+
     def test_global_config_to_json(self):
         """Check :meth:`Config.global_config_to_json` returns expected results.
 
@@ -1410,6 +1432,7 @@ class TestModelConfig:
             "archiver_batch_size": None,
             "autogenerate_manifest": None,
             "aws_await_snapshots_timeout": None,
+            "aws_encryption": None,
             "aws_read_timeout": None,
             "aws_snapshot_lock_mode": None,
             "aws_snapshot_lock_duration": None,
@@ -1518,6 +1541,7 @@ class TestModelConfig:
             "archiver_batch_size": {"source": "SOME_SOURCE", "value": None},
             "autogenerate_manifest": {"source": "SOME_SOURCE", "value": None},
             "aws_await_snapshots_timeout": {"source": "SOME_SOURCE", "value": None},
+            "aws_encryption": {"source": "SOME_SOURCE", "value": None},
             "aws_read_timeout": {"source": "SOME_SOURCE", "value": None},
             "aws_snapshot_lock_mode": {"source": "SOME_SOURCE", "value": None},
             "aws_snapshot_lock_duration": {"source": "SOME_SOURCE", "value": None},
