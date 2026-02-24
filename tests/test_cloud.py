@@ -3711,19 +3711,35 @@ class TestGetCloudInterface(object):
         """Test creating a CloudInterface from a server config"""
         url = "http://some-bucket/some/path"
         mock_config = MagicMock(
-            url=url, parallel_jobs=8, aws_profile="some-profile", aws_read_timeout=60
+            url=url,
+            parallel_jobs=8,
+            aws_profile="some-profile",
+            aws_read_timeout=60,
+            cloud_delete_batch_size=20,
         )
         ret = get_cloud_interface_from_server_config(mock_config, cloud_provider, url)
         if cloud_provider == "aws-s3":
             mock_s3_cloud_interface.assert_called_once_with(
-                url=url, jobs=8, profile_name="some-profile", read_timeout=60
+                url=url,
+                jobs=8,
+                profile_name="some-profile",
+                read_timeout=60,
+                delete_batch_size=20,
             )
             assert ret == mock_s3_cloud_interface.return_value
         elif cloud_provider == "azure-blob-storage":
-            mock_azure_cloud_interface.assert_called_once_with(url=url, jobs=8)
+            mock_azure_cloud_interface.assert_called_once_with(
+                url=url,
+                jobs=8,
+                delete_batch_size=20,
+            )
             assert ret == mock_azure_cloud_interface.return_value
         elif cloud_provider == "google-cloud-storage":
-            mock_gcs_cloud_interface.assert_called_once_with(url=url, jobs=8)
+            mock_gcs_cloud_interface.assert_called_once_with(
+                url=url,
+                jobs=8,
+                delete_batch_size=20,
+            )
             assert ret == mock_gcs_cloud_interface.return_value
 
 
