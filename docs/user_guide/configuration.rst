@@ -675,17 +675,25 @@ The name of the AWS profile to use when authenticating with AWS (e.g. ``INI`` se
 in AWS credentials file).
 
 .. note::
-  Only supported when ``backup_method = snapshot`` and ``snapshot_provider = aws``.
+  Only supported when ``backup_method = snapshot`` and ``snapshot_provider = aws``, or
+  when ``backup_method`` is ``postgres`` or ``local-to-cloud`` and
+  ``basebackups_directory`` and/or ``wals_directory`` point to S3.
 
 Scope: Global / Server / Model.
 
 **aws_region**
 
-Indicates the AWS region where the EC2 VM and storage volumes, as defined by
-``snapshot_instance`` and ``snapshot_disks``, are located.
+When using ``backup_method = snapshot``, indicates the AWS region where the EC2 VM and
+storage volumes, as defined by ``snapshot_instance`` and ``snapshot_disks``, are
+located.
+
+When using ``backup_method = postgres`` or ``local-to-cloud`` pointing to S3, indicates
+the AWS region where the S3 bucket is located.
 
 .. note::
-  Only supported when ``backup_method = snapshot`` and ``snapshot_provider = aws``.
+  Only supported when ``backup_method = snapshot`` and ``snapshot_provider = aws``, or
+  when ``backup_method`` is ``postgres`` or ``local-to-cloud`` and
+  ``basebackups_directory`` and/or ``wals_directory`` point to S3.
 
 Scope: Global / Server / Model.
 
