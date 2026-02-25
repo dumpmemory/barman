@@ -203,6 +203,7 @@ def get_cloud_interface_from_server_config(config, cloud_provider, base_url):
         cloud_interface_kwargs.update(
             {
                 "profile_name": config.aws_profile,
+                "region": config.aws_region,
                 "read_timeout": config.aws_read_timeout,
                 "encryption": config.aws_encryption,
                 "sse_kms_key_id": config.aws_sse_kms_key_id,

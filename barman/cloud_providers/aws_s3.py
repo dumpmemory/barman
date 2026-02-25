@@ -120,6 +120,7 @@ class S3CloudInterface(CloudInterface):
         encryption=None,
         jobs=2,
         profile_name=None,
+        region=None,
         endpoint_url=None,
         tags=None,
         delete_batch_size=None,
@@ -138,6 +139,7 @@ class S3CloudInterface(CloudInterface):
         :param str profile_name: Amazon auth profile identifier
         :param str endpoint_url: override default endpoint detection strategy
           with this one
+        :param str|None region: the AWS region to use for the S3 resource
         :param int|None delete_batch_size: the maximum number of objects to be
           deleted in a single request
         :param int|None read_timeout: the time in seconds until a timeout is
@@ -154,6 +156,7 @@ class S3CloudInterface(CloudInterface):
             delete_batch_size=delete_batch_size,
         )
         self.profile_name = profile_name
+        self.region = region
         self.encryption = encryption
         self.endpoint_url = endpoint_url
         self.read_timeout = read_timeout
@@ -187,7 +190,9 @@ class S3CloudInterface(CloudInterface):
         config = Config(**config_kwargs)
 
         session = boto3.Session(profile_name=self.profile_name)
-        self.s3 = session.resource("s3", endpoint_url=self.endpoint_url, config=config)
+        self.s3 = session.resource(
+            "s3", endpoint_url=self.endpoint_url, region_name=self.region, config=config
+        )
 
     @property
     def _extra_upload_args(self):
