@@ -547,6 +547,7 @@ class TestS3CloudInterface(object):
         session_mock.resource.assert_called_once_with(
             "s3",
             endpoint_url=None,
+            region_name=None,
             config=config_mock.return_value,
         )
         # AND the s3 property of the cloud interface is set to the boto3
@@ -576,6 +577,29 @@ class TestS3CloudInterface(object):
         session_mock.resource.assert_called_once_with(
             "s3",
             endpoint_url=None,
+            region_name=None,
+            config=config_mock.return_value,
+        )
+
+    @mock.patch("barman.cloud_providers.aws_s3.Config")
+    @mock.patch("barman.cloud_providers.aws_s3.boto3")
+    def test_uploader_region(self, boto_mock, config_mock):
+        # GIVEN an s3 bucket url
+        bucket_url = "s3://bucket/path/to/dir"
+
+        # WHEN an S3CloudInterface is created with a specified region
+        cloud_interface = S3CloudInterface(
+            url=bucket_url, encryption=None, region="us-west-2"
+        )
+
+        # THEN the cloud interface region property is set to the specified value
+        assert cloud_interface.region == "us-west-2"
+        # AND the boto3 resource is created with the specified region_name
+        session_mock = boto_mock.Session.return_value
+        session_mock.resource.assert_called_once_with(
+            "s3",
+            endpoint_url=None,
+            region_name="us-west-2",
             config=config_mock.return_value,
         )
 
@@ -654,6 +678,7 @@ class TestS3CloudInterface(object):
         session_mock.resource.assert_called_once_with(
             "s3",
             endpoint_url=endpoint_url,
+            region_name=None,
             config=config_mock.return_value,
         )
 
@@ -3714,6 +3739,7 @@ class TestGetCloudInterface(object):
             url=url,
             parallel_jobs=8,
             aws_profile="some-profile",
+            aws_region="us-east-1",
             aws_encryption="AES256",
             aws_sse_kms_key_id=None,
             aws_read_timeout=60,
@@ -3725,6 +3751,7 @@ class TestGetCloudInterface(object):
                 url=url,
                 jobs=8,
                 profile_name="some-profile",
+                region="us-east-1",
                 encryption="AES256",
                 sse_kms_key_id=None,
                 read_timeout=60,
@@ -3756,6 +3783,7 @@ class TestGetCloudInterface(object):
             url=url,
             parallel_jobs=8,
             aws_profile="some-profile",
+            aws_region="us-east-1",
             aws_encryption="aws:kms",
             aws_sse_kms_key_id="arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
             aws_read_timeout=60,
@@ -3766,6 +3794,7 @@ class TestGetCloudInterface(object):
             url=url,
             jobs=8,
             profile_name="some-profile",
+            region="us-east-1",
             encryption="aws:kms",
             sse_kms_key_id="arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
             read_timeout=60,
@@ -3796,6 +3825,7 @@ class TestGetCloudInterface(object):
             url=url,
             parallel_jobs=8,
             aws_profile="some-profile",
+            aws_region="us-east-1",
             aws_encryption=aws_encryption,
             aws_sse_kms_key_id="arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
             aws_read_timeout=60,
