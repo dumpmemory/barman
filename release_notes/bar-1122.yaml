@@ -1,0 +1,18 @@
+---
+- summary: Reuse aws_region configuration option for S3 interfaces
+  description: |
+    Extended the existing `aws_region` configuration option to also customize S3
+    cloud interfaces. Previously, this option only affected AWS snapshot interfaces.
+    Now, when `aws_region` is set in the server configuration, it is passed to the S3
+    client as well.
+
+    Example configuration:
+    ```
+    [myserver]
+    backup_method = local-to-cloud
+    basebackups_directory = s3://my-bucket/barman/backups
+    aws_region = us-west-2
+    ```
+  type: minor_change
+  jira_tickets:
+    - BAR-1122
