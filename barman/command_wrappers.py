@@ -214,6 +214,12 @@ class Command(object):
         :param int retry_times: number of allowed retry attempts
         :param int retry_sleep: wait seconds between every retry
         :param callable retry_handler: handler invoked during a command retry
+
+        .. note::
+            The methods ``get_returncode()`` and ``get_stderr()`` are meant to be used
+            when ``wait`` is set to ``False``. For ``wait`` set to ``True``, the return
+            code and the stderr are available as attributes in the object, namely
+            ``ret`` and ``err`` respectively.
         """
         self.pipe = None
         self.cmd = cmd
@@ -686,9 +692,9 @@ class Command(object):
                 return self.pipe.poll() is None
             return False
 
-    def wait_termination(self):
+    def wait_exit(self):
         """
-        Wait for the command to terminate
+        Wait for the command to exit.
 
         :rtype: int|None
         :return: the exit code of the command
@@ -698,6 +704,32 @@ class Command(object):
                 self.pipe.wait()
                 self.ret = self.pipe.returncode
                 return self.ret
+            return None
+
+    def get_returncode(self):
+        """
+        Get the return code of the command if it has terminated
+
+        :rtype: int|None
+        :return: the exit code of the command if it has terminated, ``None``
+            otherwise
+        """
+        with self._pipe_lock:
+            if self.pipe and self.pipe.poll() is not None:
+                return self.pipe.returncode
+            return None
+
+    def get_stderr(self):
+        """
+        Get the stderr of the command if it has terminated
+
+        :rtype: str|None
+        :return: the stderr of the command if it has terminated, ``None``
+            otherwise
+        """
+        with self._pipe_lock:
+            if self.pipe and self.pipe.poll() is not None and self.pipe.stderr:
+                return self.pipe.stderr.read().decode("utf-8")
             return None
 
 

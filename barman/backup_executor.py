@@ -1030,7 +1030,7 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         with closing(self._cloud_interface):
             with closing(self._upload_controller):
                 self._upload_ready_files()
-                pg_basebackup.wait_termination()
+                pg_basebackup.wait_exit()
                 monitoring_thread.join()
                 fetching_thread.join()
 
@@ -1122,9 +1122,9 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         PGDATA and ``{staging_dir}/plain/{oid}`` for each tablespace.
 
         The execution is done asynchronously, meaning that this method returns
-        immediately after spawning the backup subprocess. This allows threads such as
-        :meth:`_monitor_staging_area` and :meth:`_fetch_ready_files` to have a
-        reference to the running process as it executes.
+        immediately after successfully starting the backup subprocess. This allows
+        threads such as :meth:`_monitor_staging_area` and :meth:`_fetch_ready_files`
+        to have a reference to the running process as it executes.
 
         :param barman.infofile.LocalBackupInfo backup_info: backup information
         :return barman.command_wrappers.PgBaseBackup: the running ``pg_basebackup``
@@ -1156,12 +1156,20 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             path=self.server.path,
             parent_backup_manifest_path=parent_backup_manifest,
         )
+        # Because we're using the wait=False here, this try-except block will only
+        # catch basic errors such as command not found in PATH
+        # Execution errors are caught in _wait_copy_start called below
         try:
             _logger.debug("Starting pg_basebackup to %s" % self._pgdata_dest)
             pg_basebackup()
         except CommandFailedException as e:
             msg = "data transfer failure on directory '%s'" % self._pgdata_dest
             raise DataTransferFailure.from_command_error("pg_basebackup", e, msg)
+
+        # Wait for pg_basebackup to actually start copying. This ensures we catch
+        # eventual init errors and fail early before spawning any other threads as
+        # it gets harder to sync errors across them once they started
+        self._wait_copy_start(pg_basebackup)
 
         return pg_basebackup
 
@@ -1196,6 +1204,26 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         if parent_backup_info:
             filename = f"{parent_backup_info.backup_id}-backup_manifest"
             return os.path.join(self.server.meta_directory, filename)
+
+    def _wait_copy_start(self, pg_basebackup):
+        """
+        Wait for ``pg_basebackup`` to successfully start copying files before returning.
+
+        :param barman.command_wrappers.PgBaseBackup pg_basebackup: the running
+            ``pg_basebackup`` process
+        """
+        # We can only reliably assert that pg_basebackup has started successfully when
+        # we see files appearing in the staging area
+        while not any(file for _, __, file in os.walk(self._plain_dest)):
+            # Did not generate any files and already has an exit code? It sure failed.
+            # Note: pg_basebackup is not expected to return '0' and write no files. With
+            # that assumption, we do not care about checking if return code is '0' here.
+            if pg_basebackup.get_returncode() is not None:
+                raise DataTransferFailure(
+                    "pg_basebackup process failed to start (return code %s): %s"
+                    % (pg_basebackup.get_returncode(), pg_basebackup.get_stderr())
+                )
+            time.sleep(0.1)
 
     def _monitor_staging_area(self, pg_basebackup):
         """
