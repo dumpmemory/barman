@@ -39,6 +39,7 @@ from barman.compression import (
     CustomCompressor,
     GZipCompression,
     GZipPgBaseBackupCompressionOption,
+    InternalCompressor,
     LZ4Compression,
     LZ4Compressor,
     LZ4PgBaseBackupCompressionOption,
@@ -563,6 +564,31 @@ class TestInternalCompressors(object):
             mock_shutil.copyfileobj.assert_called_once_with(
                 mock_decompress.return_value, dest_fileobj
             )
+
+    def test_extension_attribute(self):
+        """
+        Test that all concrete InternalCompressor subclasses define a unique,
+        non-empty EXTENSION class attribute.
+        """
+        # GIVEN all concrete subclasses of InternalCompressor
+        subclasses = InternalCompressor.__subclasses__()
+        assert subclasses, "Expected at least one InternalCompressor subclass"
+
+        # WHEN we collect their EXTENSION values
+        extensions = {}
+        for cls in subclasses:
+            ext = cls.EXTENSION
+            # THEN each subclass has a non-empty string EXTENSION
+            assert (
+                isinstance(ext, str) and ext
+            ), "%s.EXTENSION must be a non-empty string, got %r" % (cls.__name__, ext)
+            # AND extensions are unique across subclasses
+            assert ext not in extensions, "%s.EXTENSION %r is already used by %s" % (
+                cls.__name__,
+                ext,
+                extensions[ext].__name__,
+            )
+            extensions[ext] = cls
 
 
 # noinspection PyMethodMayBeStatic

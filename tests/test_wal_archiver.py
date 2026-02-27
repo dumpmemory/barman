@@ -15,6 +15,7 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with Barman.  If not, see <http://www.gnu.org/licenses/>.
+import io
 import os
 
 import pytest
@@ -23,6 +24,7 @@ from testing_helpers import build_backup_manager, build_test_backup_info, caplog
 
 import barman.xlog
 from barman.cloud_providers import ObjectKeyAlreadyExists
+from barman.compression import InternalCompressor
 from barman.exceptions import (
     AbortedRetryHookScript,
     ArchiverFailure,
@@ -2132,7 +2134,9 @@ class TestCloudWalStorageStrategy:
         # AND a mocked filecmp.cmp returning the desired comparison result
         mock_cmp.return_value = cmp_result
         # AND a wal_info and object key for the test
-        mock_wal_info = MagicMock(orig_filename="/src/path/000000010000000000000001")
+        mock_wal_info = MagicMock(
+            orig_filename="/src/path/000000010000000000000001", compression=None
+        )
         obj_key = "backups/barman/TestServer/wals/000000010000000000000001"
 
         # WHEN _check_duplicate is called
@@ -2154,6 +2158,7 @@ class TestCloudWalStorageStrategy:
         )
 
     @pytest.mark.parametrize("skip_delete", [None, False, True])
+    @patch("barman.wal_archiver.xlog.hash_dir", return_value="0000000100000001")
     @patch("barman.wal_archiver.CloudWalStorageStrategy._run_pre_archive_scripts")
     @patch("barman.wal_archiver.CloudWalStorageStrategy._run_post_archive_scripts")
     @patch("barman.wal_archiver.CloudWalStorageStrategy._check_duplicate")
@@ -2166,6 +2171,7 @@ class TestCloudWalStorageStrategy:
         mock_check_duplicate,
         mock_run_post_scripts,
         mock_run_pre_scripts,
+        mock_hash_dir,
         skip_delete,
     ):
         """
@@ -2179,8 +2185,9 @@ class TestCloudWalStorageStrategy:
         # AND the following wal_info object
         mock_wal_info = MagicMock(
             orig_filename="/src/path/000000010000000000000001",
-            relpath=lambda: "0000000100000001/000000010000000000000001",
+            compression=None,
         )
+        mock_wal_info.name = "000000010000000000000001"
 
         # WHEN save is called
         compressor, encryption = None, None
@@ -2198,10 +2205,9 @@ class TestCloudWalStorageStrategy:
         # AND the source file and xlogdb are opened correctly
         mock_open.assert_called_once_with("/src/path/000000010000000000000001", "rb")
         wal_storage.server.xlogdb.assert_called_once_with("a")
-        # AND the opened src file is upload to the cloud with the correct key
-        # which is built using the cloud_interface path, server, and the wal_info relpath
+        # AND the opened src file is uploaded to the cloud with the correct key
         wal_storage.cloud_interface.upload_fileobj.assert_called_once_with(
-            fileobj=mock_open.return_value.__enter__.return_value,
+            fileobj=mock_open.return_value,
             key="backups/barman/TestServer/wals/0000000100000001/000000010000000000000001",
             fail_if_exists=True,
         )
@@ -2222,6 +2228,7 @@ class TestCloudWalStorageStrategy:
         # raised by the upload_fileobj method
         mock_check_duplicate.assert_not_called()
 
+    @patch("barman.wal_archiver.xlog.hash_dir", return_value="0000000100000001")
     @patch("barman.wal_archiver.CloudWalStorageStrategy._run_pre_archive_scripts")
     @patch("barman.wal_archiver.CloudWalStorageStrategy._run_post_archive_scripts")
     @patch("barman.wal_archiver.CloudWalStorageStrategy._check_duplicate")
@@ -2234,6 +2241,7 @@ class TestCloudWalStorageStrategy:
         mock_check_duplicate,
         mock_run_post_scripts,
         mock_run_pre_scripts,
+        mock_hash_dir,
     ):
         """
         Test that :meth:`save` correctly handles duplicate WAL files
@@ -2247,8 +2255,9 @@ class TestCloudWalStorageStrategy:
         # AND the following wal_info object
         mock_wal_info = MagicMock(
             orig_filename="/src/path/000000010000000000000001",
-            relpath=lambda: "0000000100000001/000000010000000000000001",
+            compression=None,
         )
+        mock_wal_info.name = "000000010000000000000001"
         # AND the cloud_interface upload_fileobj raises ObjectKeyAlreadyExists
         # AND the _check_duplicate raises DuplicateWalFile
         wal_storage.cloud_interface.upload_fileobj.side_effect = ObjectKeyAlreadyExists
@@ -2271,9 +2280,10 @@ class TestCloudWalStorageStrategy:
                 exc_info,
             )
 
+    @patch("barman.wal_archiver.xlog.hash_dir", return_value="0000000100000001")
     @patch("barman.wal_archiver.CloudWalStorageStrategy._run_pre_delete_wal_scripts")
     @patch("barman.wal_archiver.CloudWalStorageStrategy._run_post_delete_wal_scripts")
-    def test_delete(self, mock_post_scripts, mock_pre_scripts):
+    def test_delete(self, mock_post_scripts, mock_pre_scripts, mock_hash_dir):
         """
         Test that :meth:`delete` correctly deletes WAL files from cloud storage.
         """
@@ -2284,9 +2294,9 @@ class TestCloudWalStorageStrategy:
         wal_storage.cloud_interface = MagicMock(path="my-bucket")
 
         # AND two wal_info objects to be deleted
-        wal_info1, wal_info2 = MagicMock(), MagicMock()
-        wal_info1.relpath = lambda: "0000000100000001/000000010000000000000001"
-        wal_info2.relpath = lambda: "0000000100000001/000000010000000000000002"
+        wal_info1, wal_info2 = MagicMock(compression=None), MagicMock(compression=None)
+        wal_info1.name = "000000010000000000000001"
+        wal_info2.name = "000000010000000000000002"
         wals_to_delete = {
             "my-bucket/server/wals/0000000100000001": [wal_info1, wal_info2]
         }
@@ -2344,3 +2354,274 @@ class TestCloudWalStorageStrategy:
             "barman-bucket/TestServer/wals/0000000100000001/000000010000000000000001"
         )
         assert result == expected_path
+
+    @pytest.mark.parametrize(
+        "compression,expected_ext",
+        [
+            ("gzip", ".gz"),
+            ("bzip2", ".bz2"),
+            ("xz", ".xz"),
+            ("snappy", ".snappy"),
+            ("zstd", ".zst"),
+            ("lz4", ".lz4"),
+        ],
+    )
+    @patch("barman.wal_archiver.xlog.hash_dir", return_value="0000000100000001")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_pre_archive_scripts")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_post_archive_scripts")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._check_duplicate")
+    @patch("barman.wal_archiver.os.unlink")
+    @patch("barman.wal_archiver.open")
+    def test_save_with_compression(
+        self,
+        mock_open,
+        mock_unlink,
+        mock_check_duplicate,
+        mock_run_post_scripts,
+        mock_run_pre_scripts,
+        mock_hash_dir,
+        compression,
+        expected_ext,
+    ):
+        """
+        Test that :meth:`save` compresses WAL files before uploading to cloud
+        storage when a compressor is provided.
+        """
+        # GIVEN a CloudWalStorageStrategy instance
+        wal_storage = CloudWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        wal_storage.cloud_interface = MagicMock(path="backups/barman")
+        # AND the following wal_info object
+        mock_wal_info = MagicMock(
+            orig_filename="/src/path/000000010000000000000001",
+            compression=None,
+        )
+        mock_wal_info.name = "000000010000000000000001"
+        # AND a mock InternalCompressor that returns a BytesIO-like object
+        compressed_data = io.BytesIO(b"compressed-data")
+        mock_compressor = MagicMock(spec=InternalCompressor)
+        mock_compressor.compress_in_mem.return_value = compressed_data
+        mock_compressor.compression = compression
+
+        # WHEN save is called with the compressor
+        wal_storage.save(mock_compressor, None, mock_wal_info)
+
+        # THEN the source file is opened
+        mock_open.assert_called_once_with("/src/path/000000010000000000000001", "rb")
+        # AND compress_in_mem is called with the file object
+        mock_compressor.compress_in_mem.assert_called_once_with(
+            mock_open.return_value.__enter__.return_value
+        )
+        # AND the cloud key includes the compression extension
+        expected_key = (
+            "backups/barman/TestServer/wals/0000000100000001/"
+            "000000010000000000000001" + expected_ext
+        )
+        wal_storage.cloud_interface.upload_fileobj.assert_called_once_with(
+            fileobj=compressed_data, key=expected_key, fail_if_exists=True
+        )
+        # AND wal_info.compression is updated
+        assert mock_wal_info.compression == compression
+        # AND wal_info.size is updated to the compressed size
+        assert mock_wal_info.size == len(b"compressed-data")
+        # AND the source file is unlinked
+        mock_unlink.assert_called_once_with("/src/path/000000010000000000000001")
+
+    @pytest.mark.parametrize(
+        "compression,expected_ext",
+        [
+            ("gzip", ".gz"),
+            ("snappy", ".snappy"),
+        ],
+    )
+    @patch("barman.wal_archiver.xlog.hash_dir", return_value="0000000100000001")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_pre_archive_scripts")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_post_archive_scripts")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._check_duplicate")
+    @patch("barman.wal_archiver.os.unlink")
+    @patch("barman.wal_archiver.open")
+    def test_save_duplicate_with_compression(
+        self,
+        mock_open,
+        mock_unlink,
+        mock_check_duplicate,
+        mock_run_post_scripts,
+        mock_run_pre_scripts,
+        mock_hash_dir,
+        compression,
+        expected_ext,
+    ):
+        """
+        Test that :meth:`save` correctly handles duplicate compressed WAL files.
+        """
+        # GIVEN a CloudWalStorageStrategy instance
+        wal_storage = CloudWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        wal_storage.cloud_interface = MagicMock(path="backups/barman")
+        # AND the following wal_info object
+        mock_wal_info = MagicMock(
+            orig_filename="/src/path/000000010000000000000001",
+            compression=None,
+        )
+        mock_wal_info.name = "000000010000000000000001"
+        # AND a mock InternalCompressor that returns a BytesIO-like object
+        mock_compressor = MagicMock(spec=InternalCompressor)
+        mock_compressor.compress_in_mem.return_value = io.BytesIO(b"compressed-data")
+        mock_compressor.compression = compression
+        # AND the upload raises ObjectKeyAlreadyExists
+        wal_storage.cloud_interface.upload_fileobj.side_effect = ObjectKeyAlreadyExists
+        mock_check_duplicate.side_effect = DuplicateWalFile
+
+        # WHEN save is called with the compressor
+        # THEN DuplicateWalFile is raised
+        expected_key = (
+            "backups/barman/TestServer/wals/0000000100000001/"
+            "000000010000000000000001" + expected_ext
+        )
+        with pytest.raises(DuplicateWalFile):
+            wal_storage.save(mock_compressor, None, mock_wal_info)
+        mock_check_duplicate.assert_called_once_with(mock_wal_info, expected_key)
+
+    @pytest.mark.parametrize(
+        "compression,expected_ext",
+        [
+            (None, ""),
+            ("gzip", ".gz"),
+            ("lz4", ".lz4"),
+        ],
+    )
+    @patch("barman.wal_archiver.xlog.hash_dir", return_value="0000000100000001")
+    def test_get_full_path_with_compression(
+        self, mock_hash_dir, compression, expected_ext
+    ):
+        """
+        Test that :meth:`get_full_path` appends the compression extension.
+        """
+        # GIVEN a CloudWalStorageStrategy instance with compression configured
+        backup_manager = build_backup_manager(name="TestServer")
+        backup_manager.config.compression = compression
+        wal_storage = CloudWalStorageStrategy(backup_manager, MagicMock())
+        wal_storage.cloud_interface = MagicMock(path="barman-bucket")
+
+        # WHEN get_full_path is called
+        result = wal_storage.get_full_path("000000010000000000000001")
+
+        # THEN the path includes the compression extension
+        expected_path = (
+            "barman-bucket/TestServer/wals/0000000100000001/"
+            "000000010000000000000001" + expected_ext
+        )
+        assert result == expected_path
+
+    @patch("barman.wal_archiver.xlog.hash_dir", return_value="0000000100000001")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_pre_delete_wal_scripts")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_post_delete_wal_scripts")
+    def test_delete_with_compression(
+        self, mock_post_scripts, mock_pre_scripts, mock_hash_dir
+    ):
+        """
+        Test that :meth:`delete` uses compression extensions from wal_info.compression
+        to build the correct cloud keys.
+        """
+        # GIVEN a CloudWalStorageStrategy instance (no current compression config needed)
+        wal_storage = CloudWalStorageStrategy(
+            build_backup_manager(name="server"), MagicMock()
+        )
+        wal_storage.cloud_interface = MagicMock(path="my-bucket")
+
+        # AND two wal_info objects with compression metadata from xlogdb
+        wal_info1 = MagicMock(compression="gzip")
+        wal_info1.name = "000000010000000000000001"
+        wal_info2 = MagicMock(compression="lz4")
+        wal_info2.name = "000000010000000000000002"
+        wals_to_delete = {
+            "my-bucket/server/wals/0000000100000001": [wal_info1, wal_info2]
+        }
+
+        # WHEN delete is called
+        wal_storage.delete(wals_to_delete)
+
+        # THEN the cloud keys include the correct compression extensions
+        wal_storage.cloud_interface.delete_objects.assert_called_once_with(
+            [
+                "my-bucket/server/wals/0000000100000001/000000010000000000000001.gz",
+                "my-bucket/server/wals/0000000100000001/000000010000000000000002.lz4",
+            ]
+        )
+
+    @patch("barman.wal_archiver.xlog.hash_dir", return_value="0000000100000001")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_pre_delete_wal_scripts")
+    @patch("barman.wal_archiver.CloudWalStorageStrategy._run_post_delete_wal_scripts")
+    def test_delete_without_compression(
+        self, mock_post_scripts, mock_pre_scripts, mock_hash_dir
+    ):
+        """
+        Test that :meth:`delete` works correctly when wal_info has no compression.
+        """
+        # GIVEN a CloudWalStorageStrategy instance
+        wal_storage = CloudWalStorageStrategy(
+            build_backup_manager(name="server"), MagicMock()
+        )
+        wal_storage.cloud_interface = MagicMock(path="my-bucket")
+
+        # AND wal_info objects with no compression
+        wal_info1 = MagicMock(compression=None)
+        wal_info1.name = "000000010000000000000001"
+        wals_to_delete = {"my-bucket/server/wals/0000000100000001": [wal_info1]}
+
+        # WHEN delete is called
+        wal_storage.delete(wals_to_delete)
+
+        # THEN the cloud keys do not include compression extensions
+        wal_storage.cloud_interface.delete_objects.assert_called_once_with(
+            [
+                "my-bucket/server/wals/0000000100000001/000000010000000000000001",
+            ]
+        )
+
+    @pytest.mark.parametrize(
+        "cmp_result,expected_exception",
+        [
+            (False, DuplicateWalFile),
+            (True, MatchingDuplicateWalFile),
+        ],
+    )
+    @patch("barman.wal_archiver.NamedTemporaryFile")
+    @patch("barman.wal_archiver.filecmp.cmp")
+    def test_check_duplicate_with_compression(
+        self,
+        mock_cmp,
+        mock_tempfile,
+        cmp_result,
+        expected_exception,
+    ):
+        """
+        Test that :meth:`_check_duplicate` passes the compression to
+        ``download_file`` for decompression when compression is configured.
+        """
+        # GIVEN a CloudWalStorageStrategy instance
+        wal_storage = CloudWalStorageStrategy(
+            build_backup_manager(name="TestServer"), MagicMock()
+        )
+        wal_storage.cloud_interface = MagicMock()
+        # AND a mocked filecmp.cmp returning the desired result
+        mock_cmp.return_value = cmp_result
+        mock_wal_info = MagicMock(
+            orig_filename="/src/path/000000010000000000000001", compression="gzip"
+        )
+        obj_key = "backups/barman/TestServer/wals/000000010000000000000001.gz"
+
+        # WHEN _check_duplicate is called
+        # THEN the appropriate exception is raised
+        with pytest.raises(expected_exception):
+            wal_storage._check_duplicate(mock_wal_info, obj_key)
+
+        # AND download_file was called with decompress="gzip"
+        mock_tempfile.assert_called_once_with(delete=True)
+        wal_storage.cloud_interface.download_file.assert_called_once_with(
+            obj_key,
+            mock_tempfile.return_value.__enter__.return_value.name,
+            decompress="gzip",
+        )

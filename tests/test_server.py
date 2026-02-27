@@ -4119,7 +4119,27 @@ class TestServer(object):
                 None,
                 "postgres",
                 "off",
-                "compression is not supported when the WAL destination is a cloud storage",
+                None,
+            ),
+            (
+                None,
+                "pigz",
+                None,
+                "postgres",
+                "off",
+                "cloud WAL storage only supports in-memory compression "
+                "algorithms (gzip, bzip2, xz, zstd, lz4, snappy). "
+                "'pigz' is not supported",
+            ),
+            (
+                None,
+                "custom",
+                None,
+                "postgres",
+                "off",
+                "cloud WAL storage only supports in-memory compression "
+                "algorithms (gzip, bzip2, xz, zstd, lz4, snappy). "
+                "'custom' is not supported",
             ),
             (
                 None,
