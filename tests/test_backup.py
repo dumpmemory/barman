@@ -487,6 +487,92 @@ class TestBackup(object):
             manifest_path,
         )
 
+    @pytest.mark.parametrize("use_backup_cloud_storage", [True, False])
+    @patch("barman.backup.KeepManagerMixin.keep_backup")
+    @patch("barman.backup.KeepManagerMixinCloud")
+    @patch("barman.backup.BackupManager.__init__", return_value=None)
+    def test_keep_backup(
+        self,
+        _,
+        mock_cloud_keep_mixin,
+        mock_parent_keep_backup,
+        use_backup_cloud_storage,
+    ):
+        """
+        Assert that ``keep_backup`` stores annotation locally and/or in the cloud
+        according to the server's configuration.
+        """
+        # Initialize a simpel backup manager
+        backup_manager = BackupManager(None)
+        # Simulate a server with or without cloud storage based on use_backup_cloud_storage
+        backup_cloud_interface = mock.Mock()
+        server = mock.Mock(
+            use_backup_cloud_storage=use_backup_cloud_storage,
+            get_backup_cloud_interface=lambda: backup_cloud_interface,
+        )
+        backup_manager.server = server
+        backup_manager.config = mock.Mock()
+        backup_manager.config.name = "test-server"
+
+        # WHEN keep_backup is called
+        backup_manager.keep_backup("fake_backup_id", "standalone")
+        # THEN if using a cloud storage it should first store the annotation there
+        if use_backup_cloud_storage:
+            mock_cloud_keep_mixin.assert_called_once_with(
+                cloud_interface=backup_cloud_interface,
+                server_name="test-server",
+            )
+            mock_cloud_keep_mixin.return_value.keep_backup.assert_called_once_with(
+                "fake_backup_id", "standalone"
+            )
+        else:
+            mock_cloud_keep_mixin.assert_not_called()
+        # AND always save the annotation locally
+        mock_parent_keep_backup.assert_called_once_with("fake_backup_id", "standalone")
+
+    @pytest.mark.parametrize("use_backup_cloud_storage", [True, False])
+    @patch("barman.backup.KeepManagerMixin.release_keep")
+    @patch("barman.backup.KeepManagerMixinCloud")
+    @patch("barman.backup.BackupManager.__init__", return_value=None)
+    def test_release_keep(
+        self,
+        _,
+        mock_cloud_keep_mixin,
+        mock_parent_release_keep,
+        use_backup_cloud_storage,
+    ):
+        """
+        Assert that ``release_keep`` removes the annotation locally and/or from the
+        cloud storage, if configured.
+        """
+        # Initialize a simpel backup manager
+        backup_manager = BackupManager(None)
+        # Simulate a server with or without cloud storage based on use_backup_cloud_storage
+        backup_cloud_interface = mock.Mock()
+        server = mock.Mock(
+            use_backup_cloud_storage=use_backup_cloud_storage,
+            get_backup_cloud_interface=lambda: backup_cloud_interface,
+        )
+        backup_manager.server = server
+        backup_manager.config = mock.Mock()
+        backup_manager.config.name = "test-server"
+
+        # WHEN keep_backup is called
+        backup_manager.release_keep("fake_backup_id")
+        # THEN if using a cloud storage it should first delete the annotation there
+        if use_backup_cloud_storage:
+            mock_cloud_keep_mixin.assert_called_once_with(
+                cloud_interface=backup_cloud_interface,
+                server_name="test-server",
+            )
+            mock_cloud_keep_mixin.return_value.release_keep.assert_called_once_with(
+                "fake_backup_id"
+            )
+        else:
+            mock_cloud_keep_mixin.assert_not_called()
+        # AND always delete the annotation locally
+        mock_parent_release_keep.assert_called_once_with("fake_backup_id")
+
     @patch("os.stat")
     @patch("barman.backup.fsync_file")
     @patch("barman.backup.fsync_dir")
