@@ -33,7 +33,12 @@ from glob import glob
 import dateutil.tz
 
 from barman import output, xlog
-from barman.annotations import AnnotationManagerFile, KeepManager, KeepManagerMixin
+from barman.annotations import (
+    AnnotationManagerFile,
+    KeepManager,
+    KeepManagerMixin,
+    KeepManagerMixinCloud,
+)
 from barman.backup_executor import (
     CloudBackupExecutor,
     CloudPostgresBackupExecutor,
@@ -564,6 +569,45 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         :param str backup_id: The ID of the backup to remove the annotation from.
         """
         self.annotation_manager.delete_annotation(backup_id, self.DELETE_ANNOTATION)
+
+    def keep_backup(self, backup_id, target):
+        """
+        Add a keep annotation for backup with ID *backup_id* with the specified
+        recovery *target*.
+
+        :param str backup_id: The ID of the backup to keep
+        :param str target: The desired target as defined in
+            :class:`barman.annotations.KeepManager`
+        """
+        # If a cloud storage is configured, first send a copy of the annotation to the
+        # cloud destination. This ensures compatibility with the cloud-* scripts
+        if self.server.use_backup_cloud_storage:
+            cloud_keep_manager = KeepManagerMixinCloud(
+                cloud_interface=self.server.get_backup_cloud_interface(),
+                server_name=self.config.name,
+            )
+            cloud_keep_manager.keep_backup(backup_id, target)
+
+        # Then proceed with saving the annotation locally
+        super(BackupManager, self).keep_backup(backup_id, target)
+
+    def release_keep(self, backup_id):
+        """
+        Remove the keep annotation for backup with ID *backup_id*.
+
+        :param str backup_id: The ID of the backup to release
+        """
+        # If a cloud storage is configured, a copy of the annotation is also present
+        # in the cloud destination so we should remove it as well
+        if self.server.use_backup_cloud_storage:
+            cloud_keep_manager = KeepManagerMixinCloud(
+                cloud_interface=self.server.get_backup_cloud_interface(),
+                server_name=self.config.name,
+            )
+            cloud_keep_manager.release_keep(backup_id)
+
+        # Then proceed with removing the local annotation
+        super(BackupManager, self).release_keep(backup_id)
 
     @staticmethod
     def get_timelines_to_protect(remove_until, deleted_backup, available_backups):
