@@ -646,6 +646,7 @@ class TestCloudBackupHookScript(object):
             "BARMAN_HOOK": "backup_script",
             "BARMAN_PHASE": "post",
             "BARMAN_BACKUP_ID": EXAMPLE_BACKUP_ID,
+            "BARMAN_BACKUP_INFO_PATH": EXAMPLE_BACKUP_INFO_PATH,
             "BARMAN_STATUS": "DONE",
         },
     )
@@ -673,6 +674,7 @@ class TestCloudBackupHookScript(object):
             "BARMAN_HOOK": "backup_script",
             "BARMAN_PHASE": "post",
             "BARMAN_BACKUP_DIR": EXAMPLE_BACKUP_DIR,
+            "BARMAN_BACKUP_INFO_PATH": EXAMPLE_BACKUP_INFO_PATH,
             "BARMAN_STATUS": "DONE",
         },
     )
@@ -701,6 +703,7 @@ class TestCloudBackupHookScript(object):
             "BARMAN_PHASE": "pre",
             "BARMAN_BACKUP_DIR": EXAMPLE_BACKUP_DIR,
             "BARMAN_BACKUP_ID": EXAMPLE_BACKUP_ID,
+            "BARMAN_BACKUP_INFO_PATH": EXAMPLE_BACKUP_INFO_PATH,
             "BARMAN_STATUS": "DONE",
         },
     )
@@ -732,6 +735,7 @@ class TestCloudBackupHookScript(object):
             "BARMAN_PHASE": "post",
             "BARMAN_BACKUP_DIR": EXAMPLE_BACKUP_DIR,
             "BARMAN_BACKUP_ID": EXAMPLE_BACKUP_ID,
+            "BARMAN_BACKUP_INFO_PATH": EXAMPLE_BACKUP_INFO_PATH,
             "BARMAN_STATUS": "DONE",
         },
     )
@@ -763,6 +767,7 @@ class TestCloudBackupHookScript(object):
             "BARMAN_PHASE": "post",
             "BARMAN_BACKUP_DIR": EXAMPLE_BACKUP_DIR,
             "BARMAN_BACKUP_ID": EXAMPLE_BACKUP_ID,
+            "BARMAN_BACKUP_INFO_PATH": EXAMPLE_BACKUP_INFO_PATH,
             "BARMAN_STATUS": "WAITING_FOR_WALS",
         },
     )
@@ -797,6 +802,7 @@ class TestCloudBackupHookScript(object):
             "BARMAN_PHASE": "post",
             "BARMAN_BACKUP_DIR": EXAMPLE_BACKUP_DIR,
             "BARMAN_BACKUP_ID": EXAMPLE_BACKUP_ID,
+            "BARMAN_BACKUP_INFO_PATH": EXAMPLE_BACKUP_INFO_PATH,
             "BARMAN_STATUS": "DONE",
         },
     )
