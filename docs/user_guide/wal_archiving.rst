@@ -31,6 +31,12 @@ The option can use one of the following values:
   ``custom_compression_magic``. Check :ref:`configuration-options-wals` for details.
   (Deprecated)
 
+.. note::
+    Cloud WAL storage (when ``wals_directory`` points to a cloud object store) only
+    supports in-memory compression algorithms: ``gzip``, ``bzip2``, ``xz``, ``zstd``,
+    ``lz4``, and ``snappy``. ``pigz`` and ``custom`` are not supported because they rely
+    on external processes and cannot compress in-memory.
+
 .. deprecated:: 3.16
     The ``pygzip`` and ``pybzip2`` compression options are deprecated and will be
     removed in a future release. Use their equivalents ``gzip`` and ``bzip2`` instead.
