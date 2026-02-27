@@ -209,6 +209,10 @@ def main(args=None):
                         "backup in '%s' has status '%s' (status should be: DONE)"
                         % (os.getenv("BARMAN_BACKUP_DIR"), os.getenv("BARMAN_STATUS"))
                     )
+                if "BARMAN_BACKUP_INFO_PATH" not in os.environ:
+                    raise BarmanException(
+                        "BARMAN_BACKUP_INFO_PATH environment variable not set"
+                    )
                 # Check if the backup being uploaded is compressed
                 backup_id = os.getenv("BARMAN_BACKUP_ID")
                 backup_info_path = os.getenv("BARMAN_BACKUP_INFO_PATH")
