@@ -47,7 +47,11 @@ from barman.cloud_providers import (
     recognize_cloud_provider,
 )
 from barman.command_wrappers import BarmanSubProcess, Command, Rsync
-from barman.compression import CustomCompressor
+from barman.compression import (
+    CustomCompressor,
+    InternalCompressor,
+    compression_registry,
+)
 from barman.copy_controller import RsyncCopyController
 from barman.encryption import get_passphrase_from_command
 from barman.exceptions import (
@@ -1211,13 +1215,18 @@ class Server(RemoteStatusMixin):
             )
             return
         if self.use_wal_cloud_storage and self.config.compression:
-            check_strategy.result(
-                self.config.name,
-                False,
-                hint="compression is not supported when the WAL destination is a "
-                "cloud storage",
-            )
-            return
+            compressor_cls = compression_registry.get(self.config.compression)
+            if compressor_cls is None or not issubclass(
+                compressor_cls, InternalCompressor
+            ):
+                check_strategy.result(
+                    self.config.name,
+                    False,
+                    hint="cloud WAL storage only supports in-memory compression "
+                    "algorithms (gzip, bzip2, xz, zstd, lz4, snappy). "
+                    "'%s' is not supported" % self.config.compression,
+                )
+                return
         if self.use_backup_cloud_storage and self.config.encryption:
             check_strategy.result(
                 self.config.name,

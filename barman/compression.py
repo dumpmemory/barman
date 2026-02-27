@@ -269,7 +269,12 @@ class CommandCompressor(Compressor):
 class InternalCompressor(Compressor):
     """
     Base class for compressors built on python libraries
+
+    :cvar EXTENSION: File extension for the compressed output (e.g. ``".gz"``). Must be
+        set by each concrete subclass.
     """
+
+    EXTENSION = None
 
     def compress(self, src, dst):
         """
@@ -359,6 +364,7 @@ class PyGZipCompressor(InternalCompressor):
     Predefined compressor that uses GZip Python libraries
     """
 
+    EXTENSION = ".gz"
     MAGIC = b"\x1f\x8b\x08"
     LEVEL_MIN = 1
     LEVEL_MAX = 9
@@ -426,6 +432,7 @@ class PyBZip2Compressor(InternalCompressor):
     Predefined compressor with BZip2 Python libraries
     """
 
+    EXTENSION = ".bz2"
     MAGIC = b"\x42\x5a\x68"
     LEVEL_MIN = 1
     LEVEL_MAX = 9
@@ -453,6 +460,7 @@ class XZCompressor(InternalCompressor):
     Predefined compressor with XZ Python library
     """
 
+    EXTENSION = ".xz"
     MAGIC = b"\xfd7zXZ\x00"
     LEVEL_MIN = 1
     LEVEL_MAX = 9
@@ -488,6 +496,7 @@ class ZSTDCompressor(InternalCompressor):
     Predefined compressor with zstd
     """
 
+    EXTENSION = ".zst"
     MAGIC = b"(\xb5/\xfd"
     LEVEL_MIN = -22
     LEVEL_MAX = 22
@@ -542,6 +551,7 @@ class LZ4Compressor(InternalCompressor):
     Predefined compressor with lz4
     """
 
+    EXTENSION = ".lz4"
     MAGIC = b"\x04\x22\x4d\x18"
     LEVEL_MIN = 0
     LEVEL_MAX = 16
@@ -592,6 +602,7 @@ def _try_import_snappy():
 
 class SnappyCompressor(InternalCompressor):
 
+    EXTENSION = ".snappy"
     MAGIC = b"\xff\x06\x00\x00sNaPpY"
 
     def __init__(self, config, compression, path=None):

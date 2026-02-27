@@ -29,9 +29,11 @@ from tempfile import NamedTemporaryFile
 from barman import output, xlog
 from barman.cloud_providers import ObjectKeyAlreadyExists
 from barman.command_wrappers import CommandFailedException, PgReceiveXlog
+from barman.compression import InternalCompressor, compression_registry
 from barman.exceptions import (
     AbortedRetryHookScript,
     ArchiverFailure,
+    CompressionException,
     DuplicateWalFile,
     MatchingDuplicateWalFile,
 )
@@ -532,9 +534,51 @@ class CloudWalStorageStrategy(WalStorageStrategy):
         super(CloudWalStorageStrategy, self).__init__(backup_manager, server)
         self.cloud_interface = self.server.get_wal_cloud_interface()
 
+    def _get_compression_extension(self, compression):
+        """
+        Return the file extension for the given compression algorithm.
+
+        The *compression* value must be either ``None`` or a key present in
+        :data:`~barman.compression.compression_registry` whose class defines an
+        ``EXTENSION`` attribute. Passing an unrecognised algorithm or one without
+        ``EXTENSION`` (e.g. ``pigz``, ``custom``) will raise ``KeyError`` or
+        ``AttributeError`` respectively.
+
+        :param str|None compression: the compression algorithm name
+        :return: the file extension (e.g. ".gz") or "" if no compression
+        :rtype: str
+        """
+        if not compression:
+            return ""
+        return compression_registry[compression].EXTENSION
+
+    def _build_wal_object_key(self, wal_name, compression):
+        """
+        Build the full cloud object key for a WAL file.
+
+        :param str wal_name: the WAL file name (e.g. ``000000010000000000000001``)
+        :param str|None compression: the compression algorithm name used for the WAL
+        :return: the full cloud object key, including compression extension if applicable
+        :rtype: str
+        """
+        ext = self._get_compression_extension(compression)
+        return (
+            os.path.join(
+                self.cloud_interface.path,
+                self.config.name,
+                "wals",
+                xlog.hash_dir(wal_name),
+                wal_name,
+            )
+            + ext
+        )
+
     def _check_duplicate(self, wal_info, object_key):
         """
         Check if the cloud object *object_key* is identical to the source file.
+
+        If the WAL was compressed, the ``decompress`` parameter of ``download_file``
+        is used to decompress the cloud object before comparison.
 
         :param WalFileInfo wal_info: the WAL file info object
         :param str object_key: the cloud storage object key
@@ -545,7 +589,7 @@ class CloudWalStorageStrategy(WalStorageStrategy):
         """
         with NamedTemporaryFile(delete=True) as downloaded_file:
             self.cloud_interface.download_file(
-                object_key, downloaded_file.name, decompress=None
+                object_key, downloaded_file.name, decompress=wal_info.compression
             )
             if filecmp.cmp(wal_info.orig_filename, downloaded_file.name):
                 raise MatchingDuplicateWalFile(wal_info)
@@ -556,7 +600,13 @@ class CloudWalStorageStrategy(WalStorageStrategy):
         """
         Effectively persist a WAL file according to the configured destination.
 
-        :param compressor: the compressor for the file (if any)
+        If a *compressor* is provided, the WAL file is compressed in-memory before
+        upload and the cloud key includes the compression extension. The *wal_info*
+        object is updated with the compression type and compressed size so that
+        xlogdb records accurate metadata.
+
+        :param compressor: an :class:`~barman.compression.InternalCompressor` instance,
+            or ``None`` if no compression is desired
         :param None|Encryption encryption: the encryptor for the file (if any)
         :param WalFileInfo wal_info: the WAL file is being processed
         :param kwargs: additional parameters for the storage strategy, if any:
@@ -564,24 +614,48 @@ class CloudWalStorageStrategy(WalStorageStrategy):
             * "skip_delete": if ``True``, the source file will not be deleted after a
               successful upload.
 
+        :raises CompressionException: if *compressor* is not an
+            :class:`~barman.compression.InternalCompressor` instance
+
         .. note::
-            Compression and encryption are still not implemented for cloud storage,
-            but the parameters are kept for interface compatibility.
+            Only ``InternalCompressor`` subclasses (gzip, bzip2, xz, zstd, lz4, snappy)
+            are supported for cloud WAL storage. ``pigz`` and ``custom`` are not
+            supported because they rely on external processes and cannot compress
+            in-memory.
+
+        .. note::
+            Encryption is not yet supported for cloud WAL storage. The *encryption*
+            parameter is kept for interface compatibility.
         """
+        if compressor is not None and not isinstance(compressor, InternalCompressor):
+            raise CompressionException(
+                "Cloud WAL storage only supports in-memory compression algorithms "
+                "(gzip, bzip2, xz, zstd, lz4, snappy). "
+                "pigz and custom compressors are not supported."
+            )
         error = None
         try:
             self._run_pre_archive_scripts(wal_info, wal_info.orig_filename)
-            with open(wal_info.orig_filename, "rb") as fileobj:
+            # Compress if a compressor is provided.
+            upload_fileobj = None
+            if compressor:
+                # The source file is read and closed before uploading so we don't hold
+                # and/or leak the fd.
+                with open(wal_info.orig_filename, "rb") as fileobj:
+                    upload_fileobj = compressor.compress_in_mem(fileobj)
+                wal_info.compression = compressor.compression
+                wal_info.size = upload_fileobj.getbuffer().nbytes
+            else:
+                upload_fileobj = open(wal_info.orig_filename, "rb")
+
+            with upload_fileobj:
                 with self.server.xlogdb("a") as fxlogdb:
-                    key = os.path.join(
-                        self.cloud_interface.path,
-                        self.config.name,
-                        "wals",
-                        wal_info.relpath(),
+                    key = self._build_wal_object_key(
+                        wal_info.name, wal_info.compression
                     )
                     try:
                         self.cloud_interface.upload_fileobj(
-                            fileobj=fileobj, key=key, fail_if_exists=True
+                            fileobj=upload_fileobj, key=key, fail_if_exists=True
                         )
                     except ObjectKeyAlreadyExists:
                         self._check_duplicate(wal_info, key)
@@ -600,11 +674,8 @@ class CloudWalStorageStrategy(WalStorageStrategy):
         wal_objects_to_delete = []
         for _, wal_list in wals_to_delete.items():
             for wal_info in wal_list:
-                object_key = os.path.join(
-                    self.cloud_interface.path,
-                    self.config.name,
-                    "wals",
-                    wal_info.relpath(),
+                object_key = self._build_wal_object_key(
+                    wal_info.name, wal_info.compression
                 )
                 wal_objects_to_delete.append(object_key)
                 self._run_pre_delete_wal_scripts(wal_info)
@@ -623,13 +694,21 @@ class CloudWalStorageStrategy(WalStorageStrategy):
         return self.cloud_interface.check_object_existence(wal_full_path)
 
     def get_full_path(self, wal_name):
-        return os.path.join(
-            self.cloud_interface.path,
-            self.config.name,
-            "wals",
-            xlog.hash_dir(wal_name),
-            wal_name,
-        )
+        """
+        Construct the full cloud object key for a given WAL file name.
+
+        .. note::
+            This method uses the current compression configuration to determine
+            the file extension. If the compression config has changed since the WAL
+            was originally stored, this method will return a path that does not match
+            the actual cloud object. Callers that need to handle WALs stored under a
+            previous compression config should use bucket listing instead.
+
+        :param str wal_name: the WAL file name
+        :return: the full cloud object key
+        :rtype: str
+        """
+        return self._build_wal_object_key(wal_name, self.config.compression)
 
 
 class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):
