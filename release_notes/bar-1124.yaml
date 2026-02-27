@@ -1,0 +1,25 @@
+---
+- summary: Add WAL compression support for cloud storage destinations
+  description: |
+    WAL files sent to cloud object storage can now be compressed before upload, using
+    the existing `compression` and `compression_level` configuration options. Compressed
+    WAL files are stored with the appropriate file extension (e.g. `.gz`, `.lz4`),
+    consistent with the convention already used by `barman-cloud-wal-archive`.
+
+    The following in-memory compression algorithms are supported: `gzip`, `bzip2`,
+    `xz`, `snappy`, `zstd`, and `lz4`. `pigz` and `custom` are not supported for cloud
+    WAL storage because they rely on external processes.
+
+    Example configuration:
+
+    ```ini
+    [myserver]
+    backup_method = local-to-cloud
+    archiver = on
+    wals_directory = s3://my-bucket/barman/wals
+    compression = gzip
+    compression_level = 6
+    ```
+  type: minor_change
+  jira_tickets:
+    - BAR-1124
