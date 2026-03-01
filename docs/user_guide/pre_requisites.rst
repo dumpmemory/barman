@@ -39,7 +39,7 @@ To create a superuser named ``barman`` in Postgres, run the following command on
 
     createuser -s -P barman
 
-Or, in case you opt for a user with only the required priviledges, follow these steps:
+Or, in case you opt for a user with only the required privileges, follow these steps:
 
 1. On ``pghost``, run this command to create a user named ``barman`` in Postgres:
 
@@ -86,7 +86,7 @@ you are using. This connection is required by Barman in order to coordinate its
 activities with the database server, as well as for monitoring purposes.
 
 Make sure that ``barmanhost`` can connect to the database server as superuser or with
-a user with the required priviledges. You can find detailed information about
+a user with the required privileges. You can find detailed information about
 setting up Postgres connections in the
 `Postgres Client Authentication <https://www.postgresql.org/docs/current/client-authentication.html>`_.
 
