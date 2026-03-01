@@ -1401,7 +1401,7 @@ class PostgreSQLConnection(PostgreSQL):
             if not self.has_backup_privileges:
                 raise BackupFunctionsAccessRequired(
                     "Postgres user '%s' is missing required privileges "
-                    '(see "Preliminary steps" in the Barman manual)'
+                    '(see "Pre-requisites" section in the Barman documentation)'
                     % self.conn_parameters.get("user")
                 )
 
@@ -1483,7 +1483,7 @@ class PostgreSQLConnection(PostgreSQL):
             if not self.has_monitoring_privileges:
                 raise BackupFunctionsAccessRequired(
                     "Postgres user '%s' is missing required privileges "
-                    '(see "Preliminary steps" in the Barman manual)'
+                    '(see "Pre-requisites" section in the Barman documentation)'
                     % self.conn_parameters.get("user")
                 )
 
