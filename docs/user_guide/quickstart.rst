@@ -49,7 +49,7 @@ This command creates a new Postgres superuser called **barman**, which will be u
 Barman for maintenance tasks on your Postgres server. Alternatively you can create a
 user without superuser privileges, but with the necessary permissions to perform the
 needed operations by following the recipe in
-:ref:`Postgres users pre-requisite <pre-requisites-postgres-user>`.
+:ref:`Database users pre-requisite <pre-requisites-database-users>`.
 
 .. code-block:: bash
 
@@ -216,7 +216,7 @@ This command creates a new Postgres superuser called **barman**, which will be u
 Barman for maintenance tasks as well as for issuing backup commands using the Postgres
 low-level API. Alternatively you can create a user without superuser privileges, but
 with the necessary permissions to perform the needed operations by following the recipe
-in :ref:`Postgres users pre-requisite <pre-requisites-postgres-user>`.
+in :ref:`Database users pre-requisite <pre-requisites-database-users>`.
 
 The ``createuser`` command prompts you for a password, which you are then advised to
 add to a `password file <https://www.postgresql.org/docs/current/libpq-pgpass.html>`_

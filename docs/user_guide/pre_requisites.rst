@@ -12,9 +12,9 @@ Throughout this section, we assume the following hosts:
 
 * ``barmanhost``: The host where Barman will be set up.
 
-.. _pre-requisites-postgres-user:
+.. _pre-requisites-database-users:
 
-Postgres users
+Database users
 --------------
 
 Barman requires a connection to your Postgres instance to gather information about the
