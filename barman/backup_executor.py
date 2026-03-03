@@ -1457,12 +1457,14 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             try:
                 filepath = self._ready_queue.get_nowait()
             except queue.Empty:
+                _logger.debug("No ready files in the queue, sleeping for 1 second")
                 time.sleep(1)
                 continue
 
             if filepath is None:  # Sentinel found, no more files will come
                 break
 
+            _logger.debug("Uploading file %s" % filepath)
             # The file name
             filename = os.path.basename(filepath)
             # The tarball it belongs to
