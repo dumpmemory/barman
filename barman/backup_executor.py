@@ -992,6 +992,26 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         self._upload_controller = None
         self._ready_queue = queue.Queue()
 
+        self._thread_exc = None
+        self._thread_exc_lock = threading.Lock()
+        self._thread_exc_event = threading.Event()
+
+    def _thread_wrapper(self, target, *args, **kwargs):
+        """
+        Wrapper for threads to catch exceptions and raise them in the main thread.
+
+        :param callable target: the target function to be executed in the thread
+        :param args: arguments for the target function
+        :param kwargs: keyword arguments for the target function
+        """
+        try:
+            target(*args, **kwargs)
+        except Exception as exc:
+            with self._thread_exc_lock:
+                if self._thread_exc is None:
+                    self._thread_exc = exc
+            self._thread_exc_event.set()
+
     def backup_copy(self, backup_info):
         """
         Perform the actual copy of the backup using ``pg_basebackup``.
@@ -1015,22 +1035,32 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
 
         # Start the monitoring thread to control the staging area size
         monitoring_thread = threading.Thread(
-            target=self._monitor_staging_area, args=(pg_basebackup,)
+            target=self._thread_wrapper,
+            args=(self._monitor_staging_area, pg_basebackup),
         )
         monitoring_thread.start()
 
         # Start the fetching thread to put ready files in the ready queue
         fetching_thread = threading.Thread(
-            target=self._fetch_ready_files, args=(pg_basebackup,)
+            target=self._thread_wrapper,
+            args=(self._fetch_ready_files, pg_basebackup),
         )
         fetching_thread.start()
 
         # Starts the actual upload process of files from the ready queue
         self._init_upload_controller(backup_info)
-        with closing(self._cloud_interface):
-            with closing(self._upload_controller):
-                self._upload_ready_files()
+        with closing(self._cloud_interface), closing(self._upload_controller):
+            self._upload_ready_files()
+            try:
+                # If any exception occurred, terminate pg_basebackup and reraise it
+                if self._thread_exc_event.is_set():
+                    pg_basebackup.terminate()
+                    raise self._thread_exc
+                # Otherwise wait for pg_basebackup to finish normally
+                # It should be already finished at this point, as the upload is complete
                 pg_basebackup.wait_exit()
+            finally:
+                # Regardless of failure or success, threads should be closed before main
                 monitoring_thread.join()
                 fetching_thread.join()
 
@@ -1241,6 +1271,12 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         """
         is_paused = False
         while pg_basebackup.is_running():
+            if self._thread_exc_event.is_set():
+                _logger.debug(
+                    "An error occurred in another thread, exiting monitoring thread"
+                )
+                return
+
             _logger.debug(
                 "Monitoring the staging area '%s' size" % self._cloud_staging_dir
             )
@@ -1287,6 +1323,12 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         _logger.debug("Starting to fetch ready files from %s" % self._plain_dest)
         processed = set()
         while True:
+            if self._thread_exc_event.is_set():
+                _logger.debug(
+                    "An error occurred in another thread, exiting fetching thread"
+                )
+                return
+
             # Gather all files in the monitoring directory except: those still opened,
             # those already processed, those in LAST_FILES and those to be ignored
             all_files = self._get_files_from_dir(self._plain_dest)
@@ -1406,6 +1448,12 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             This method performs steps 4 and 5 described in this class docstring.
         """
         while True:
+            if self._thread_exc_event.is_set():
+                _logger.debug(
+                    "An error occurred in a thread, stopping upload of ready files"
+                )
+                return
+
             try:
                 filepath = self._ready_queue.get_nowait()
             except queue.Empty:

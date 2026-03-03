@@ -706,6 +706,14 @@ class Command(object):
                 return self.ret
             return None
 
+    def terminate(self):
+        """
+        Terminate the command sending a SIGTERM to the subprocess
+        """
+        with self._pipe_lock:
+            if self.pipe:
+                self.pipe.terminate()
+
     def get_returncode(self):
         """
         Get the return code of the command if it has terminated
