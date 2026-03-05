@@ -92,7 +92,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -120,7 +120,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -148,7 +148,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -176,7 +176,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -208,7 +208,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -235,7 +235,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -263,7 +263,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -291,7 +291,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -319,7 +319,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -350,7 +350,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -379,7 +379,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -417,7 +417,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -449,7 +449,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         pipe.stdin.write.assert_called_with(stdin)
@@ -514,7 +514,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         pipe.stdin.write.assert_called_with(stdin)
@@ -551,7 +551,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         pipe.stdin.write.assert_called_with(stdin)
@@ -594,7 +594,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -632,7 +632,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         pipe.stdin.write.assert_called_with(stdin)
@@ -673,7 +673,7 @@ class TestCommand(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         pipe.stdin.write.assert_called_with(stdin)
@@ -996,7 +996,7 @@ class TestRsync(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -1023,7 +1023,7 @@ class TestRsync(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -1052,7 +1052,7 @@ class TestRsync(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -1105,7 +1105,7 @@ class TestRsync(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -1132,7 +1132,7 @@ class TestRsync(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -1159,7 +1159,7 @@ class TestRsync(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         pipe.stdin.write.assert_called_with("a\nb\nc\n".encode("UTF-8"))
@@ -1191,7 +1191,7 @@ class TestRsyncPgdata(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -1227,7 +1227,7 @@ class TestRsyncPgdata(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
         assert not pipe.stdin.write.called
@@ -1395,7 +1395,7 @@ class TestPgBaseBackup(object):
             ],
             close_fds=True,
             env=None,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             shell=False,
             stdout=mock.ANY,
             stderr=mock.ANY,
@@ -1865,7 +1865,7 @@ class TestReceiveXlog(object):
             stdout=PIPE,
             stderr=PIPE,
             stdin=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
         )
         assert not pipe.stdin.write.called
         pipe.stdin.close.assert_called_once_with()
@@ -2122,7 +2122,7 @@ class TestPgCombineBackup(object):
             ],
             close_fds=True,
             env=None,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             shell=False,
             stdout=mock.ANY,
             stderr=mock.ANY,
@@ -2406,7 +2406,7 @@ class TestGPG:
             stdin=PIPE,
             stdout=PIPE,
             stderr=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
 
@@ -2447,7 +2447,7 @@ class TestGPG:
             stdin=PIPE,
             stdout=PIPE,
             stderr=PIPE,
-            preexec_fn=mock.ANY,
+            restore_signals=True,
             close_fds=True,
         )
 

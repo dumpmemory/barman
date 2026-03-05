@@ -1162,11 +1162,6 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
 
         .. note::
             This method performs step 1 described in the class docstring.
-
-            The ``PgBaseBackup`` class invokes a subprocess with ``preexec_fn`` set.
-            Such parameter is not advised in a multi-threaded environment, however in
-            this case it is safe because no other thread is started before this
-            method returns, so in essence it still runs in a single-threaded context.
         """
         remote_status = self.get_remote_status()
         bandwidth_limit = self._get_bandwidth_limit(remote_status)

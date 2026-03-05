@@ -271,11 +271,6 @@ class Command(object):
         else:
             self.err_handler = self.make_logging_handler(logging.WARNING)
 
-    @staticmethod
-    def _restore_sigpipe():
-        """restore default signal handler (http://bugs.python.org/issue1652)"""
-        signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # pragma: no cover
-
     def __call__(self, *args, **kwargs):
         """
         Run the command and return the exit code.
@@ -553,7 +548,7 @@ class Command(object):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            preexec_fn=self._restore_sigpipe,
+            restore_signals=True,
             close_fds=close_fds,
         )
 
