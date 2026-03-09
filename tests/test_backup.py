@@ -123,6 +123,8 @@ class TestBackup(object):
         # BackupManager setup
         backup_manager = build_backup_manager()
         instance = mock_build_infofile.return_value
+        # mocks the keep-alive query
+        backup_manager.server.postgres.send_heartbeat_query.return_value = True, None
         # Instruct the patched method to raise a general exception
         backup_manager.executor.start_backup = Mock(side_effect=Exception("abc"))
         # invoke backup method
