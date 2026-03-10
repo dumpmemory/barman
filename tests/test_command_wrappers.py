@@ -891,6 +891,27 @@ class TestCommand(object):
         command._pipe_lock.__enter__.assert_called_once()
         command._pipe_lock.__exit__.assert_called_once()
 
+    def test_terminate(self, popen, pipe_processor_loop):
+        """
+        Test that ``get_stderr`` returns None while the subprocess is still running.
+        """
+        command = command_wrappers.Command("command")
+        command._pipe_lock = mock.Mock(__enter__=mock.Mock(), __exit__=mock.Mock())
+        pipe_mock = _mock_pipe(popen, pipe_processor_loop)
+        # Simulate a running process: poll() returns None
+        pipe_mock.poll.return_value = None
+        pipe_mock.stderr = mock.Mock(read=mock.Mock(return_value=b"error output"))
+        command.pipe = pipe_mock
+
+        err = command.get_stderr()
+
+        # While the process is running, no stderr should be returned or read
+        assert err is None
+        pipe_mock.poll.assert_called_once()
+        pipe_mock.stderr.read.assert_not_called()
+        command._pipe_lock.__enter__.assert_called_once()
+        command._pipe_lock.__exit__.assert_called_once()
+
 
 # noinspection PyMethodMayBeStatic
 class TestCommandPipeProcessorLoop(object):

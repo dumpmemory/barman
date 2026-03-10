@@ -1723,6 +1723,41 @@ class TestCloudPostgresBackupExecutor(object):
         assert executor._upload_controller is None
         assert isinstance(executor._ready_queue, queue.Queue)
 
+    @patch("barman.backup_executor.os.kill")
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_thread_wrapper(self, _, mock_kill):
+        """
+        Assert that ``_thread_wrapper`` correctly calls the target function with the
+        provided arguments and that if an exception is raised, the exception is stored
+        in ``_thread_exec`` and the event ``_thread_exec_event`` is set.
+        """
+        # GIVEN a CloudPostgresBackupExecutor instance
+        executor = CloudPostgresBackupExecutor(None)
+        executor._thread_exc = None
+        executor._thread_exc_event = mock.Mock(is_set=lambda: False)
+        executor._thread_exc_lock = mock.Mock(
+            __enter__=mock.Mock(), __exit__=mock.Mock()
+        )
+
+        # Case 1: WHEN _thread_wrapper is called with a target that executes successfully
+        target, args, kwargs = mock.Mock(), ("arg1", "arg2"), {"kwarg1": "value1"}
+        executor._thread_wrapper(target, *args, **kwargs)
+        # THEN the target function is called with the provided arguments
+        target.assert_called_once_with("arg1", "arg2", kwarg1="value1")
+
+        # Case 2: WHEN _thread_wrapper is called with a target that raises an exception
+        exception = Exception("Thread error")
+        target = mock.Mock(side_effect=exception)
+        executor._thread_wrapper(target)
+        # THEN the exception object is set in the executor using the lock
+        executor._thread_exc_lock.__enter__.assert_called_once()
+        executor._thread_exc = exception
+        executor._thread_exc_lock.__exit__.assert_called_once()
+        # AND the _thread_exc_event is set
+        executor._thread_exc_event.set.assert_called_once()
+
     @patch("barman.backup_executor.threading.Thread")
     @patch("barman.backup_executor.shutil")
     @patch(
@@ -1761,6 +1796,7 @@ class TestCloudPostgresBackupExecutor(object):
         executor._tarball_dest = "/tmp/barman/tarballs"
         executor._upload_controller = mock.Mock(statistics=lambda: {}, size=12345)
         executor._cloud_interface = mock.Mock()
+        executor._thread_exc_event = mock.Mock(is_set=lambda: False)
         # Mock the threads
         mock_monitoring_thread, mock_fetching_thread = mock.Mock(), mock.Mock()
         mock_thread.side_effect = [mock_monitoring_thread, mock_fetching_thread]
@@ -1778,8 +1814,20 @@ class TestCloudPostgresBackupExecutor(object):
         # are started in their dedicated threads
         mock_thread.assert_has_calls(
             [
-                mock.call(target=executor._monitor_staging_area, args=(pg_basebackup,)),
-                mock.call(target=executor._fetch_ready_files, args=(pg_basebackup,)),
+                mock.call(
+                    target=executor._thread_wrapper,
+                    args=(
+                        executor._monitor_staging_area,
+                        pg_basebackup,
+                    ),
+                ),
+                mock.call(
+                    target=executor._thread_wrapper,
+                    args=(
+                        executor._fetch_ready_files,
+                        pg_basebackup,
+                    ),
+                ),
             ]
         )
         mock_monitoring_thread.start.assert_called_once()
@@ -1812,6 +1860,59 @@ class TestCloudPostgresBackupExecutor(object):
             mock.call("size", executor._upload_controller.size),
             mock.call("deduplicated_size", executor._upload_controller.size),
         ]
+
+    @patch("barman.backup_executor.threading.Thread")
+    @patch("barman.backup_executor.shutil")
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor._prepare_backup_destination"
+    )
+    @patch("barman.backup_executor.CloudPostgresBackupExecutor._run_pg_basebackup")
+    @patch("barman.backup_executor.CloudPostgresBackupExecutor._init_upload_controller")
+    @patch("barman.backup_executor.CloudPostgresBackupExecutor._upload_ready_files")
+    @patch("barman.backup_executor.CloudPostgresBackupExecutor._read_backup_label")
+    @patch("barman.backup_executor.CloudPostgresBackupExecutor._save_backup_manifest")
+    @patch("barman.backup_executor.CloudPostgresBackupExecutor._upload_backup_info")
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_backup_copy_exception_is_present(
+        self,
+        _,
+        mock_upload_backup_info,
+        mock_save_backup_manifest,
+        mock_read_backup_label,
+        mock_upload_ready_files,
+        mock_init_upload_controller,
+        mock_run_pg_basebackup,
+        mock_prepare_backup_destination,
+        mock_shutil,
+        mock_thread,
+    ):
+        """
+        Test that if an exception is set in the executor during the backup copy
+        process, it is re-raised by the method.
+        """
+        # GIVEN a CloudPostgresBackupExecutor with relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        executor._cloud_staging_dir = "/tmp/barman"
+        executor._plain_dest = "/tmp/barman/plain"
+        executor._tarball_dest = "/tmp/barman/tarballs"
+        executor._upload_controller = mock.Mock(statistics=lambda: {}, size=12345)
+        executor._cloud_interface = mock.Mock()
+        executor._thread_exc_event = mock.Mock(is_set=lambda: True)
+        executor._thread_exc = ValueError("Test exception")
+        # Mock the threads
+        mock_monitoring_thread, mock_fetching_thread = mock.Mock(), mock.Mock()
+        mock_thread.side_effect = [mock_monitoring_thread, mock_fetching_thread]
+        # WHEN backup_copy is called with a BackupInfo
+        # THEN the exception set in the executor is raised
+        backup_info = mock.Mock()
+        with pytest.raises(ValueError):
+            executor.backup_copy(backup_info)
+        # AND pg_basebackup termination is waited and threads joined
+        mock_run_pg_basebackup.return_value.terminate.assert_called_once()
+        mock_monitoring_thread.join.assert_called_once()
+        mock_fetching_thread.join.assert_called_once()
 
     @patch("barman.cloud.CloudUploadController")
     @patch(
@@ -2225,6 +2326,7 @@ class TestCloudPostgresBackupExecutor(object):
         )
         executor._cloud_staging_dir = "/tmp/barman"
         executor._plain_dest = "/tmp/barman/plain"
+        executor._thread_exc_event = mock.Mock(is_set=lambda: False)
         # WHEN _monitor_staging_area is called
         executor._monitor_staging_area(pg_basebackup)
         # THEN the process is paused twice (as the first two sizes are above threshold)
@@ -2254,6 +2356,7 @@ class TestCloudPostgresBackupExecutor(object):
         )
         executor._cloud_staging_dir = "/tmp/barman"
         executor._plain_dest = "/tmp/barman/plain"
+        executor._thread_exc_event = mock.Mock(is_set=lambda: False)
         # Mock the backup process to simulate it running then ending so that
         # the monitoring loop does not run indefinitely
         pg_basebackup = mock.Mock()
@@ -2265,6 +2368,28 @@ class TestCloudPostgresBackupExecutor(object):
         # backup process ended
         mock_isdir.assert_has_calls([mock.call("/tmp/barman/plain")] * 2)
         mock_sleep.assert_has_calls([mock.call(1)] * 2)
+
+    @patch("barman.backup_executor._logger")
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_monitor_staging_area_exception_is_present(self, _, mock_logger):
+        """
+        Test that ``_monitor_staging_area`` correctly exits when an exception is set
+        in the executor, meaning that the backup copy process will be stopped.
+        """
+        # GIVEN a CloudPostgresBackupExecutor with all relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        executor._thread_exc_event = mock.Mock(is_set=lambda: True)
+        # WHEN _monitor_staging_area is called
+        pg_basebackup = mock.Mock()
+        executor._monitor_staging_area(pg_basebackup)
+        # THEN it returns without doing anything
+        # By asserting that the logger was called only once with the thread error
+        # message we ensure that the method exited right after checking the event
+        mock_logger.debug.assert_called_once_with(
+            "An error occurred in another thread, exiting monitoring thread"
+        )
 
     @patch("barman.backup_executor.time.sleep")
     @patch("barman.backup_executor.CloudPostgresBackupExecutor._get_files_from_dir")
@@ -2311,6 +2436,7 @@ class TestCloudPostgresBackupExecutor(object):
         executor = CloudPostgresBackupExecutor(None)
         executor._ready_queue = queue.SimpleQueue()
         executor._plain_dest = "/tmp/barman/plain"
+        executor._thread_exc_event = mock.Mock(is_set=lambda: False)
         # WHEN _fetch_ready_files is called
         executor._fetch_ready_files(pg_basebackup)
         # THEN the ready queue contains the expected files in the expected order
@@ -2329,6 +2455,34 @@ class TestCloudPostgresBackupExecutor(object):
         mock_ignore_file.assert_called()
         mock_is_last_file.assert_called()
         mock_sleep.assert_has_calls([mock.call(1)] * 2)
+
+    @patch("barman.backup_executor._logger")
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_fetch_ready_files_exception_is_present(self, _, mock_logger):
+        """
+        Test that ``_fetch_ready_files`` correctly exits when an exception is set
+        in the executor, meaning that the backup copy process will be stopped.
+        """
+        # GIVEN a CloudPostgresBackupExecutor with all relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        executor._plain_dest = "/tmp/barman/plain"
+        executor._thread_exc_event = mock.Mock(is_set=lambda: True)
+        # WHEN _fetch_ready_files is called
+        pg_basebackup = mock.Mock()
+        executor._fetch_ready_files(pg_basebackup)
+        # THEN it returns without doing anything
+        # By asserting the logger only has no calls after the thread error message
+        # we ensure that the method exited right after checking the event
+        mock_logger.debug.assert_has_calls(
+            [
+                mock.call("Starting to fetch ready files from /tmp/barman/plain"),
+                mock.call(
+                    "An error occurred in another thread, exiting fetching thread"
+                ),
+            ]
+        )
 
     @patch(
         "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
@@ -2457,6 +2611,7 @@ class TestCloudPostgresBackupExecutor(object):
         executor._pgdata_dest = "/tmp/barman/plain/data"
         executor._upload_controller = mock.Mock()
         executor._ready_queue = queue.SimpleQueue()
+        executor._thread_exc_event = mock.Mock(is_set=lambda: False)
         # Mock the ready queue to contain the following files
         executor._ready_queue.put("/tmp/barman/plain/data/base/4/2658")
         executor._ready_queue.put("/tmp/barman/plain/data/base/4/2672")
@@ -2538,6 +2693,27 @@ class TestCloudPostgresBackupExecutor(object):
             src="/tmp/barman/plain/data/global/pg_control",
             dst="data",
             path="global/pg_control",
+        )
+
+    @patch("barman.backup_executor._logger")
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_upload_ready_files_exception_is_present(self, _, mock_logger):
+        """
+        Test that ``_upload_ready_files`` correctly exits when an exception is set
+        in the executor, meaning that the backup copy process will be stopped.
+        """
+        # GIVEN a CloudPostgresBackupExecutor with all relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        executor._thread_exc_event = mock.Mock(is_set=lambda: True)
+        # WHEN _upload_ready_files is called
+        executor._upload_ready_files()
+        # THEN it returns without doing anything
+        # By asserting that the logger was called only once with the expected message,
+        # we ensure that the method exited right after checking the event
+        mock_logger.debug.assert_called_once_with(
+            "An error occurred in a thread, stopping upload of ready files"
         )
 
     @patch(
