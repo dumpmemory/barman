@@ -31,7 +31,6 @@ from testing_helpers import u
 from barman import command_wrappers
 from barman.command_wrappers import (
     GPG,
-    Lsof,
     PgReceiveXlog,
     StreamLineProcessor,
     full_command_quote,
@@ -2459,19 +2458,3 @@ class TestGPG:
         assert command.err is None
         assert ("GPG", 10, out) in caplog.record_tuples
         assert ("GPG", 30, err) in caplog.record_tuples
-
-
-class TestLsof:
-    """
-    Simple class for testing of the :class:`Lsof` class.
-    """
-
-    @mock.patch("barman.command_wrappers.Command.__init__", return_value=None)
-    def test__init__(self, mock_super_init):
-        pid = 1234
-        lsof = Lsof(pid)
-        mock_super_init.assert_called_once_with(
-            lsof,
-            "lsof",
-            args=["-Fn", "-p", "1234"],
-        )

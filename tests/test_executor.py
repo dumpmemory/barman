@@ -2451,7 +2451,7 @@ class TestCloudPostgresBackupExecutor(object):
         assert executor._ready_queue.empty()
         # AND also assert that the relevant methods were called as expected
         mock_get_files.assert_has_calls([mock.call("/tmp/barman/plain")] * 3)
-        mock_get_open_files.assert_has_calls([mock.call(12345)] * 3)
+        mock_get_open_files.assert_has_calls([mock.call(pg_basebackup)] * 3)
         mock_ignore_file.assert_called()
         mock_is_last_file.assert_called()
         mock_sleep.assert_has_calls([mock.call(1)] * 2)
@@ -2517,36 +2517,89 @@ class TestCloudPostgresBackupExecutor(object):
             ]
         )
 
-    @patch("barman.backup_executor.Lsof")
     @patch(
         "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
     )
-    def test_get_open_files(self, _, mock_lsof):
+    def test_get_open_files(self, _, tmpdir):
         """
-        Test that ``_get_open_files`` correctly retrieves the list of open by the
-        given process (i.e. ``pg_basebackup``) within the plain destination directory.
+        Test that ``_get_open_files`` correctly retrieves the list of open files
+        for the given ``pg_basebackup`` process, filtering only those that are inside
+        the plain directory and ignoring the rest.
         """
-        # Mock the output of lsof command to return the following lines:
-        # p6593
-        # n/tmp/barman/plain/data/base/4/2672
-        # n/usr/random/otherfile
-        mock_lsof.return_value.out = (
-            "p6593\nn/tmp/barman/plain/data/base/4/2672\nn/usr/random/otherfile\n"
-        )
-        # GIVEN a CloudPostgresBackupExecutor with all relevant attributes set
+        # GIVEN a CloudPostgresBackupExecutor with relevant attributes set
         executor = CloudPostgresBackupExecutor(None)
-        executor._plain_dest = "/tmp/barman/plain"
+        staging_dir = tmpdir.mkdir("staging")
+        plain_dir = staging_dir.mkdir("plain")
+        executor._plain_dest = str(plain_dir)
+        # Override the _FILE_DESCRIPTORS_DIRECTORY so we don't write to the actual /proc
+        executor._FILE_DESCRIPTORS_DIRECTORY = str(tmpdir) + "/{pid}/fd"
+
+        # Simulate a file descriptor directory with the following structure:
+        # /123/fd/1 (stdout)
+        # /123/fd/2 (stderr)
+        # /123/fd/40 -> symlink to /staging/plain/data/base/4/2672 (open file inside plain_dir)
+        # /123/fd/45 -> symlink to /other/file (open file outside plain_dir)
+        fd_dir = tmpdir.mkdir("123").mkdir("fd")
+        fd_dir.join("1").write("")  # stdout
+        fd_dir.join("2").write("")  # stderr
+
+        # File INSIFE plain_dir: /staging/plain/data/base/4/2672
+        segment_file = plain_dir.join("data/base/4/2672")
+        segment_file.ensure()  # Create the actual file/path
+        fd_40 = fd_dir.join("40")
+        fd_40.mksymlinkto(str(segment_file))  # Symlink from fd/40 to the target file
+
+        # File OUTSIDE plain_dir
+        other_file = tmpdir.join("other/file")
+        other_file.ensure()
+        fd_45 = fd_dir.join("45")
+        fd_45.mksymlinkto(str(other_file))  # Symlink from fd/45 to the other/ile
+
+        # WHEN _get_open_files is called with a mock pg_basebackup process
+        pg_basebackup = mock.Mock(pid=123, is_running=lambda: True)
+        result = executor._get_open_files(pg_basebackup)
+
+        # THEN it returns only the file inside plain_dir and ignores the one outside
+        assert result == [str(segment_file)]
+
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_get_open_files_process_exited_midway(self, _, tmp_path):
+        """
+        Test that ``_get_open_files`` correctly handles the case where the
+        ``pg_basebackup`` process exits midway through the retrieval of open files,
+        which leads to it returning an empty list.
+        """
+        # GIVEN a CloudPostgresBackupExecutor instance with relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        executor._FILE_DESCRIPTORS_DIRECTORY = str(tmp_path) + "/{pid}/fd"
+        pg_basebackup = mock.Mock(pid=999, is_running=lambda: True)  # Non-existent PID
+
         # WHEN _get_open_files is called
-        process_id = 123
-        result = executor._get_open_files(process_id)
-        # THEN it returns the expected list of open files within the plain directory
-        assert list(result) == ["/tmp/barman/plain/data/base/4/2672"]
-        # AND lsof is called with the expected parameters
-        mock_lsof.assert_called_once_with(
-            process_id,
-            retry_times=5,
-            retry_sleep=0.5,
-        )
+        result = executor._get_open_files(pg_basebackup)
+        # THEN it returns an empty list and does not raise an exception
+        assert result == []
+
+    @patch(
+        "barman.backup_executor.CloudPostgresBackupExecutor.__init__", return_value=None
+    )
+    def test_get_open_files_process_not_running(self, _):
+        """
+        Test that ``_get_open_files`` correctly handles the case where the
+        ``pg_basebackup`` process is not running, which leads to it returning
+        an empty list.
+        """
+        # GIVEN a CloudPostgresBackupExecutor instance with relevant attributes set
+        executor = CloudPostgresBackupExecutor(None)
+        pg_basebackup = mock.Mock(
+            pid=123, is_running=lambda: False
+        )  # Process not running
+
+        # WHEN _get_open_files is called
+        result = executor._get_open_files(pg_basebackup)
+        # THEN it returns an empty list without attempting to read file descriptors
+        assert result == []
 
     @patch("barman.backup_executor.path_allowed", return_value=False)
     @patch(
