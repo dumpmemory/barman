@@ -45,7 +45,7 @@ import dateutil.parser
 
 from barman import output, xlog
 from barman.cloud_providers import get_snapshot_interface_from_server_config
-from barman.command_wrappers import Lsof, PgBaseBackup
+from barman.command_wrappers import PgBaseBackup
 from barman.compression import get_pg_basebackup_compression
 from barman.config import BackupOptions
 from barman.copy_controller import RsyncCopyController
@@ -965,6 +965,11 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
         r"^.*PG_VERSION",
     ]
 
+    # Directory which contains file descriptors of a running process (Linux only)
+    # This is used to in step 3 to keep track of files currently opened by pg_basebackup
+    # i.e. those which are not ready yet to be uploaded to the cloud
+    _FILE_DESCRIPTORS_DIRECTORY = "/proc/{pid}/fd"
+
     def __init__(self, backup_manager):
         """
         Constructor
@@ -1327,7 +1332,7 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
             # Gather all files in the monitoring directory except: those still opened,
             # those already processed, those in LAST_FILES and those to be ignored
             all_files = self._get_files_from_dir(self._plain_dest)
-            open_files = self._get_open_files(pg_basebackup.pid)
+            open_files = self._get_open_files(pg_basebackup)
             for filepath in all_files:
                 if (
                     filepath not in processed
@@ -1370,32 +1375,39 @@ class CloudPostgresBackupExecutor(PostgresBackupExecutor):
                 filepath = os.path.join(dirpath, filename)
                 yield filepath
 
-    def _get_open_files(self, pid):
+    def _get_open_files(self, pg_basebackup):
         """
         Get the list of files currently opened by the given process.
 
-        This is used to determine which files are still being written by
-        ``pg_basebackup``.
-
-        :param int pid: the PID of the ``pg_basebackup`` process
-        :return list[str]: list of paths of open files
-
-        .. note::
-            The ``lsof`` command exits with a non-zero code if no files are found to
-            be opened. This is not an error condition for our purposes.
-            For this reason, we retry the command multiple times with a small sleep
-            between each try. If all retries fail, we can assume that the non-zero
-            exit code is due to an actual error and let the appropriate exception
-            propagate.
+        :param barman.command_wrappers.PgBaseBackup pg_basebackup: the running
+            ``pg_basebackup`` process
+        :return list[str]: list of file paths
         """
-        lsof = Lsof(pid, retry_times=5, retry_sleep=0.5)
-        lsof()
+        if not pg_basebackup.is_running():
+            return []
+
+        fd_dir = self._FILE_DESCRIPTORS_DIRECTORY.format(pid=pg_basebackup.pid)
         open_files = []
-        # Format of lsof output. Check the Lsof class for an output example
-        for line in lsof.out.splitlines()[1:]:  # Skip header line
-            line = line.strip()[1:]  # Remove spaces and leading 'n'
-            if line.startswith(self._plain_dest):  # Only if in the plain dir
-                open_files.append(line)
+        try:
+            for fd in os.listdir(fd_dir):
+                try:
+                    target = os.readlink(os.path.join(fd_dir, fd))
+                    if target.startswith(self._plain_dest):
+                        open_files.append(target)
+                except OSError as ex:
+                    # FD may have been closed between listdir and readlink
+                    _logger.debug(
+                        "Could not read file descriptor %s for pg_basebackup process: %s"
+                        % (fd, ex)
+                    )
+                    continue
+        except OSError as ex:
+            # Process may have exited
+            _logger.debug(
+                "Could not access file descriptors for pg_basebackup process: %s" % ex
+            )
+            return []
+
         return open_files
 
     def _ignore_file(self, file):

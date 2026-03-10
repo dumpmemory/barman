@@ -1533,27 +1533,6 @@ class GPG(Command):
         Command.__init__(self, gpg, args=options, **kwargs)
 
 
-class Lsof(Command):
-    """
-    Wrapper class for the ``lsof`` system command
-    An example output of the command as it is here is below:
-        p227704
-        n/home/user/path/to/directory/file1
-        n/
-        n/usr/pgsql-18/bin/pg_receivewal
-        n/usr/lib/locale/locale-archive
-        ...
-    """
-
-    def __init__(self, pid, **kwargs):
-        """
-        Constructor
-        :param int pid: process ID to query for open files
-        """
-        options = ["-Fn", "-p", str(pid)]
-        Command.__init__(self, "lsof", args=options, **kwargs)
-
-
 def shell_quote(arg):
     """
     Quote a string argument to be safely included in a shell command line.
