@@ -441,16 +441,20 @@ its location can be configured with the options ``cloud_staging_max_size`` and
 
 This is an experimental feature. For this reason, a few limitations apply:
 
-1. Restoring backups taken with this method is currently not supported directly in Barman, and it's the user's responsibility to perform this manually or through custom scripts/processes. Restoring such backups will come in a future release;
+1. Restoring backups taken with this method is currently not supported directly in Barman,
+   and it's the user's responsibility to perform this manually or through custom
+   scripts/processes. Restoring such backups will come in a future release;
 2. Currently, only S3-compatible storages are supported as destination;
 3. Encryption of backups and WALs is not supported;
 4. Compression of backups is not supported. WAL compression is supported except when
-   using ``pigz`` or ``custom`` as compression methods. 
+   using ``pigz`` or ``custom`` as compression methods;
 5. Barman subcommands which require access to the backup or WAL files, such as
    ``verify-backup``, ``generate-manifest``, ``rebuild-xlogdb`` and ``get-wal``, are
-   not supported and will fail if executed.
+   not supported and will fail if executed;
 6. The Barman :ref:`geographical-redundancy` feature and its related commands are not
-   supported.
+   supported;
+7. For now this feature works only on Linux-based distributions and is not
+   supported on BSD-derived systems (such as FreeBSD or OpenBSD).
 
 
 .. _backup-rsync-backup:
