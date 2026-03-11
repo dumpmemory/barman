@@ -40,314 +40,13 @@ the streaming connection.
   method for taking backups is through ``concurrent`` backup. If ``backup_options`` is
   unset, Barman will automatically set it to ``concurrent_backup``.
 
-.. _backup-requirements:
-
-Requirements for backups
-------------------------
-
-The most critical requirement for a Barman server is the amount of disk space available.
-You are recommended to plan the required disk space based on the size of the clusters
-to backup, number of WAL files generated per day, frequency of backups, and retention
-policies.
-
-Barman developers regularly test Barman with XFS and ext4 filesystems. Like PostgreSQL,
-Barman does nothing special for NFS mountpoints used for storing backups and WALs.
-The following points are required for safely using Barman with NFS:
-
-  * The ``barman_lock_directory`` should be on a local filesystem.
-  * Use at least NFS protocol version 4.
-  * The file system must be mounted using the hard and synchronous options
-    (``hard``,``sync``).
-
-
-.. _backup-incremental-backups:
-
-Incremental Backups
--------------------
-
-Incremental backups involve using an existing backup as a reference to copy only the
-data changes that have occurred since the last backup on the Postgres server.
-
-The primary objectives of incremental backups in Barman are:
-
-* Shorten the duration of the full backup process.
-* Reduce disk space usage by eliminating redundant data across periodic backups (data
-  deduplication).
-
-Barman supports two types of incremental backups:
-
-* File-level incremental backups (using ``rsync``)
-* Block-level incremental backups (using ``pg_basebackup`` with Postgres 17)
-
-.. note::
-    Incremental backups of different types are not compatible with each other. For
-    example, you cannot take a block-level incremental backup on top of an rsync backup,
-    nor can you take a file-level incremental backup on top of a streaming backup created
-    with ``pg_basebackup``.
-
-.. _backup-managing-bandwidth-usage:
-
-Managing Bandwidth Usage
-------------------------
-
-You can control I/O bandwidth usage with the ``bandwidth_limit`` option (global or per
-server) by specifying a maximum rate in kilobytes per second. By default, this option is
-set to ``0``, meaning there is no bandwidth limit.
-
-If you need to manage I/O workload on specific tablespaces, use the
-``tablespace_bandwidth_limit`` option (global or per server) to set limits for
-individual tablespaces:
-
-.. code-block:: text
-
-    tablespace_bandwidth_limit = tbname:bwlimit[, tbname:bwlimit, ...]
-
-This option takes a comma-separated list of tablespace name and bandwidth limit pairs
-(in kilobytes per second).
-
-When backing up a server, Barman will check for tablespaces listed in this option. If a
-matching tablespace is found, the specified bandwidth limit will be applied. If no match
-is found, the default bandwidth limit for the server will be used.
-
-.. important::
-    The ``bandwidth_limit`` option is available with ``rsync``, ``postgres`` and
-    ``local-to-cloud`` backup methods, but the ``tablespace_bandwidth_limit`` option is
-    only applicable when using ``rsync``.
-
-.. _backup-network-compression:
-
-Network Compression
--------------------
-
-You can reduce the size of data transferred over the network by using network compression. This
-can be enabled with the ``network_compression`` option (global or per server):
-
-.. code-block:: text
-
-    network_compression = true | false
-
-.. important::
-    The ``network_compression`` option is not available with the ``postgres`` backup
-    method.
-
-Setting this option to ``true`` will enable data compression for network transfers
-during both backup and recovery. By default, this option is set to ``false``.
-
-.. _backup-backup-compression:
-
-Backup Compression
-------------------
-
-Barman supports backup compression using the ``pg_basebackup`` tool. This feature can be
-enabled with the ``backup_compression`` option (global or per server).
-
-.. important::
-    The ``backup_compression`` option, along with other options discussed here, is only
-    available with the ``postgres`` backup method.
-
-Compression Algorithms
-""""""""""""""""""""""
-
-Setting the ``backup_compression`` option will compress the backup using the specified
-algorithm. Supported algorithms in Barman are: ``gzip``, ``lz4``, ``zstd``, and ``none``
-(which results in an uncompressed backup).
-
-.. code-block:: text
-
-    backup_compression = gzip | lz4 | zstd | none
-
-Barman requires the corresponding CLI utilities for the selected compression algorithm
-to be installed on both the Barman server and Postgres server. These utilities can be
-installed via system packages named ``gzip``, ``lz4``, and ``zstd`` on Debian, Ubuntu,
-RedHat, CentOS, and SLES systems.
-
-* On Ubuntu 18.04 (bionic), the ``lz4`` utility is available in the ``liblz4-tool``
-  package.
-
-* ``lz4`` and ``zstd`` are supported with Postgres 15 or higher.
-
-.. important::
-    If using ``backup_compression``, you must also set ``staging_path`` and
-    ``staging_location`` to enable recovery of compressed backups. Refer to the
-    :ref:`Recovering Compressed backups <recovery-recovering-compressed-backups>`
-    section for details.
-
-Compression Workers
-"""""""""""""""""""
-
-You can use multiple threads to speed up compression by setting the
-``backup_compression_workers`` option (default is ``0``):
-
-.. code-block:: text
-
-    backup_compression_workers = 2
-
-.. note::
-    This option is available only with ``zstd`` compression. ``zstd`` version must be
-    1.5.0 or higher, or 1.4.4 or higher with multithreading enabled.
-
-Compression Level
-"""""""""""""""""
-
-Specify the compression level with the ``backup_compression_level`` option. This should
-be an integer value supported by the chosen compression algorithm. If not specified, the
-default value for the algorithm will be used.
-
-* For ``none`` compression, ``backup_compression_level`` must be set to ``0``.
-
-* The available levels and default values depend on the chosen compression algorithm.
-  Check the :ref:`backup configuration options <configuration-options-backups>` section
-  for details.
-
-* For Postgres versions prior to 15, ``gzip`` supports only
-  ``backup_compression_level = 0``, which uses the default compression level.
-
-Compression Location
-""""""""""""""""""""
-
-For Postgres 15 or higher, you can choose where compression occurs: on the ``server``
-or the ``client``. Set the ``backup_compression_location`` option:
-
-.. code-block:: text
-
-    backup_compression_location = server | client
-
-* ``server``: Compression occurs on the Postgres server, reducing network bandwidth
-  but increasing server workload.
-* ``client``: Compression is handled by ``pg_basebackup`` on the client side.
-
-You can also specify the backup format using ``backup_compression_format``:
-
-.. code-block:: text
-
-    backup_compression_format = plain | tar
-
-* ``plain``: ``pg_basebackup`` decompresses data before writing to disk.
-* ``tar``: Backups are written as compressed tarballs (default).
-
-.. note::
-  If setting ``backup_compression_location = server`` and
-  ``backup_compression_format = plain``, you can reduce network usage given the files
-  are compressed on the server side and decompressed on the client side. This can be
-  useful when the network bandwidth is limited but CPU is not, and backups need to be
-  stored uncompressed.
-
-Depending on the chosen ``backup_compression`` and ``backup_compression_format``, you
-may need to install additional tools on both the Postgres and Barman servers.
-
-Refer to the table below to select the appropriate tools for your configuration.
-
-.. list-table::
-    :widths: 5 5 5 5
-    :header-rows: 1
-    
-    * - **backup_compression**
-      - **backup_compression_format**
-      - **Postgres**
-      - **Barman**
-    * - gzip
-      - plain
-      - tar
-      - None
-    * - gzip
-      - tar
-      - tar
-      - tar
-    * - lz4
-      - plain
-      - tar, lz4
-      - None
-    * - lz4
-      - tar
-      - tar, lz4
-      - tar, lz4
-    * - zstd
-      - plain
-      - tar, zstd
-      - None
-    * - zstd
-      - tar
-      - tar, zstd
-      - tar, zstd
-    * - none
-      - tar
-      - tar
-      - tar
-
-
-.. _backup-encryption:
-
-Backup Encryption
------------------
-
-Barman supports encryption of both backups and WAL files. This feature can be enabled
-with the ``encryption`` option (global or per server).
-
-Requirements
-""""""""""""
-
-The current encryption implementation for backups relies on the ``pg_basebackup``
-ability to take backups in tar format. To achieve that, you need to set your
-configuration as follows:
-
-* ``backup_method = postgres``
-* ``backup_compression = <compression_method>`` (``none`` for no compression)
-* ``backup_compression_format = tar``
-
-The backed up tar files are encrypted immediately after ``pg_basebackup`` finishes
-writing them on the Barman server disk.
-
-Encryption Methods
-""""""""""""""""""
-
-Setting the ``encryption`` option dictates the encryption method used for base backups
-and WALs. Currently, only ``gpg`` and ``none`` (no encryption) are accepted values.
-
-.. note::
-  For details about WAL encryption, refer to :ref:`wal_archiving-WAL-encryption`.
-
-.. note::
-  For details about decryption, refer to :ref:`recovery-recovering-encrypted-backups`.
-
-GPG
-^^^
-
-This method is enabled by setting ``encryption = gpg`` in the configuration file.
-
-To use :term:`GPG` for encryption, you need ``gpg`` version 2.1 or higher installed on
-the server. You must also generate a GPG key pair in advance and configure the
-``encryption_key_id`` option with the ID or recipient's email of the generated public
-key. The corresponding private key must be present in GPG's keyring and secured with a
-strong passphrase.
-
-.. _backup-immediate-checkpoint:
-
-Immediate Checkpoint
---------------------
-
-Before starting a backup, Barman requests a checkpoint, which can generate additional
-workload. By default, this checkpoint is managed according to Postgres' workload control
-settings, which may delay the backup.
-
-You can modify this default behavior using the ``immediate_checkpoint`` configuration
-option (default is ``false``).
-
-If ``immediate_checkpoint`` is set to ``true``, Postgres will perform the checkpoint at
-maximum speed without throttling, allowing the backup to begin as quickly as possible.
-You can override this configuration at any time by using one of the following options
-with the ``barman backup`` command:
-
-* ``--immediate-checkpoint``: Forces an immediate checkpoint.
-* ``--no-immediate-checkpoint``: Waits for the checkpoint to complete before starting
-  the backup.
-
 .. _backup-streaming-backup:
 
 Streaming Backup
 ----------------
 
 Barman can perform a backup of a Postgres server using a streaming connection with
-``pg_basebackup``. 
+``pg_basebackup``.
 
 .. important::
     ``pg_basebackup`` must be installed on the Barman server. It is recommended to use
@@ -365,7 +64,7 @@ To configure streaming backups, set the ``backup_method`` to ``postgres``:
 .. _backup-streaming-backup-block-level-incremental:
 
 Block-level Incremental Backup
-""""""""""""""""""""""""""""""
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This type of backup uses the native incremental backup feature introduced in Postgres
 17.
@@ -400,7 +99,7 @@ To use block-level incremental backups in Barman, you must:
 .. _backup-streaming-backup-cloud:
 
 Streaming backups to the cloud
-""""""""""""""""""""""""""""""
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 When configured with ``backup_method = postgres``, Barman supports streaming backups
 directly to a cloud storage. In this mode, backups are streamed from the Postgres
@@ -441,9 +140,9 @@ its location can be configured with the options ``cloud_staging_max_size`` and
 
 This is an experimental feature. For this reason, a few limitations apply:
 
-1. Restoring backups taken with this method is currently not supported directly in Barman,
-   and it's the user's responsibility to perform this manually or through custom
-   scripts/processes. Restoring such backups will come in a future release;
+1. Restoring backups taken with this method is currently not supported directly in
+   Barman, and it's the user's responsibility to perform this manually or through
+   custom scripts/processes. Restoring such backups will come in a future release;
 2. Currently, only S3-compatible storages are supported as destination;
 3. Encryption of backups and WALs is not supported;
 4. Compression of backups is not supported. WAL compression is supported except when
@@ -452,15 +151,15 @@ This is an experimental feature. For this reason, a few limitations apply:
    ``verify-backup``, ``generate-manifest``, ``rebuild-xlogdb`` and ``get-wal``, are
    not supported and will fail if executed;
 6. The Barman :ref:`geographical-redundancy` feature and its related commands are not
-   supported;
+   supported.
 7. For now this feature works only on Linux-based distributions and is not
    supported on BSD-derived systems (such as FreeBSD or OpenBSD).
 
 
 .. _backup-rsync-backup:
 
-Backup with Rsync through SSH
------------------------------
+Rsync Backups
+-------------
 
 Barman can perform a backup of a Postgres server using Rsync, which uses SSH as a
 transport mechanism.
@@ -482,8 +181,8 @@ the SSH connection details from the Barman server to the Postgres server.
     prevent firewall or router disconnections due to idle connections. You can control or
     disable this mechanism using the ``keepalive_interval`` configuration option.
 
-File-Level Incremental Backups
-""""""""""""""""""""""""""""""
+File-Level Incremental Backups with Rsync
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 File-level incremental backups rely on rsync and alternatively hard links, so both the
 operating system and file system where the backup data is stored must support these
@@ -528,10 +227,8 @@ the Barman backup command. For example, to run a one-off incremental backup, use
     initial backup has no effect, as it will still be treated as a full backup due to
     the absence of existing files to link or copy.
 
-.. _backup-concurrent-backup-of-a-standby:
-
-Backup with Rsync locally
--------------------------
+Local Rsync Backups
+^^^^^^^^^^^^^^^^^^^
 
 Under special circumstances, Barman can be installed on the same server where the
 Postgres instance resides, with backed up data stored on a separate volume from
@@ -570,8 +267,10 @@ In order to use local backup for a given server in Barman, you need to set
 reason it is required that Barman runs with the same user as Postgres).
 
 
-Concurrent Backup of a Standby
-------------------------------
+.. _backup-concurrent-backup-of-a-standby:
+
+Backup from a Standby Server
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 When performing a backup from a standby server, ensure the following configuration
 options are set to point to the standby:
@@ -619,35 +318,298 @@ or
 .. note::
     For Postgres 10 and earlier, Barman cannot handle simultaneous WAL streaming and
     archiving on a standby. You must disable one if the other is in use, as WALs from
-    Postgres 10 and earlier may differ at the binary level, leading to false-positive 
+    Postgres 10 and earlier may differ at the binary level, leading to false-positive
     detection issues in Barman.
 
-.. _backup-managing-external-configuration-files:
 
-Managing external configuration files
--------------------------------------
+General Backup Settings
+-----------------------
 
-Barman handles :term:`external configuration files <External Configuration Files>`
-differently depending on the backup method used. With the ``rsync`` method, external
-files are copied into the PGDATA directory. However, with the ``postgres`` method,
-external files are not copied, and a warning is issued to notify the user about those
-files.
+.. _backup-requirements:
 
-Refer to the :ref:`Managing external configuration files <recovery-managing-external-configuration-files>`
-section in the recovery chapter to understand how external files are handled when
-restoring a backup.
+Requirements for backups
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. hint::
-    Since Barman does not establish SSH connections to the PostgreSQL host when
-    ``backup_method = postgres``, you may want to configure a post-backup hook
-    and use the output of ``barman show-server`` command to back up the external
-    configuration files on your own right after the backup is finished.
+The most critical requirement for a Barman server is the amount of disk space available.
+You are recommended to plan the required disk space based on the size of the clusters
+to backup, number of WAL files generated per day, frequency of backups, and retention
+policies.
+
+Barman developers regularly test Barman with XFS and ext4 filesystems. Like PostgreSQL,
+Barman does nothing special for NFS mountpoints used for storing backups and WALs.
+The following points are required for safely using Barman with NFS:
+
+  * The ``barman_lock_directory`` should be on a local filesystem.
+  * Use at least NFS protocol version 4.
+  * The file system must be mounted using the hard and synchronous options
+    (``hard``, ``sync``).
+
+
+.. _backup-incremental-backups:
+
+Incremental Backups
+^^^^^^^^^^^^^^^^^^^
+
+Incremental backups involve using an existing backup as a reference to copy only the
+data changes that have occurred since the last backup on the Postgres server.
+
+The primary objectives of incremental backups in Barman are:
+
+* Shorten the duration of the full backup process.
+* Reduce disk space usage by eliminating redundant data across periodic backups (data
+  deduplication).
+
+Barman supports two types of incremental backups:
+
+* File-level incremental backups (using ``rsync``)
+* Block-level incremental backups (using ``pg_basebackup`` with Postgres 17)
+
+.. note::
+    Incremental backups of different types are not compatible with each other. For
+    example, you cannot take a block-level incremental backup on top of an rsync backup,
+    nor can you take a file-level incremental backup on top of a streaming backup created
+    with ``pg_basebackup``.
+
+.. _backup-managing-bandwidth-usage:
+
+Managing Bandwidth Usage
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+You can control I/O bandwidth usage with the ``bandwidth_limit`` option (global or per
+server) by specifying a maximum rate in kilobytes per second. By default, this option is
+set to ``0``, meaning there is no bandwidth limit.
+
+If you need to manage I/O workload on specific tablespaces, use the
+``tablespace_bandwidth_limit`` option (global or per server) to set limits for
+individual tablespaces:
+
+.. code-block:: text
+
+    tablespace_bandwidth_limit = tbname:bwlimit[, tbname:bwlimit, ...]
+
+This option takes a comma-separated list of tablespace name and bandwidth limit pairs
+(in kilobytes per second).
+
+When backing up a server, Barman will check for tablespaces listed in this option. If a
+matching tablespace is found, the specified bandwidth limit will be applied. If no match
+is found, the default bandwidth limit for the server will be used.
+
+.. important::
+    The ``bandwidth_limit`` option is available with ``rsync``, ``postgres`` and
+    ``local-to-cloud`` backup methods, but the ``tablespace_bandwidth_limit`` option is
+    only applicable when using ``rsync``.
+
+.. _backup-network-compression:
+
+Network Compression
+^^^^^^^^^^^^^^^^^^^
+
+You can reduce the size of data transferred over the network by using network compression. This
+can be enabled with the ``network_compression`` option (global or per server):
+
+.. code-block:: text
+
+    network_compression = true | false
+
+.. important::
+    The ``network_compression`` option is not available with the ``postgres`` backup
+    method.
+
+Setting this option to ``true`` will enable data compression for network transfers
+during both backup and recovery. By default, this option is set to ``false``.
+
+.. _backup-backup-compression:
+
+Backup Compression
+^^^^^^^^^^^^^^^^^^
+
+Barman supports backup compression using the ``pg_basebackup`` tool. This feature can be
+enabled with the ``backup_compression`` option (global or per server).
+
+.. important::
+    The ``backup_compression`` option, along with other options discussed here, is only
+    available with the ``postgres`` backup method.
+
+Compression Algorithms
+~~~~~~~~~~~~~~~~~~~~~~
+
+Setting the ``backup_compression`` option will compress the backup using the specified
+algorithm. Supported algorithms in Barman are: ``gzip``, ``lz4``, ``zstd``, and ``none``
+(which results in an uncompressed backup).
+
+.. code-block:: text
+
+    backup_compression = gzip | lz4 | zstd | none
+
+Barman requires the corresponding CLI utilities for the selected compression algorithm
+to be installed on both the Barman server and Postgres server. These utilities can be
+installed via system packages named ``gzip``, ``lz4``, and ``zstd`` on Debian, Ubuntu,
+RedHat, CentOS, and SLES systems.
+
+* On Ubuntu 18.04 (bionic), the ``lz4`` utility is available in the ``liblz4-tool``
+  package.
+
+* ``lz4`` and ``zstd`` are supported with Postgres 15 or higher.
+
+.. important::
+    If using ``backup_compression``, you must also set ``staging_path`` and
+    ``staging_location`` to enable recovery of compressed backups. Refer to the
+    :ref:`Recovering Compressed backups <recovery-recovering-compressed-backups>`
+    section for details.
+
+Compression Workers
+~~~~~~~~~~~~~~~~~~~
+
+You can use multiple threads to speed up compression by setting the
+``backup_compression_workers`` option (default is ``0``):
+
+.. code-block:: text
+
+    backup_compression_workers = 2
+
+.. note::
+    This option is available only with ``zstd`` compression. ``zstd`` version must be
+    1.5.0 or higher, or 1.4.4 or higher with multithreading enabled.
+
+Compression Level
+~~~~~~~~~~~~~~~~~
+
+Specify the compression level with the ``backup_compression_level`` option. This should
+be an integer value supported by the chosen compression algorithm. If not specified, the
+default value for the algorithm will be used.
+
+* For ``none`` compression, ``backup_compression_level`` must be set to ``0``.
+
+* The available levels and default values depend on the chosen compression algorithm.
+  Check the :ref:`backup configuration options <configuration-options-backups>` section
+  for details.
+
+* For Postgres versions prior to 15, ``gzip`` supports only
+  ``backup_compression_level = 0``, which uses the default compression level.
+
+Compression Location
+~~~~~~~~~~~~~~~~~~~~
+
+For Postgres 15 or higher, you can choose where compression occurs: on the ``server``
+or the ``client``. Set the ``backup_compression_location`` option:
+
+.. code-block:: text
+
+    backup_compression_location = server | client
+
+* ``server``: Compression occurs on the Postgres server, reducing network bandwidth
+  but increasing server workload.
+* ``client``: Compression is handled by ``pg_basebackup`` on the client side.
+
+You can also specify the backup format using ``backup_compression_format``:
+
+.. code-block:: text
+
+    backup_compression_format = plain | tar
+
+* ``plain``: ``pg_basebackup`` decompresses data before writing to disk.
+* ``tar``: Backups are written as compressed tarballs (default).
+
+.. note::
+  If setting ``backup_compression_location = server`` and
+  ``backup_compression_format = plain``, you can reduce network usage given the files
+  are compressed on the server side and decompressed on the client side. This can be
+  useful when the network bandwidth is limited but CPU is not, and backups need to be
+  stored uncompressed.
+
+Depending on the chosen ``backup_compression`` and ``backup_compression_format``, you
+may need to install additional tools on both the Postgres and Barman servers.
+
+Refer to the table below to select the appropriate tools for your configuration.
+
+.. list-table::
+    :widths: 5 5 5 5
+    :header-rows: 1
+
+    * - **backup_compression**
+      - **backup_compression_format**
+      - **Postgres**
+      - **Barman**
+    * - gzip
+      - plain
+      - tar
+      - None
+    * - gzip
+      - tar
+      - tar
+      - tar
+    * - lz4
+      - plain
+      - tar, lz4
+      - None
+    * - lz4
+      - tar
+      - tar, lz4
+      - tar, lz4
+    * - zstd
+      - plain
+      - tar, zstd
+      - None
+    * - zstd
+      - tar
+      - tar, zstd
+      - tar, zstd
+    * - none
+      - tar
+      - tar
+      - tar
+
+
+.. _backup-encryption:
+
+Backup Encryption
+^^^^^^^^^^^^^^^^^
+
+Barman supports encryption of both backups and WAL files. This feature can be enabled
+with the ``encryption`` option (global or per server).
+
+Requirements
+~~~~~~~~~~~~
+
+The current encryption implementation for backups relies on the ``pg_basebackup``
+ability to take backups in tar format. To achieve that, you need to set your
+configuration as follows:
+
+* ``backup_method = postgres``
+* ``backup_compression = <compression_method>`` (``none`` for no compression)
+* ``backup_compression_format = tar``
+
+The backed up tar files are encrypted immediately after ``pg_basebackup`` finishes
+writing them on the Barman server disk.
+
+Encryption Methods
+~~~~~~~~~~~~~~~~~~
+
+Setting the ``encryption`` option dictates the encryption method used for base backups
+and WALs. Currently, only ``gpg`` and ``none`` (no encryption) are accepted values.
+
+.. note::
+  For details about WAL encryption, refer to :ref:`wal_archiving-WAL-encryption`.
+
+.. note::
+  For details about decryption, refer to :ref:`recovery-recovering-encrypted-backups`.
+
+GPG
+~~~
+
+This method is enabled by setting ``encryption = gpg`` in the configuration file.
+
+To use :term:`GPG` for encryption, you need ``gpg`` version 2.1 or higher installed on
+the server. You must also generate a GPG key pair in advance and configure the
+``encryption_key_id`` option with the ID or recipient's email of the generated public
+key. The corresponding private key must be present in GPG's keyring and secured with a
+strong passphrase.
 
 
 .. _backup-backups-on-immutable-storage:
 
 Using an immutable storage for backups
---------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Barman can be configured to store backups on immutable storage to protect against
 malicious actors or accidental deletions. Such storage may also be referred to as
@@ -701,7 +663,7 @@ problematic when backups and WAL files are stored in a :term:`WORM` environment.
     for more information.
 
 Current limitations
-"""""""""""""""""""
+~~~~~~~~~~~~~~~~~~~
 
 The current implementation of immutable backup support in Barman has the following 
 limitation:
@@ -728,6 +690,50 @@ enough time for Barman to complete any necessary operations.
 
 Given these constraints, users should evaluate whether the current implementation meets
 their requirements before enabling immutable backup support.
+
+
+.. _backup-managing-external-configuration-files:
+
+Managing external configuration files
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Barman handles :term:`external configuration files <External Configuration Files>`
+differently depending on the backup method used. With the ``rsync`` method, external
+files are copied into the PGDATA directory. However, with the ``postgres`` method,
+external files are not copied, and a warning is issued to notify the user about those
+files.
+
+Refer to the :ref:`Managing external configuration files <recovery-managing-external-configuration-files>`
+section in the recovery chapter to understand how external files are handled when
+restoring a backup.
+
+.. hint::
+    Since Barman does not establish SSH connections to the PostgreSQL host when
+    ``backup_method = postgres``, you may want to configure a post-backup hook
+    and use the output of ``barman show-server`` command to back up the external
+    configuration files on your own right after the backup is finished.
+
+.. _backup-immediate-checkpoint:
+
+Immediate Checkpoint
+^^^^^^^^^^^^^^^^^^^^
+
+Before starting a backup, Barman requests a checkpoint, which can generate additional
+workload. By default, this checkpoint is managed according to Postgres' workload control
+settings, which may delay the backup.
+
+You can modify this default behavior using the ``immediate_checkpoint`` configuration
+option (default is ``false``).
+
+If ``immediate_checkpoint`` is set to ``true``, Postgres will perform the checkpoint at
+maximum speed without throttling, allowing the backup to begin as quickly as possible.
+You can override this configuration at any time by using one of the following options
+with the ``barman backup`` command:
+
+* ``--immediate-checkpoint``: Forces an immediate checkpoint.
+* ``--no-immediate-checkpoint``: Waits for the checkpoint to complete before starting
+  the backup.
+
 
 .. _backup-cloud-snapshot-backups:
 
@@ -773,7 +779,7 @@ configuration file:
     recovery.
 
 Requirements and Configuration
-""""""""""""""""""""""""""""""
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 To use the snapshot backup method with Barman, your deployment must meet these
 requirements:
@@ -790,7 +796,7 @@ requirements:
     system or other mechanisms.
 
 Google Cloud Platform
-"""""""""""""""""""""
+^^^^^^^^^^^^^^^^^^^^^
 
 To use snapshot backups on :term:`GCP` with Barman, please ensure the following:
 
@@ -846,7 +852,7 @@ The fields ``gcp_project`` and ``gcp_zone`` are configuration options specific t
     gcp_zone = ZONE
 
 Microsoft Azure
-"""""""""""""""
+^^^^^^^^^^^^^^^
 
 To use snapshot backups on Azure with Barman, ensure the following:
 
@@ -906,7 +912,7 @@ options specific to Azure.
     azure_resource_group = AZURE_RESOURCE_GROUP
     
 Amazon Web Services
-"""""""""""""""""""
+^^^^^^^^^^^^^^^^^^^
 
 To use snapshot backups on :term:`AWS` with Barman, please ensure the following:
 
@@ -1008,7 +1014,7 @@ To lock a snapshot during backup creation, you need to configure the following o
 For the concepts behing AWS Snapshot Lock, refer to the `Amazon EBS snapshot lock concepts <https://docs.aws.amazon.com/ebs/latest/userguide/snapshot-lock-concepts.html>`_.
 
 Backup Process
-""""""""""""""
+^^^^^^^^^^^^^^
 
 Here is an overview of the snapshot backup process:
 
@@ -1030,7 +1036,7 @@ Here is an overview of the snapshot backup process:
    mount point and options for each disk are recorded in the backup metadata.
 
 Metadata
-""""""""
+^^^^^^^^
 
 Regardless of whether you provision recovery disks and instances using
 infrastructure-as-code, ad-hoc automation, or manually, you will need to use Barman to
