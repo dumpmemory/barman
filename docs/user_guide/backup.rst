@@ -35,6 +35,20 @@ file-level incremental backups. Streaming backups were introduced in this versio
 Starting with version 3.11, Barman also supports block-level incremental backups through
 the streaming connection.
 
+The most critical requirement for a Barman server is the amount of disk space available.
+You are recommended to plan the required disk space based on the size of the clusters
+to backup, number of WAL files generated per day, frequency of backups, and retention
+policies.
+
+Barman developers regularly test Barman with XFS and ext4 filesystems. Like PostgreSQL,
+Barman does nothing special for NFS mountpoints used for storing backups and WALs.
+The following points are required for safely using Barman with NFS:
+
+  * The ``barman_lock_directory`` should be on a local filesystem.
+  * Use at least NFS protocol version 4.
+  * The file system must be mounted using the hard and synchronous options
+    (``hard``, ``sync``).
+
 .. important::
   For Postgres 15 and higher, ``exclusive`` backups are no longer supported. The only
   method for taking backups is through ``concurrent`` backup. If ``backup_options`` is
@@ -271,26 +285,6 @@ reason it is required that Barman runs with the same user as Postgres).
 
 General Backup Settings
 -----------------------
-
-.. _backup-requirements:
-
-Requirements for backups
-^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The most critical requirement for a Barman server is the amount of disk space available.
-You are recommended to plan the required disk space based on the size of the clusters
-to backup, number of WAL files generated per day, frequency of backups, and retention
-policies.
-
-Barman developers regularly test Barman with XFS and ext4 filesystems. Like PostgreSQL,
-Barman does nothing special for NFS mountpoints used for storing backups and WALs.
-The following points are required for safely using Barman with NFS:
-
-  * The ``barman_lock_directory`` should be on a local filesystem.
-  * Use at least NFS protocol version 4.
-  * The file system must be mounted using the hard and synchronous options
-    (``hard``, ``sync``).
-
 
 .. _backup-incremental-backups:
 
