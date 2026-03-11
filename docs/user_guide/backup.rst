@@ -101,12 +101,14 @@ To use block-level incremental backups in Barman, you must:
 Streaming backups to the cloud
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-When configured with ``backup_method = postgres``, Barman supports streaming backups
+When configured with ``backup_method = postgres`` as well as ``basebackups_directory``
+and ``wals_directory`` to cloud storage URLs, Barman supports streaming backups
 directly to a cloud storage. In this mode, backups are streamed from the Postgres
-server via ``pg_basebackup`` and dynamically pushed to the cloud in chunks, without
-ever storing the complete backup locally. WAL files are streamed from the Postgres
-server to the Barman server and uploaded to the cloud whenever archiving is triggered,
-which happens periodically or when manually running the ``barman archive-wal`` command.
+server via ``pg_basebackup`` to the Barman server and dynamically pushed to the cloud
+in chunks, without ever storing the complete backup locally. WAL files are streamed
+from the Postgres server to the Barman server and uploaded to the cloud whenever
+archiving is triggered, which happens periodically or when manually running the
+``barman archive-wal`` command.
 
 This is currently the only method that enables block-level incremental backups in a
 cloud environment.
