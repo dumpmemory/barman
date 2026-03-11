@@ -600,7 +600,7 @@ If restoring from a backup created with ``barman-cloud-backup``, you should use 
   The same requirements and configurations apply for restore when working with a cloud
   provider. See the ``Requirements and Configuration`` section and the specific cloud
   provider you are working with in the 
-  :ref:`Cloud Snapshot Backups <backup-cloud-snapshot-backups>` section.
+  :ref:`Cloud Snapshot Backups <cloud-snapshot-backups>` section.
 
 Recovery Steps
 """"""""""""""

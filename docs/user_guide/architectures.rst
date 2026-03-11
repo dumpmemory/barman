@@ -354,4 +354,4 @@ Barman also supports cloud snapshot backups, which takes a snapshot of the
 storage volume where your Postgres server resides in the cloud. Barman currently
 supports this method on Azure, Google, and AWS. The prerequisites for this method will
 depend on which cloud provider where your Postgres server resides, so we recommend
-checking the :ref:`backup-cloud-snapshot-backups` section for further details.
+checking the :ref:`cloud-snapshot-backups` section for further details.

@@ -22,6 +22,7 @@ DBAs during the recovery phase.
    pre_requisites
    barman_check
    backup
+   cloud_snapshot_backup
    wal_archiving
    catalog
    recovery

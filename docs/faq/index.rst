@@ -79,7 +79,7 @@ This backup method is called snapshot backups in Barman terminology. In this sce
 backups are taken via a snapshot of the storage volume where your database server
 resides. In this case, Barman act mainly as a storage server for your WAL files and
 backups catalog. You can check the :ref:`Barman Cloud <barman-cloud>` and
-:ref:`Cloud Snapshot Backups <backup-cloud-snapshot-backups>` sections for further
+:ref:`Cloud Snapshot Backups <cloud-snapshot-backups>` sections for further
 details.
 
 **Do you have packages for RedHat and Debian based distributions?**

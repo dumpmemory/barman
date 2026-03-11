@@ -254,7 +254,7 @@ Retention policy for Cloud Backups
 
 We can have two scenarios for Cloud Backups:
 
-1. Using :ref:`snapshots backups <backup-cloud-snapshot-backups>` with a Barman Server
+1. Using :ref:`snapshots backups <cloud-snapshot-backups>` with a Barman Server
    as the centralized Backup and Recovery manager.
 2. Using :ref:`cloud backups <barman-cloud-barman-client-package>` with cloud object
    storages to manage backups without a Barman Server.
