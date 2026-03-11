@@ -269,6 +269,54 @@ In order to use local backup for a given server in Barman, you need to set
 reason it is required that Barman runs with the same user as Postgres).
 
 
+General Backup Settings
+-----------------------
+
+.. _backup-requirements:
+
+Requirements for backups
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The most critical requirement for a Barman server is the amount of disk space available.
+You are recommended to plan the required disk space based on the size of the clusters
+to backup, number of WAL files generated per day, frequency of backups, and retention
+policies.
+
+Barman developers regularly test Barman with XFS and ext4 filesystems. Like PostgreSQL,
+Barman does nothing special for NFS mountpoints used for storing backups and WALs.
+The following points are required for safely using Barman with NFS:
+
+  * The ``barman_lock_directory`` should be on a local filesystem.
+  * Use at least NFS protocol version 4.
+  * The file system must be mounted using the hard and synchronous options
+    (``hard``, ``sync``).
+
+
+.. _backup-incremental-backups:
+
+Incremental Backups
+^^^^^^^^^^^^^^^^^^^
+
+Incremental backups involve using an existing backup as a reference to copy only the
+data changes that have occurred since the last backup on the Postgres server.
+
+The primary objectives of incremental backups in Barman are:
+
+* Shorten the duration of the full backup process.
+* Reduce disk space usage by eliminating redundant data across periodic backups (data
+  deduplication).
+
+Barman supports two types of incremental backups:
+
+* File-level incremental backups (using ``rsync``)
+* Block-level incremental backups (using ``pg_basebackup`` with Postgres 17)
+
+.. note::
+    Incremental backups of different types are not compatible with each other. For
+    example, you cannot take a block-level incremental backup on top of an rsync backup,
+    nor can you take a file-level incremental backup on top of a streaming backup created
+    with ``pg_basebackup``.
+
 .. _backup-concurrent-backup-of-a-standby:
 
 Backup from a Standby Server
@@ -323,54 +371,6 @@ or
     Postgres 10 and earlier may differ at the binary level, leading to false-positive
     detection issues in Barman.
 
-
-General Backup Settings
------------------------
-
-.. _backup-requirements:
-
-Requirements for backups
-^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The most critical requirement for a Barman server is the amount of disk space available.
-You are recommended to plan the required disk space based on the size of the clusters
-to backup, number of WAL files generated per day, frequency of backups, and retention
-policies.
-
-Barman developers regularly test Barman with XFS and ext4 filesystems. Like PostgreSQL,
-Barman does nothing special for NFS mountpoints used for storing backups and WALs.
-The following points are required for safely using Barman with NFS:
-
-  * The ``barman_lock_directory`` should be on a local filesystem.
-  * Use at least NFS protocol version 4.
-  * The file system must be mounted using the hard and synchronous options
-    (``hard``, ``sync``).
-
-
-.. _backup-incremental-backups:
-
-Incremental Backups
-^^^^^^^^^^^^^^^^^^^
-
-Incremental backups involve using an existing backup as a reference to copy only the
-data changes that have occurred since the last backup on the Postgres server.
-
-The primary objectives of incremental backups in Barman are:
-
-* Shorten the duration of the full backup process.
-* Reduce disk space usage by eliminating redundant data across periodic backups (data
-  deduplication).
-
-Barman supports two types of incremental backups:
-
-* File-level incremental backups (using ``rsync``)
-* Block-level incremental backups (using ``pg_basebackup`` with Postgres 17)
-
-.. note::
-    Incremental backups of different types are not compatible with each other. For
-    example, you cannot take a block-level incremental backup on top of an rsync backup,
-    nor can you take a file-level incremental backup on top of a streaming backup created
-    with ``pg_basebackup``.
 
 .. _backup-managing-bandwidth-usage:
 
