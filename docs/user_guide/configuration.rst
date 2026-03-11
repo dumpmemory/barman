@@ -903,8 +903,6 @@ an integer greater than zero, with an optional SI or IEC suffix. k stands for ki
 k = 1000, while Ki stands for kilobytes Ki = 1024. The rest of the options have the same
 reasoning for greater units of measure.
 
-.. note::
-
 Scope: Global / Server / Model.
 
 **gcp_project**
