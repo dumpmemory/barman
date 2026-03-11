@@ -258,7 +258,7 @@ installation procedures that include:
 
 * cron configurations
 * log configurations, including logrotate
-* Barman home configuration
+* Barman home configuration.
 
 The recommended way to set up Barman for local backups is to follow these steps
 after installing Barman:
@@ -283,6 +283,154 @@ In order to use local backup for a given server in Barman, you need to set
 reason it is required that Barman runs with the same user as Postgres).
 
 
+.. _backup-local-to-cloud-backup:
+
+Local-to-Cloud Backups
+----------------------
+
+Barman can perform backups directly to cloud object storage using the ``local-to-cloud``
+backup method. This method reads data directly from the Postgres PGDATA directory on
+the local filesystem and uploads it directly to cloud storage without requiring
+intermediate local storage for the backup data.
+
+.. note::
+    Currently, only **Amazon S3** and S3-compatible storage are supported. Support for
+    Azure Blob Storage and Google Cloud Storage will be added in future versions of
+    Barman.
+
+Like other backup methods, this approach uses the Postgres's low-level backup API
+for coordination with the database server, but uploads the backup data directly to the cloud
+as it is read from disk.
+
+.. important::
+    The ``local-to-cloud`` backup method requires:
+
+    * Postgres 9.6 or later (for concurrent backup support).
+    * Barman must have direct filesystem access to the PGDATA directory.
+    * The user executing Barman must be the owner of the database cluster.
+    * AWS credentials properly configured (or credentials for S3-compatible storage).
+    * Network access to a properly configured S3 or S3-compatible object storage
+      bucket.
+
+.. important::
+    **Recovery functionality for the local-to-cloud method is not yet implemented**.
+    Support for restoring backups taken with this method will be introduced in a future
+    version of Barman.
+
+To configure local-to-cloud backups, set the ``backup_method`` to ``local-to-cloud`` and
+configure cloud storage path URLs:
+
+.. code-block:: text
+
+    backup_method = local-to-cloud
+    basebackups_directory = s3://bucket-name
+    wals_directory = s3://bucket-name
+    conninfo = host=localhost dbname=postgres user=postgres
+
+The ``basebackups_directory`` must be an S3 storage URL (e.g., ``s3://bucket/path``).
+Similarly, ``wals_directory`` should point to an S3 storage location for WAL archiving.
+
+.. note::
+    It's recommended to use the same bucket and path for both ``basebackups_directory``
+    and ``wals_directory`` to maintain a consistent storage structure in the cloud, as
+    Barman organizes data of each server in dedicated subdirectories.
+
+
+AWS S3 Configuration Options
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``local-to-cloud`` backup method supports various AWS S3 configuration options:
+
+**Bandwidth Control:**
+
+* ``bandwidth_limit``: Maximum transfer rate in kilobytes per second for cloud uploads
+  (default: ``0``, meaning no limit).
+
+**AWS S3 Options:**
+
+* ``aws_region``: AWS region for the S3 bucket.
+* ``aws_profile``: AWS profile name for authentication.
+* ``aws_encryption``: S3 encryption method (``AES256`` or ``aws:kms``).
+* ``aws_sse_kms_key_id``: KMS key ID for server-side encryption.
+* ``aws_read_timeout``: S3 read timeout in seconds.
+
+**Cloud Options:**
+
+* ``cloud_upload_max_archive_size``: Maximum size per cloud archive (default: ``100G``).
+* ``cloud_upload_min_chunk_size``: Minimum chunk size for multipart uploads.
+* ``cloud_delete_batch_size``: Number of files to delete in a single batch operation.
+
+**Compression:**
+
+* ``compression``: WAL compression algorithm (``gzip``, ``bzip2``, ``xz``, ``snappy``,
+  ``zstd``, ``lz4``, or ``none``).
+* ``compression_level``: Compression level - can be set to ``low``, ``medium``,
+  ``high``, or a number according to the chosen algorithm.
+
+You can find more information on compression settings in the :ref:`backup-backup-compression`
+section below.
+
+When to Use Local-to-Cloud
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``local-to-cloud`` backup method is appropriate when:
+
+* Postgres and Barman run on the same machine, or Barman has direct local filesystem
+  access to the PGDATA directory.
+* You want to back up directly to AWS S3 or S3-compatible storage without intermediate
+  local storage for the backup data itself.
+* You want a simple, unified cloud backup configuration through the main ``barman`` CLI.
+
+Limitations
+^^^^^^^^^^^
+
+The ``local-to-cloud`` backup method has the following limitations:
+
+* It **does not** support incremental backups (unlike the ``postgres`` method with
+  Postgres 17+, which supports block-level incremental backups).
+* It **does not** support file-level deduplication through hard links (unlike ``rsync``
+  with ``reuse_backup``).
+* **Only AWS S3 and S3-compatible storage are currently supported** - Azure Blob Storage
+  and Google Cloud Storage support will be added in future versions.
+* It requires local filesystem access to PGDATA (unlike ``rsync`` or ``postgres``
+  methods for remote servers).
+* Recovery is currently not implemented and will be available in a future version.
+
+Example Configuration
+^^^^^^^^^^^^^^^^^^^^^
+
+Here is a complete example configuration for local-to-cloud backups with AWS S3:
+
+.. code-block:: text
+
+    [myserver]
+    backup_method = local-to-cloud
+    barman_user = postgres
+    basebackups_directory = s3://my-backup-bucket
+    wals_directory = s3://my-backup-bucket
+    conninfo = host=localhost dbname=postgres user=postgres
+    bandwidth_limit = 5120  ; 5 MB/s
+    compression = gzip
+    aws_region = us-west-2
+    aws_profile = barman
+    archiver = on
+
+With this configuration, Barman will perform backups by reading data directly from the
+local PGDATA directory and uploading it to the specified S3 bucket with bandwidth
+throttling and gzip compression for WAL files.
+
+WAL archival with local-to-cloud
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When using the ``local-to-cloud`` backup method, WAL files can be archived to the cloud
+using the `barman cloud-wal-archive` command, which uploads WAL files via the
+``archive_command`` to the cloud storage specified in the configuration.
+
+.. code-block:: text
+
+    archive_command = 'barman cloud-wal-archive myserver %p'
+
+
 General Backup Settings
 -----------------------
 
@@ -302,8 +450,8 @@ The primary objectives of incremental backups in Barman are:
 
 Barman supports two types of incremental backups:
 
-* File-level incremental backups (using ``rsync``)
-* Block-level incremental backups (using ``pg_basebackup`` with Postgres 17)
+* File-level incremental backups (using ``rsync``).
+* Block-level incremental backups (using ``pg_basebackup`` with Postgres 17).
 
 .. note::
     Incremental backups of different types are not compatible with each other. For
