@@ -1,0 +1,46 @@
+- summary: Add support for incremental backups in cloud storages
+  description: |
+    Added support for block-level incremental backups in cloud storages, allowing users
+    to efficiently manage backup storage and reduce costs by only uploading changed data.
+
+    This new feature relies on streaming native Postgres backups (taken with `pg_basebackup`)
+    to Barman and from Barman directly to a cloud storage dynamically, without ever
+    storing the full backup in the Barman host, only using a small staging area. The
+    staging area location and size can be configured via the new `cloud_staging_directory`
+    and `cloud_staging_max_size` configuration options, respectively.
+
+    To configure this feature, set `backup_method = postgres` and `basebackups_directory`
+    and `wals_directory` to a cloud storage URL (e.g., `s3://my-bucket/barman`).
+
+    Example configuration:
+    ```
+    [myserver]
+    backup_method = postgres
+    basebackups_directory = s3://my-bucket/barman
+    wals_directory = s3://my-bucket/barman
+    cloud_staging_directory = /tmp/barman/cloud-staging
+    cloud_staging_max_size = 30G
+    ```
+
+    The backup structure in the cloud storage follows the same patterns as the current
+    barman-cloud-* scripts i.e. backup files are archived with `tar` and live under
+    directories named after the server name and the backup ID, e.g.
+    `my-bucket/barman/<server_name>/base/<backup_id>/...`, while WAL files are
+    stored in a `wals` subdirectory under the server directory, i.e.
+    `my-bucket/barman/<server_name>/wals/...`. In this sense, `basebackups_directory`
+    and `wals_directory` act as a prefix for the backup and WAL paths in the cloud
+    storage. This ensures compatibility with existing backup management practices.
+
+    Important notes:
+    - This is an experimental feature, and there are some limitations to be aware of (see
+      the documentation for details).
+    - Restoring backups taken with this method is currently not supported directly in Barman,
+      and it's the user's responsibility to perform this manually or through custom
+      scripts/processes. Restoring such backups will come in a future release.
+    - This is the first step toward unifying the barman cloud experience and simplifying
+      cloud backup operations, and more features and improvements will be added in
+      future releases.
+
+  type: notable_change
+  jira_tickets:
+    - BAR-928
