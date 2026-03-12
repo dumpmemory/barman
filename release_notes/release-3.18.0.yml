@@ -1,7 +1,7 @@
 version: 3.18.0
 date: 2026-03-12
 relnotes:
--   summary: Add support for incremental backups in cloud storages
+  - summary: Add support for incremental backups in cloud storages
     description: |-
         Added support for block-level incremental backups in cloud storages, allowing users
         to efficiently manage backup storage and reduce costs by only uploading changed data.
@@ -44,24 +44,10 @@ relnotes:
           cloud backup operations, and more features and improvements will be added in
           future releases.
     jira_tickets:
-    - BAR-928
+      - BAR-928
     support_tickets: []
     type: notable_change
--   summary: Add 'barman cloud-wal-archive' command for local-to-cloud WAL archiving
-    description: |-
-        Introduced a new `barman cloud-wal-archive` command that enables direct WAL file
-        archiving from the PostgreSQL `pg_wal` directory to cloud object storage when
-        using the 'local-to-cloud' backup method. This command is designed to be used
-        as the PostgreSQL `archive_command` when the Barman server runs on the same
-        host as the PostgreSQL instance.
-
-        It provides a similar functionality to the standalone `barman-cloud-wal-archive`
-        script for deployments where Barman and Postgres are co-located.
-    jira_tickets:
-    - BAR-1098
-    support_tickets: []
-    type: notable_change
--   summary: Add `local-to-cloud` backup method to `barman` CLI
+  - summary: Add `local-to-cloud` backup method to `barman` CLI
     description: |-
         Introduced support for direct cloud backups through the main `barman` CLI by
         adding a new `local-to-cloud` backup method. Previously, cloud backups were only
@@ -87,99 +73,47 @@ relnotes:
 
         This is the first step toward unifying the barman cloud experience and simplifying
         cloud backup operations.
+
+        The following configuration options were reused or added to the Barman
+        configuration to provide feature parity with the `barman-cloud` scripts:
+
+        - `cloud_upload_min_chunk_size`
+        - `aws_region`
+        - `aws_read_timeout`
+        - `aws_encryption`
+        - `aws_sse_kms_key_id`
+        - `bandwidth_limit`
+        - `cloud_delete_batch_size`
+        - `cloud_upload_max_archive_size`
     jira_tickets:
-    - BAR-1095
+      - BAR-1095
+      - BAR-1116
+      - BAR-1122
+      - BAR-1109
+      - BAR-1120
+      - BAR-1121
+      - BAR-1117
+      - BAR-1112
+      - BAR-1115
     support_tickets: []
     type: notable_change
--   summary: Add `--addressing-style` option for S3-compatible storage providers
+  - summary: Add 'barman cloud-wal-archive' command for local-to-cloud WAL archiving
     description: |-
-        A new `--addressing-style` option is now available for barman-cloud commands
-        when using AWS S3 or S3-compatible storage providers. This option allows
-        users to explicitly set the S3 addressing style to `auto`, `virtual`, or
-        `path`. This is useful when working with S3-compatible storage systems that
-        require virtual-hosted-style addressing, as `boto3` automatically defaults
-        to path-style addressing for non-S3 endpoints.
+        Introduced a new `barman cloud-wal-archive` command that enables direct WAL file
+        archiving from the PostgreSQL `pg_wal` directory to cloud object storage when
+        using the 'local-to-cloud' backup method. This command is designed to be used
+        as the PostgreSQL `archive_command` when the Barman server runs on the same
+        host as the PostgreSQL instance.
 
-        Special thanks to @ChandonPierre who reported and contributed to this feature
-        in the PR #1134.
-    jira_tickets:
-    - BAR-1011
-    support_tickets: []
-    type: minor_change
--   summary: Add aws_sse_kms_key_id configuration option for S3 objects
-    description: |-
-        Introduced a new `aws_sse_kms_key_id` configuration option that allows users to
-        specify the server-side encryption key for S3 objects, when using aws_encryption as
-        "aws:kms". When set in the server configuration, this value is passed to the S3
-        client for all commands that upload objects to cloud object storage.
-
-        This option provides feature parity with the `--sse-kms-key-id` argument from
-        `barman-cloud-backup` and `barman-cloud-wal-archive` scripts.
-
-        Example configuration:
-        ```
-        [myserver]
-        backup_method = local-to-cloud
-        basebackups_directory = s3://my-bucket/barman/backups
-        aws_encryption = aws:kms
-        aws_sse_kms_key_id = arn:aws:kms:us-east-1:123456789012:key/abcd1234-5678-90ab-cdef-EXAMPLEKEY
-        ```
-
-        This change is part of the effort to unify cloud options between the main
-        `barman` CLI and standalone `barman-cloud-*` scripts.
-    jira_tickets:
-    - BAR-1121
-    support_tickets: []
-    type: minor_change
--   summary: Add Python 3.14 compatibility support for cloud operations
-    description: |-
-        Added support for Python 3.14 by fixing a breaking change in `functools.partial`
-        that affected cloud backup operations. In this version, `functools.partial` became
-        a method descriptor which changed its behavior when used as a class attribute.
-        This update ensures Barman cloud operations continues to work seamlessly
-        when upgrading to Python 3.14.
-
-        This patch is based on the original idea by @pvbiesen, who suggested the feature
-        and contributed in the PR #1143. A similar fix was also suggested by @mjlshen in
-        PR #1109.
-    jira_tickets:
-    - BAR-1012
-    support_tickets: []
-    type: minor_change
--   summary: Add cloud_upload_max_archive_size configuration option for cloud uploads
-    description: |-
-        Introduced a new `cloud_upload_max_archive_size` configuration option that allows
-        users to specify a maximum archive size for cloud uploads. When set in the server
-        configuration, this value is passed to the cloud storage client used for uploads.
-
-        This option provides feature parity with the `--max-archive-size` argument from
-        `barman-cloud-backup` script and supports advanced and non-standard cloud workflows.
-        If not set, the default cloud storage client behavior applies.
-
-        Example configuration:
-        ```
-        [myserver]
-        backup_method = local-to-cloud
-        basebackups_directory = s3://my-bucket/barman/backups
-        cloud_upload_max_archive_size = 100Gi
-        ```
-
-        This change is part of the effort to unify cloud options between the main
-        `barman` CLI and standalone `barman-cloud-*` scripts.
-    jira_tickets:
-    - BAR-1115
-    support_tickets: []
-    type: minor_change
--   summary: Add WAL compression support for cloud storage destinations
-    description: |-
-        WAL files sent to cloud object storage can now be compressed before upload, using
-        the existing `compression` and `compression_level` configuration options. Compressed
-        WAL files are stored with the appropriate file extension (e.g. `.gz`, `.lz4`),
-        consistent with the convention already used by `barman-cloud-wal-archive`.
+        WAL files sent to cloud object storage can also be compressed before uploading,
+        using the existing `compression` and `compression_level` configuration options.
+        Compressed WAL files are stored with the appropriate file extension (e.g.
+        `.gz`, `.lz4`), consistent with the convention already used by
+        `barman-cloud-wal-archive`.
 
         The following in-memory compression algorithms are supported: `gzip`, `bzip2`,
-        `xz`, `snappy`, `zstd`, and `lz4`. `pigz` and `custom` are not supported for cloud
-        WAL storage because they rely on external processes.
+        `xz`, `snappy`, `zstd`, and `lz4`. `pigz` and `custom` are not supported for
+        cloud WAL storage because they rely on external processes.
 
         Example configuration:
 
@@ -192,10 +126,41 @@ relnotes:
         compression_level = 6
         ```
     jira_tickets:
-    - BAR-1124
+      - BAR-1098
+      - BAR-1124
+    support_tickets: []
+    type: notable_change
+  - summary: Add `--addressing-style` option for S3-compatible storage providers
+    description: |-
+        A new `--addressing-style` option is now available for barman-cloud commands
+        when using AWS S3 or S3-compatible storage providers. This option allows
+        users to explicitly set the S3 addressing style to `auto`, `virtual`, or
+        `path`. This is useful when working with S3-compatible storage systems that
+        require virtual-hosted-style addressing, as `boto3` automatically defaults
+        to path-style addressing for non-S3 endpoints.
+
+        Special thanks to @ChandonPierre who reported and contributed to this feature
+        in the PR #1134.
+    jira_tickets:
+      - BAR-1011
     support_tickets: []
     type: minor_change
--   summary: Prevent usage of barman-cloud-backup as hook for backups with compression
+  - summary: Add Python 3.14 compatibility support for cloud operations
+    description: |-
+        Added support for Python 3.14 by fixing a breaking change in `functools.partial`
+        that affected cloud backup operations. In this version, `functools.partial` became
+        a method descriptor which changed its behavior when used as a class attribute.
+        This update ensures Barman cloud operations continues to work seamlessly
+        when upgrading to Python 3.14.
+
+        This patch is based on the original idea by @pvbiesen, who suggested the feature
+        and contributed in the PR #1143. A similar fix was also suggested by @mjlshen in
+        PR #1109.
+    jira_tickets:
+      - BAR-1012
+    support_tickets: []
+    type: minor_change
+  - summary: Prevent usage of barman-cloud-backup as hook for backups with compression
     description: |-
         The usage of `barman-cloud-backup` as a hook for backups taken with compression is
         now prevented by erroring out with an appropriate message.
@@ -205,128 +170,10 @@ relnotes:
 
         The behavior is also documented with a warning note.
     jira_tickets:
-    - BAR-1015
+      - BAR-1015
     support_tickets: []
     type: minor_change
--   summary: Add cloud_delete_batch_size configuration option for cloud deletions
-    description: |-
-        Introduced a new `cloud_delete_batch_size` configuration option that allows
-        users to specify the batch size for cloud deletions. When set in the server
-        configuration, this value is passed to the cloud storage client used for deletions.
-
-        This option provides feature parity with the `--batch-size` argument from
-        `barman-cloud-backup-delete` script and supports advanced and non-standard cloud
-        workflows. If not set, the default cloud storage client behavior applies (`1000` for
-        S3, `256` for Azure Blob, and `100` for GCS).
-
-        Example configuration:
-        ```
-        [myserver]
-        backup_method = local-to-cloud
-        basebackups_directory = s3://my-bucket/barman/backups
-        cloud_delete_batch_size = 500
-        ```
-
-        This change is part of the effort to unify cloud options between the main
-        `barman` CLI and standalone `barman-cloud-*` scripts.
-    jira_tickets:
-    - BAR-1112
-    support_tickets: []
-    type: minor_change
--   summary: Reuse bandwidth_limit configuration option for cloud backup throttling
-    description: |-
-        Extended the existing `bandwidth_limit` configuration option to also apply
-        bandwidth throttling to cloud backup uploads. Previously, this option only
-        affected rsync and pg_basebackup operations. Now, when configured for
-        local-to-cloud or postgres backup methods with cloud storage, the bandwidth
-        limit is automatically applied to cloud uploads as well.
-
-        Example configuration:
-        ```
-        [myserver]
-        backup_method = local-to-cloud
-        basebackups_directory = s3://my-bucket/barman/backups
-        bandwidth_limit = 5120  # Limit to 5120 kB/s (5 MB/s)
-        ```
-
-        This enhancement enables users to control cloud upload speeds to avoid
-        saturating network connections, manage cloud egress costs, or comply with
-        network policies, using the same configuration option they already use for
-        traditional backups.
-    jira_tickets:
-    - BAR-1117
-    support_tickets: []
-    type: minor_change
--   summary: Add cloud_upload_min_chunk_size configuration option for cloud uploads
-    description: |-
-        Introduced a new `cloud_upload_min_chunk_size` configuration option that allows
-        users to specify a minimum chunk size for cloud uploads. When set in the server
-        configuration, this value is passed to the cloud storage client used for uploads.
-        If not set, the default of the cloud storage client is used (5Mi for S3, 64Ki for
-        Azure Blob, N/A for GCS).
-
-        This option provides feature parity with the `--min-chunk-size` argument from
-        `barman-cloud-backup` script and supports advanced and non-standard cloud workflows.
-        If not set, the default cloud storage client behavior applies.
-
-        Example configuration:
-        ```
-        [myserver]
-        backup_method = local-to-cloud
-        basebackups_directory = s3://my-bucket/barman/backups
-        cloud_upload_min_chunk_size = 5Mi
-        ```
-
-        This change is part of the effort to unify cloud options between the main
-        `barman` CLI and standalone `barman-cloud-*` scripts.
-    jira_tickets:
-    - BAR-1116
-    support_tickets: []
-    type: minor_change
--   summary: Reuse aws_region configuration option for S3 interfaces
-    description: |-
-        Extended the existing `aws_region` configuration option to also customize S3
-        cloud interfaces. Previously, this option only affected AWS snapshot interfaces.
-        Now, when `aws_region` is set in the server configuration, it is passed to the S3
-        client as well.
-
-        Example configuration:
-        ```
-        [myserver]
-        backup_method = local-to-cloud
-        basebackups_directory = s3://my-bucket/barman/backups
-        aws_region = us-west-2
-        ```
-    jira_tickets:
-    - BAR-1122
-    support_tickets: []
-    type: minor_change
--   summary: Add aws_read_timeout configuration option for S3 operations
-    description: |-
-        Introduced a new `aws_read_timeout` configuration option that allows users to
-        specify a custom read timeout for S3 operations. When set in the server
-        configuration, this value is passed to the S3 client for all commands that
-        interact with backup data on cloud object storage.
-
-        This option provides feature parity with the `--read-timeout` argument from
-        `barman-cloud-*` scripts and supports advanced and non-standard S3 workflows.
-        If not set, the default boto3 read timeout behavior applies.
-
-        Example configuration:
-        ```
-        [myserver]
-        backup_method = local-to-cloud
-        basebackups_directory = s3://my-bucket/barman/backups
-        aws_read_timeout = 120
-        ```
-
-        This change is part of the effort to unify cloud options between the main
-        `barman` CLI and standalone `barman-cloud-*` scripts.
-    jira_tickets:
-    - BAR-1109
-    support_tickets: []
-    type: minor_change
--   summary: Add LZ4 compression support for Barman cloud
+  - summary: Add LZ4 compression support for Barman cloud
     description: |-
         Added support for LZ4 compression in `barman-cloud-backup` command.
         You can now specify the --lz4 option to compress backup files using LZ4
@@ -336,10 +183,10 @@ relnotes:
 
         This feature was suggested and implemented by @vietcgi in the PR #1144.
     jira_tickets:
-    - BAR-1013
+      - BAR-1013
     support_tickets: []
     type: minor_change
--   summary: Experimental support for WarehousePG database ID configuration
+  - summary: Experimental support for WarehousePG database ID configuration
     description: |-
         Addition of experimental support for WarehousePG, which includes a new configuration
         option `warehousepg_dbid` that allows users to specify the database ID of the
@@ -350,10 +197,10 @@ relnotes:
         There's also an improvement in the collection of Postgres parameters due to
         `archive_timeout` not being exposed in `pg_settings` on WarehousePG segments.
     jira_tickets:
-    - BAR-1092
+      - BAR-1092
     support_tickets: []
     type: minor_change
--   summary: Add custom restore command support for barman recover operations
+  - summary: Add custom restore command support for barman recover operations
     description: |-
         Added a new `--restore-command` option to the `barman recover` command that allows
         users to override Barman's default restore command with a custom command. While the
@@ -367,35 +214,10 @@ relnotes:
 
         This enhancement was applied due to an issue reported in #881 by @PaganMuffin.
     jira_tickets:
-    - BAR-201
+      - BAR-201
     support_tickets: []
     type: minor_change
--   summary: Add aws_encryption configuration option for S3 objects
-    description: |-
-        Introduced a new `aws_encryption` configuration option that allows users to
-        specify the server-side encryption method for S3 objects. When set in the server
-        configuration, this value is passed to the S3 client for all commands that
-        upload objects to cloud object storage.
-
-        This option provides feature parity with the `--encryption` argument from
-        `barman-cloud-backup` and `barman-cloud-wal-archive` scripts. If not set, no
-        `barman-cloud-backup` and `barman-cloud-wal-archive` scripts. If not set, S3's default encryption settings for the bucket will be used.
-
-        Example configuration:
-        ```
-        [myserver]
-        backup_method = local-to-cloud
-        basebackups_directory = s3://my-bucket/barman/backups
-        aws_encryption = AES256
-        ```
-
-        This change is part of the effort to unify cloud options between the main
-        `barman` CLI and standalone `barman-cloud-*` scripts.
-    jira_tickets:
-    - BAR-1120
-    support_tickets: []
-    type: minor_change
--   summary: Fix file handle leak for long-running WAL archiving services
+  - summary: Fix file handle leak for long-running WAL archiving services
     description: |-
         Fixed a resource leak in the cloud WAL archiving functionality where file handles
         were not being properly closed after uploading WAL files to cloud storage. This
@@ -412,6 +234,6 @@ relnotes:
         Special thanks to @ethiebautgeorge-nasuni who contributed to this feature in
         the PR #1129.
     jira_tickets:
-    - BAR-973
+      - BAR-973
     support_tickets: []
     type: bugfix
