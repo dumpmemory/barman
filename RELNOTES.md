@@ -2,6 +2,231 @@
 
 © Copyright EnterpriseDB UK Limited 2025 - All rights reserved.
 
+## 3.18.0 (2026-03-12)
+
+### Notable changes
+
+- Add support for incremental backups in cloud storages
+
+  Added support for block-level incremental backups in cloud storages, allowing users
+  to efficiently manage backup storage and reduce costs by only uploading changed data.
+
+  This new feature relies on streaming native Postgres backups (taken with `pg_basebackup`)
+  to Barman and from Barman directly to a cloud storage dynamically, without ever
+  storing the full backup in the Barman host, only using a small staging area. The
+  staging area location and size can be configured via the new `cloud_staging_directory`
+  and `cloud_staging_max_size` configuration options, respectively.
+
+  To configure this feature, set `backup_method = postgres` and `basebackups_directory`
+  and `wals_directory` to a cloud storage URL (e.g., `s3://my-bucket/barman`).
+
+  Example configuration:
+  ```
+  [myserver]
+  backup_method = postgres
+  basebackups_directory = s3://my-bucket/barman
+  wals_directory = s3://my-bucket/barman
+  cloud_staging_directory = /tmp/barman/cloud-staging
+  cloud_staging_max_size = 30Gi
+  ```
+
+  The backup structure in the cloud storage follows the same patterns as the current
+  barman-cloud-* scripts i.e. backup files are archived with `tar` and live under
+  directories named after the server name and the backup ID, e.g.
+  `my-bucket/barman/<server_name>/base/<backup_id>/...`, while WAL files are
+  stored in a `wals` subdirectory under the server directory, i.e.
+  `my-bucket/barman/<server_name>/wals/...`. In this sense, `basebackups_directory`
+  and `wals_directory` act as a prefix for the backup and WAL paths in the cloud
+  storage. This ensures compatibility with existing backup management practices.
+
+  Important notes:
+  - This is an experimental feature, and there are some limitations to be aware of (see
+    the documentation for details).
+  - Restoring backups taken with this method is currently not supported directly in Barman,
+    and it's the user's responsibility to perform this manually or through custom
+    scripts/processes. Restoring such backups will come in a future release.
+  - This is the first step toward unifying the barman cloud experience and simplifying
+    cloud backup operations, and more features and improvements will be added in
+    future releases.
+
+  References: BAR-928.
+
+- Add `local-to-cloud` backup method to `barman` CLI
+
+  Introduced support for direct cloud backups through the main `barman` CLI by
+  adding a new `local-to-cloud` backup method. Previously, cloud backups were only
+  available through standalone `barman-cloud-*` scripts.
+
+  With this enhancement, you can now configure cloud backups directly in the barman
+  configuration file using `backup_method = local-to-cloud` along with a cloud storage
+  URL in `basebackups_directory` (e.g., `s3://bucket/path`). This provides a unified
+  interface for all backup methods and is the first step toward deprecating the
+  standalone `barman-cloud-*` scripts.
+
+  The new `CloudBackupExecutor` integrates seamlessly with the existing barman
+  backup infrastructure, coordinating with PostgreSQL using the low-level backup
+  API and uploading backups directly to cloud object storage.
+
+  Example configuration:
+  ```
+  [myserver]
+  backup_method = local-to-cloud
+  basebackups_directory = s3://my-bucket/barman/backups
+  conninfo = host=postgres-host dbname=postgres
+  ```
+
+  This is the first step toward unifying the barman cloud experience and simplifying
+  cloud backup operations.
+
+  The following configuration options were reused or added to the Barman
+  configuration to provide feature parity with the `barman-cloud` scripts:
+
+  - `cloud_upload_min_chunk_size`
+  - `aws_region`
+  - `aws_read_timeout`
+  - `aws_encryption`
+  - `aws_sse_kms_key_id`
+  - `bandwidth_limit`
+  - `cloud_delete_batch_size`
+  - `cloud_upload_max_archive_size`
+
+  References: BAR-1095, BAR-1116, BAR-1122, BAR-1109, BAR-1120, BAR-1121, BAR-1117, BAR-1112, BAR-1115.
+
+- Add 'barman cloud-wal-archive' command for local-to-cloud WAL archiving
+
+  Introduced a new `barman cloud-wal-archive` command that enables direct WAL file
+  archiving from the PostgreSQL `pg_wal` directory to cloud object storage when
+  using the 'local-to-cloud' backup method. This command is designed to be used
+  as the PostgreSQL `archive_command` when the Barman server runs on the same
+  host as the PostgreSQL instance.
+
+  WAL files sent to cloud object storage can also be compressed before uploading,
+  using the existing `compression` and `compression_level` configuration options.
+  Compressed WAL files are stored with the appropriate file extension (e.g.
+  `.gz`, `.lz4`), consistent with the convention already used by
+  `barman-cloud-wal-archive`.
+
+  The following in-memory compression algorithms are supported: `gzip`, `bzip2`,
+  `xz`, `snappy`, `zstd`, and `lz4`. `pigz` and `custom` are not supported for
+  cloud WAL storage because they rely on external processes.
+
+  Example configuration:
+
+  ```ini
+  [myserver]
+  backup_method = local-to-cloud
+  archiver = on
+  wals_directory = s3://my-bucket/barman/wals
+  compression = gzip
+  compression_level = 6
+  ```
+
+  References: BAR-1098, BAR-1124.
+
+### Minor changes
+
+- Add `--addressing-style` option for S3-compatible storage providers
+
+  A new `--addressing-style` option is now available for barman-cloud commands
+  when using AWS S3 or S3-compatible storage providers. This option allows
+  users to explicitly set the S3 addressing style to `auto`, `virtual`, or
+  `path`. This is useful when working with S3-compatible storage systems that
+  require virtual-hosted-style addressing, as `boto3` automatically defaults
+  to path-style addressing for non-S3 endpoints.
+
+  Special thanks to @ChandonPierre who reported and contributed to this feature
+  in the PR #1134.
+
+  References: BAR-1011.
+
+- Add Python 3.14 compatibility support for cloud operations
+
+  Added support for Python 3.14 by fixing a breaking change in `functools.partial`
+  that affected cloud backup operations. In this version, `functools.partial` became
+  a method descriptor which changed its behavior when used as a class attribute.
+  This update ensures Barman cloud operations continues to work seamlessly
+  when upgrading to Python 3.14.
+
+  This patch is based on the original idea by @pvbiesen, who suggested the feature
+  and contributed in the PR #1143. A similar fix was also suggested by @mjlshen in
+  PR #1109.
+
+  References: BAR-1012.
+
+- Prevent usage of barman-cloud-backup as hook for backups with compression
+
+  The usage of `barman-cloud-backup` as a hook for backups taken with compression is
+  now prevented by erroring out with an appropriate message.
+
+  This change ensures that backups with compression are not inadvertently used with
+  cloud backup hooks, given that such usage was never supported.
+
+  The behavior is also documented with a warning note.
+
+  References: BAR-1015.
+
+- Add LZ4 compression support for Barman cloud
+
+  Added support for LZ4 compression in `barman-cloud-backup` command.
+  You can now specify the --lz4 option to compress backup files using LZ4
+  compression before uploading to cloud storage. This option is mutually exclusive
+  with other compression options (--gzip, --bzip2, --snappy), and it requires
+  the `lz4` Python library to be installed.
+
+  This feature was suggested and implemented by @vietcgi in the PR #1144.
+
+  References: BAR-1013.
+
+- Experimental support for WarehousePG database ID configuration
+
+  Addition of experimental support for WarehousePG, which includes a new configuration
+  option `warehousepg_dbid` that allows users to specify the database ID of the
+  WarehousePG segment when using the PostgreSQL backup method. This configuration is
+  intended to enable better integration with WarehousePG for backup and restore
+  operations.
+
+  There's also an improvement in the collection of Postgres parameters due to
+  `archive_timeout` not being exposed in `pg_settings` on WarehousePG segments.
+
+  References: BAR-1092.
+
+- Add custom restore command support for barman recover operations
+
+  Added a new `--restore-command` option to the `barman recover` command that allows
+  users to override Barman's default restore command with a custom command. While the
+  default restore command built by Barman is suitable for most cases, this option
+  allows you to specify an alternative command if your setup requires it.
+
+  Previously, users had to manually edit PostgreSQL recovery configuration files after
+  recovery to change the restore command, which was error-prone and required additional
+  manual intervention. With this new option, users can now specify a custom restore
+  command directly through the command line.
+
+  This enhancement was applied due to an issue reported in #881 by @PaganMuffin.
+
+  References: BAR-201.
+
+### Bugfixes
+
+- Fix file handle leak for long-running WAL archiving services
+
+  Fixed a resource leak in the cloud WAL archiving functionality where file handles
+  were not being properly closed after uploading WAL files to cloud storage. This
+  issue could primarily affect long-running WAL archiving services that process
+  multiple WAL files in sequence, where the accumulating open file handles could
+  eventually cause "Too many open files" errors, preventing further WAL archiving
+  operations.
+
+  The fix ensures that file handles are properly closed immediately after each
+  upload operation completes, regardless of whether compression is used and even
+  when upload failures occur. This prevents handle exhaustion in services that
+  perform continuous or high-frequency WAL archiving to cloud providers.
+
+  Special thanks to @ethiebautgeorge-nasuni who contributed to this feature in
+  the PR #1129.
+
+  References: BAR-973.
+
 ## 3.17.0 (2026-01-07)
 
 ### Notable changes
