@@ -244,12 +244,18 @@ the Barman backup command. For example, to run a one-off incremental backup, use
     the absence of existing files to link or copy.
 
 Local Rsync Backups
-^^^^^^^^^^^^^^^^^^^
+-------------------
 
 Under special circumstances, Barman can be installed on the same server where the
 Postgres instance resides, with backed up data stored on a separate volume from
 ``PGDATA`` and, where applicable, tablespaces. Usually, these backup volumes reside on
 network storage appliances, with filesystems like NFS.
+
+For these cases, Barman supports a local backup method called ``local-rsync``. This
+method uses the same rsync-based backup approach as the remote ``rsync`` method, but
+without relying on SSH for the transport layer. Instead, it performs file copy
+operations locally on the same server where Postgres is running (for this reason it is
+required that Barman runs with the same user as Postgres).
 
 The only requirement for local backups is that Barman runs with the same user as the
 Postgres server, which is normally ``postgres``. Given that the community packages by
@@ -277,10 +283,7 @@ after installing Barman:
 Refer to :ref:`Configuration options <configuration-options-general>` for more details.
 
 In order to use local backup for a given server in Barman, you need to set
-``backup_method`` to ``local-rsync``. The feature is essentially identical to its
-``rsync`` equivalent, which relies on SSH instead and operates remotely. With
-``local-rsync`` file copy is performed issuing rsync commands locally (for this
-reason it is required that Barman runs with the same user as Postgres).
+``backup_method`` to ``local-rsync``.
 
 
 .. _backup-local-to-cloud-backup:
