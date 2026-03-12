@@ -28,7 +28,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "BARMAN" "5" "Jan 07, 2026" "3.17" "Barman"
+.TH "BARMAN" "5" "mar 12, 2026" "3.18" "Barman"
 .SH NAME
 barman \- Barman Configurations
 .sp
@@ -87,6 +87,16 @@ in square brackets. Each section can include various options.
 .sp
 Models and servers must have unique identifiers, and reserved words cannot be used as
 names.
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+\fBComment Handling\fP: Only line comments are supported (lines starting with \fB#\fP or \fB;\fP).
+Inline comments (\fB#\fP or \fB;\fP appearing after configuration values on the same line) are
+not supported and will be parsed as part of the configuration value, which may
+cause unexpected behavior.
+.UNINDENT
+.UNINDENT
 .sp
 \fBReserved Words\fP
 .sp
@@ -179,7 +189,7 @@ operations. A value of \fB0\fP indicates no limit (default).
 \fBNOTE:\fP
 .INDENT 0.0
 .INDENT 3.5
-Applies only when \fBbackup_method = postgres | rsync\fP\&.
+Applies only when \fBbackup_method = postgres | rsync | local\-to\-cloud\fP\&.
 .UNINDENT
 .UNINDENT
 .sp
@@ -620,6 +630,33 @@ Only supported when \fBbackup_method = postgres\fP\&.
 .sp
 Scope: Global / Server / Model.
 .sp
+\fBwarehousepg_dbid\fP
+.sp
+Specifies the integer identifier for a WarehousePG database. When set, this value is
+passed to \fBpg_basebackup\fP via the \fB\-\-target\-gp\-dbid\fP parameter for WarehousePG
+compatibility. This option is required when backing up WarehousePG segments.
+.sp
+\fBIMPORTANT:\fP
+.INDENT 0.0
+.INDENT 3.5
+This option is only relevant for WarehousePG databases and should not be set for
+standard PostgreSQL databases.
+.sp
+Furthermore, Barman does not handle backups and restores for WarehousePG clusters.
+The orchestration of backup and restore operations for WarehousePG clusters must be
+managed externally by the user.
+.UNINDENT
+.UNINDENT
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Only supported when \fBbackup_method = postgres\fP\&.
+.UNINDENT
+.UNINDENT
+.sp
+Scope: Global / Server / Model.
+.sp
 \fBbackup_directory\fP
 .sp
 Specifies the directory where backup data for a server will be stored. Defaults to
@@ -675,8 +712,9 @@ Scope: Global / Server / Model.
 .sp
 \fBbasebackups_directory\fP
 .sp
-Specifies the directory where base backups are stored. Defaults to
-\fB<backup_directory>/base\fP\&.
+Destination for base backup files. It can be a local path if storing backups locally,
+or a cloud storage URL if streaming backups to the cloud as described in
+\fI\%Streaming backups to the cloud\fP\&. Defaults to \fB<backup_directory>/base\fP\&.
 .sp
 Scope: Server.
 .sp
@@ -765,7 +803,9 @@ in AWS credentials file).
 \fBNOTE:\fP
 .INDENT 0.0
 .INDENT 3.5
-Only supported when \fBbackup_method = snapshot\fP and \fBsnapshot_provider = aws\fP\&.
+Only supported when \fBbackup_method = snapshot\fP and \fBsnapshot_provider = aws\fP, or
+when \fBbackup_method\fP is \fBpostgres\fP or \fBlocal\-to\-cloud\fP and
+\fBbasebackups_directory\fP and/or \fBwals_directory\fP point to S3.
 .UNINDENT
 .UNINDENT
 .sp
@@ -773,13 +813,99 @@ Scope: Global / Server / Model.
 .sp
 \fBaws_region\fP
 .sp
-Indicates the AWS region where the EC2 VM and storage volumes, as defined by
-\fBsnapshot_instance\fP and \fBsnapshot_disks\fP, are located.
+When using \fBbackup_method = snapshot\fP, indicates the AWS region where the EC2 VM and
+storage volumes, as defined by \fBsnapshot_instance\fP and \fBsnapshot_disks\fP, are
+located.
+.sp
+When using \fBbackup_method = postgres\fP or \fBlocal\-to\-cloud\fP pointing to S3, indicates
+the AWS region where the S3 bucket is located.
 .sp
 \fBNOTE:\fP
 .INDENT 0.0
 .INDENT 3.5
-Only supported when \fBbackup_method = snapshot\fP and \fBsnapshot_provider = aws\fP\&.
+Only supported when \fBbackup_method = snapshot\fP and \fBsnapshot_provider = aws\fP, or
+when \fBbackup_method\fP is \fBpostgres\fP or \fBlocal\-to\-cloud\fP and
+\fBbasebackups_directory\fP and/or \fBwals_directory\fP point to S3.
+.UNINDENT
+.UNINDENT
+.sp
+Scope: Global / Server / Model.
+.sp
+\fBaws_encryption\fP
+.sp
+Specifies the server\-side encryption algorithm to use when storing objects in S3.
+This value is passed to the S3 client for all upload operations to cloud object storage.
+.sp
+Allowed options:
+.INDENT 0.0
+.IP \(bu 2
+\fBAES256\fP: Use S3\-managed encryption keys (SSE\-S3).
+.IP \(bu 2
+\fBaws:kms\fP: Use AWS Key Management Service encryption keys (SSE\-KMS).
+.UNINDENT
+.sp
+If not set, S3\(aqs default encryption settings for the bucket will be used.
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Only supported when \fBbackup_method\fP is \fBpostgres\fP or \fBlocal\-to\-cloud\fP, and
+\fBbasebackups_directory\fP and/or \fBwals_directory\fP point to S3.
+.UNINDENT
+.UNINDENT
+.sp
+Scope: Global / Server / Model.
+.sp
+\fBaws_sse_kms_key_id\fP
+.sp
+Specifies the AWS Key Management Service (KMS) key ID to use for server\-side
+encryption of S3 objects. This option is only valid when \fBaws_encryption\fP is
+set to \fBaws:kms\fP\&.
+.sp
+Can be specified using the key ID on its own or using the full ARN for the key.
+.sp
+If not set when using \fBaws_encryption = aws:kms\fP, S3 will use the default AWS
+managed KMS key for S3.
+.sp
+Example:
+.INDENT 0.0
+.INDENT 3.5
+.sp
+.EX
+[myserver]
+backup_method = local\-to\-cloud
+basebackups_directory = s3://my\-bucket/barman/backups
+aws_encryption = aws:kms
+aws_sse_kms_key_id = arn:aws:kms:us\-east\-1:123456789012:key/abcd1234\-5678\-90ab\-cdef\-EXAMPLEKEY
+.EE
+.UNINDENT
+.UNINDENT
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Only supported when \fBbackup_method\fP is \fBpostgres\fP or \fBlocal\-to\-cloud\fP, and
+\fBbasebackups_directory\fP and/or \fBwals_directory\fP point to S3.
+.UNINDENT
+.UNINDENT
+.sp
+Scope: Global / Server / Model.
+.sp
+\fBaws_read_timeout\fP
+.sp
+Specifies the read timeout in seconds for S3 operations when using cloud storage.
+This value is passed to the S3 client for all commands that interact with backup
+data on cloud object storage. If not set, the default boto3 read timeout behavior
+applies.
+.sp
+This option is useful for advanced and non\-standard S3 workflows where the default
+timeout may not be sufficient.
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Only supported when \fBbackup_method\fP is \fBpostgres\fP or \fBlocal\-to\-cloud\fP, and
+\fBbasebackups_directory\fP and/or \fBwals_directory\fP point to S3.
 .UNINDENT
 .UNINDENT
 .sp
@@ -892,6 +1018,91 @@ Identifies the Azure subscription that owns the instance and storage volumes def
 Only supported when \fBbackup_method = snapshot\fP and \fBsnapshot_provider = azure\fP\&.
 .UNINDENT
 .UNINDENT
+.sp
+Scope: Global / Server / Model.
+.sp
+\fBcloud_delete_batch_size\fP
+.sp
+Specifies the number of files to delete in a single batch when performing delete
+operations on cloud storage. This option is relevant for both backup and WAL file
+deletions. The default value is \fB1000\fP for S3, \fB256\fP for Azure Blob, and \fB100\fP for
+GCS.
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Only supported when \fBbackup_method\fP is \fBpostgres\fP or \fBlocal\-to\-cloud\fP, and
+\fBbasebackups_directory\fP and/or \fBwals_directory\fP point to cloud storage.
+.UNINDENT
+.UNINDENT
+.sp
+Scope: Global / Server / Model.
+.sp
+\fBcloud_upload_max_archive_size\fP
+.sp
+Specifies the maximum size in bytes for individual archive files during cloud uploads.
+When uploading backups to cloud storage, Barman splits the backup into multiple archive
+files if it exceeds this size. The default value is \fB100Gi\fP\&.
+.sp
+The accepted format is \fBn{k|Ki|M|Mi|G|Gi|T|Ti}\fP and case\-sensitive, where \fBn\fP
+is an integer greater than zero, with an optional SI or IEC suffix. k stands for
+kilo with k = 1000, while Ki stands for kilobytes Ki = 1024. The rest of the options
+have the same reasoning for greater units of measure.
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Only supported when \fBbackup_method\fP is \fBpostgres\fP or \fBlocal\-to\-cloud\fP, and
+\fBbasebackups_directory\fP points to cloud storage.
+.UNINDENT
+.UNINDENT
+.sp
+Scope: Global / Server / Model.
+.sp
+\fBcloud_upload_min_chunk_size\fP
+.sp
+Specifies the minimum size in bytes for individual chunks during multipart uploads to
+cloud storage. This controls the size of each part when uploading large files to cloud
+object storage. When not set, defaults to the chunk size of the cloud provider: \fB5Mi\fP
+for S3, and \fB64Ki\fP for Azure Blob. Not applicable for GCS.
+.sp
+The accepted format is \fBn{k|Ki|M|Mi|G|Gi|T|Ti}\fP and case\-sensitive, where \fBn\fP
+is an integer greater than zero, with an optional SI or IEC suffix. k stands for
+kilo with k = 1000, while Ki stands for kilobytes Ki = 1024. The rest of the options
+have the same reasoning for greater units of measure.
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Only supported when \fBbackup_method\fP is \fBpostgres\fP or \fBlocal\-to\-cloud\fP, and
+\fBbasebackups_directory\fP points to cloud storage.
+.UNINDENT
+.UNINDENT
+.sp
+\fBcloud_staging_directory\fP
+.sp
+A staging directory for when sending backups to a cloud object storage using
+\fBbackup_method = postgres\fP\&. It is used as a temporary location for storing chunks of
+the backup before they are sent to the cloud. Defaults to \fB/tmp/barman/cloud\-staging\fP\&.
+.sp
+Scope: Global / Server / Model.
+.sp
+\fBcloud_staging_max_size\fP
+.sp
+The maximum size that \fBcloud_staging_directory\fP can grow to before Barman stops
+generating new backup chunks. This is used to prevent the staging directory from
+growing in case the speed of uploading chunks does not keep up with the speed of
+streaming them from Postgres. The default value is \fB30Gi\fP\&.
+.sp
+Extremely low values are discouraged as they may lead to performance degradation. We
+recommend a minimum of at least \fB10Gi\fP\&. The optimal value will depend on the transfer
+speed of the backup to Barman and from Barman to the cloud, as well as the size of the
+backup.
+.sp
+The accepted format is \fBn{k|Ki|M|Mi|G|Gi|T|Ti}\fP and case\-sensitive, where \fBn\fP is
+an integer greater than zero, with an optional SI or IEC suffix. k stands for kilo with
+k = 1000, while Ki stands for kilobytes Ki = 1024. The rest of the options have the same
+reasoning for greater units of measure.
 .sp
 Scope: Global / Server / Model.
 .sp
@@ -1422,7 +1633,9 @@ Scope: Server / Model.
 .sp
 \fBwals_directory\fP
 .sp
-Directory containing WAL files. Defaults to \fB<backup_directory>/wals\fP\&.
+Destination for archived WAL files. It can be a local path if storing WAL files locally,
+or a cloud storage URL if storing WAL files in the cloud as described in
+\fI\%Streaming backups to the cloud\fP\&. Defaults to \fB<backup_directory>/wals\fP\&.
 .sp
 Scope: Server.
 .sp
@@ -1476,7 +1689,7 @@ location must have sufficient space to temporarily store the compressed backup.
 \fBNOTE:\fP
 .INDENT 0.0
 .INDENT 3.5
-Applies only for commpressed backups.
+Applies only for compressed backups.
 .UNINDENT
 .UNINDENT
 .sp
@@ -1548,7 +1761,7 @@ Scope: Global / Server / Model.
 Specifies the minimum acceptable size for the latest successful backup. If the latest
 backup is smaller than this size, the barman check command will report an error. If
 left empty (default), the latest backup is always considered valid. The accepted
-format is \fB\(dqn {k|Ki|M|Mi|G|Gi|T|Ti}\(dq\fP and case\-sensitive, where \fBn\fP is an integer
+format is \fB\(dqn{k|Ki|M|Mi|G|Gi|T|Ti}\(dq\fP and case\-sensitive, where \fBn\fP is an integer
 greater than zero, with an optional SI or IEC suffix. k stands for kilo with k = 1000,
 while Ki stands for kilobytes Ki = 1024. The rest of the options have the same
 reasoning for greater units of measure.

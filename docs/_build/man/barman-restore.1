@@ -28,7 +28,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "BARMAN-RESTORE" "1" "Jan 07, 2026" "3.17" "Barman"
+.TH "BARMAN-RESTORE" "1" "mar 12, 2026" "3.18" "Barman"
 .SH NAME
 barman-restore \- Barman Sub-Commands
 .SH SYNOPSIS
@@ -56,6 +56,7 @@ restore
     [ \-\-staging\-location STAGING_LOCATION ]
     [ \-\-combine\-mode COMBINE_MODE ]
     [ \-\-remote\-ssh\-command STRING ]
+    [ \-\-restore\-command COMMAND ]
     [ \-\-retry\-sleep SECONDS ]
     [ \-\-retry\-times NUMBER ]
     [ \-\-snapshot\-recovery\-instance INSTANCE_NAME ]
@@ -223,6 +224,13 @@ for more details and restrictions of each mode.
 This option enables remote restore by specifying the secure shell command to
 execute on a remote host. It functions similarly to the \fBssh_command\fP server
 option in the configuration file for remote restore, that is, \fB\(aqssh USER@SERVER\(aq\fP\&.
+.TP
+.B \fB\-\-restore\-command\fP
+Specify a custom restore command to override Barman\(aqs default restore_command in
+the PostgreSQL recovery configuration. While the default restore_command built by
+Barman is suitable for most cases, this option allows you to specify an alternative
+command if your setup requires it. Can be used only when running a restore with
+\fBget\-wal\fP mode.
 .TP
 .B \fB\-\-retry\-sleep\fP
 Specify the number of seconds to wait after a failed copy before retrying. This

@@ -28,7 +28,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "BARMAN" "1" "Jan 07, 2026" "3.17" "Barman"
+.TH "BARMAN" "1" "mar 12, 2026" "3.18" "Barman"
 .SH NAME
 barman \- Barman Commands
 .sp
@@ -244,6 +244,8 @@ Show a help message and exit. Provides information about command usage.
 .EX
 backup
     [ \-\-bwlimit KBPS ]
+    [ \-\-cloud\-staging\-directory PATH ]
+    [ \-\-cloud\-staging\-max\-size SIZE ]
     [ { \-h | \-\-help } ]
     [ \-\-incremental BACKUP_ID ]
     [ \-\-immediate\-checkpoint ]
@@ -280,6 +282,28 @@ Name of the server in barman node.
 .B \fB\-\-bwlimit\fP
 Specify the maximum transfer rate in kilobytes per second. A value of 0 indicates no
 limit. This setting overrides the \fBbandwidth_limit\fP configuration option.
+.TP
+.B \fB\-\-cloud\-staging\-directory\fP
+A staging directory for when sending backups to a cloud object storage using
+\fBbackup_method = postgres\fP\&. It is used as a temporary location for storing chunks
+of the backup before they are sent to the cloud. Defaults to
+\fB/tmp/barman/cloud\-staging\fP\&.
+.TP
+.B \fB\-\-cloud\-staging\-max\-size\fP
+The maximum size that \fB\-\-cloud\-staging\-directory\fP can grow to before Barman stops
+generating new backup chunks. This is used to prevent the staging directory from
+growing in case the speed of uploading chunks does not keep up with the speed of
+streaming them from Postgres. The default value is \fB30Gi\fP\&.
+.sp
+Extremely low values are discouraged as they may lead to performance degradation.
+We recommend a minimum of at least \fB10Gi\fP\&. The optimal value will depend on the
+transfer speed of the backup to Barman and from Barman to the cloud, as well as the
+size of the backup.
+.sp
+The accepted format is \fBn{k|Ki|M|Mi|G|Gi|T|Ti}\fP and case\-sensitive, where \fBn\fP
+is an integer greater than zero, with an optional SI or IEC suffix. k stands for
+kilo with k = 1000, while Ki stands for kilobytes Ki = 1024. The rest of the options
+have the same reasoning for greater units of measure.
 .TP
 .B \fB\-h\fP / \fB\-\-help\fP
 Show a help message and exit. Provides information about command usage.
@@ -1327,6 +1351,7 @@ restore
     [ \-\-staging\-location STAGING_LOCATION ]
     [ \-\-combine\-mode COMBINE_MODE ]
     [ \-\-remote\-ssh\-command STRING ]
+    [ \-\-restore\-command COMMAND ]
     [ \-\-retry\-sleep SECONDS ]
     [ \-\-retry\-times NUMBER ]
     [ \-\-snapshot\-recovery\-instance INSTANCE_NAME ]
@@ -1495,6 +1520,13 @@ This option enables remote restore by specifying the secure shell command to
 execute on a remote host. It functions similarly to the \fBssh_command\fP server
 option in the configuration file for remote restore, that is, \fB\(aqssh USER@SERVER\(aq\fP\&.
 .TP
+.B \fB\-\-restore\-command\fP
+Specify a custom restore command to override Barman\(aqs default restore_command in
+the PostgreSQL recovery configuration. While the default restore_command built by
+Barman is suitable for most cases, this option allows you to specify an alternative
+command if your setup requires it. Can be used only when running a restore with
+\fBget\-wal\fP mode.
+.TP
 .B \fB\-\-retry\-sleep\fP
 Specify the number of seconds to wait after a failed copy before retrying. This
 setting applies to both backup and restore operations and overrides the
@@ -1618,7 +1650,7 @@ replication\-status
 .SS Description
 .sp
 Display real\-time information and status of any streaming clients connected to the
-specified server. Specify \fBall\fP shortcut to diplay information for all configured
+specified server. Specify \fBall\fP shortcut to display information for all configured
 servers.
 .SS Parameters
 .INDENT 0.0

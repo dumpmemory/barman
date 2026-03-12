@@ -27,7 +27,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "BARMAN-CLOUD-BACKUP-LIST" "1" "Jan 07, 2026" "3.17" "Barman"
+.TH "BARMAN-CLOUD-BACKUP-LIST" "1" "mar 12, 2026" "3.18" "Barman"
 .SH NAME
 barman-cloud-backup-list \- Barman-cloud Commands
 .sp
@@ -46,6 +46,7 @@ barman\-cloud\-backup\-list
                 [ { \-P | \-\-aws\-profile } AWS_PROFILE ]
                 [ \-\-profile AWS_PROFILE ]
                 [ \-\-read\-timeout READ_TIMEOUT ]
+                [ \-\-addressing\-style { auto | virtual | path } ]
                 [ { \-\-azure\-credential | \-\-credential } { azure\-cli | managed\-identity | default } ]
                 [ \-\-format FORMAT ]
                 SOURCE_URL SERVER_NAME
@@ -123,6 +124,21 @@ Profile name (e.g. \fBINI\fP section in AWS credentials file) \- replaced by
 .B \fB\-\-read\-timeout\fP
 The time in seconds until a timeout is raised when waiting to read from a connection
 (defaults to \fB60\fP seconds).
+.TP
+.B \fB\-\-addressing\-style\fP
+The S3 addressing style to use when connecting to S3\-compatible cloud storage. This
+option is useful when using custom S3 endpoints (such as MinIO) that may require a
+specific addressing style.
+.sp
+Allowed options:
+.INDENT 7.0
+.IP \(bu 2
+\fBauto\fP (default): Uses the addressing style determined by the boto3 library.
+.IP \(bu 2
+\fBvirtual\fP: Uses virtual\-hosted\-style addressing (bucket\-name.s3.amazonaws.com).
+.IP \(bu 2
+\fBpath\fP: Uses path\-style addressing (s3.amazonaws.com/bucket\-name).
+.UNINDENT
 .UNINDENT
 .sp
 \fBExtra options for the Azure cloud provider\fP

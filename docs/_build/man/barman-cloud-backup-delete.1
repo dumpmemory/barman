@@ -27,7 +27,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "BARMAN-CLOUD-BACKUP-DELETE" "1" "Jan 07, 2026" "3.17" "Barman"
+.TH "BARMAN-CLOUD-BACKUP-DELETE" "1" "mar 12, 2026" "3.18" "Barman"
 .SH NAME
 barman-cloud-backup-delete \- Barman-cloud Commands
 .sp
@@ -43,6 +43,7 @@ barman\-cloud\-backup\-delete
                 [ { \-t | \-\-test } ]
                 [ \-\-cloud\-provider { aws\-s3 | azure\-blob\-storage | google\-cloud\-storage } ]
                 [ \-\-endpoint\-url ENDPOINT_URL ]
+                [ \-\-addressing\-style { auto | virtual | path } ]
                 [ { \-r | \-\-retention\-policy } RETENTION_POLICY ]
                 [ { \-m | \-\-minimum\-redundancy } MINIMUM_REDUNDANCY ]
                 [ { \-b | \-\-backup\-id } BACKUP_ID]
@@ -191,6 +192,20 @@ is only available for AWS S3\-compatible object stores and it also requires the
 .TP
 .B \fB\-\-endpoint\-url\fP
 Override default S3 endpoint URL with the given one.
+.TP
+.B \fB\-\-addressing\-style\fP
+The addressing style to use for S3 requests. This is useful when connecting to
+S3\-compatible services that require a specific addressing style.
+.sp
+Allowed options are:
+.INDENT 7.0
+.IP \(bu 2
+\fBauto\fP (default): Uses the addressing style determined by the underlying library.
+.IP \(bu 2
+\fBvirtual\fP: Uses virtual\-hosted style addressing (e.g., bucket\-name.s3.amazonaws.com).
+.IP \(bu 2
+\fBpath\fP: Uses path\-style addressing (e.g., s3.amazonaws.com/bucket\-name).
+.UNINDENT
 .TP
 .B \fB\-P\fP / \fB\-\-aws\-profile\fP
 Profile name (e.g. \fBINI\fP section in AWS credentials file).
