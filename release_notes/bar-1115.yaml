@@ -14,7 +14,7 @@
     [myserver]
     backup_method = local-to-cloud
     basebackups_directory = s3://my-bucket/barman/backups
-    cloud_upload_max_archive_size = 100G
+    cloud_upload_max_archive_size = 100Gi
     ```
 
     This change is part of the effort to unify cloud options between the main

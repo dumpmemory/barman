@@ -356,7 +356,7 @@ class TestConfig(object):
                 "compression": "gzip",
                 "compression_level": "medium",
                 "cloud_staging_directory": "/tmp/barman/cloud-staging",
-                "cloud_staging_max_size": 30000000000,
+                "cloud_staging_max_size": 30 * 1024 * 1024 * 1024,  # 30 GiB
                 "last_backup_maximum_age": timedelta(1),
                 "last_backup_minimum_size": 1048576,
                 "last_wal_maximum_age": timedelta(hours=1),
@@ -397,7 +397,7 @@ class TestConfig(object):
                 "backup_compression_workers": None,
                 "cluster": "web",
                 "cloud_staging_directory": "/tmp/barman/cloud-staging",
-                "cloud_staging_max_size": 30000000000,
+                "cloud_staging_max_size": 30 * 1024 * 1024 * 1024,  # 30 GiB
                 "compression": None,
                 "compression_level": "medium",
                 "conninfo": "host=web01 user=postgres port=5432",

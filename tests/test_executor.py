@@ -1928,8 +1928,8 @@ class TestCloudPostgresBackupExecutor(object):
         executor._tarball_dest = "/tmp/barman/tarballs"
         executor.config = mock.Mock(
             bandwidth_limit=None,
-            cloud_upload_max_archive_size=100000000000,
-            cloud_upload_min_chunk_size=5000000,
+            cloud_upload_max_archive_size=100 * 1024 * 1024 * 1024,  # 100GiB
+            cloud_upload_min_chunk_size=5 * 1024 * 1024,  # 5MiB
         )
         executor.config.name = "test_server"
         executor._cloud_interface = mock.Mock(path="/my-bucket/backups")
@@ -1943,10 +1943,10 @@ class TestCloudPostgresBackupExecutor(object):
         # THEN a CloudUploadController is created with the expected parameters
         mock_upload_controller.assert_called_once_with(
             cloud_interface=executor._cloud_interface,
-            max_archive_size=100000000000,  # 100G
+            max_archive_size=100 * 1024 * 1024 * 1024,  # 100GiB
             key_prefix=key_prefix,
             compression=None,
-            min_chunk_size=5000000,  # 5M
+            min_chunk_size=5 * 1024 * 1024,  # 5MiB
             max_bandwidth=None,
             staging_dir=executor._tarball_dest,
         )
@@ -1968,8 +1968,8 @@ class TestCloudPostgresBackupExecutor(object):
         executor._tarball_dest = "/tmp/barman/tarballs"
         executor.config = mock.Mock(
             bandwidth_limit=512,  # 512 kB/s
-            cloud_upload_max_archive_size=100000000000,
-            cloud_upload_min_chunk_size=5000000,
+            cloud_upload_max_archive_size=100 * 1024 * 1024 * 1024,  # 100GiB
+            cloud_upload_min_chunk_size=5 * 1024 * 1024,  # 5MiB
         )
         executor.config.name = "test_server"
         executor._cloud_interface = mock.Mock(path="/my-bucket/backups")
@@ -1983,9 +1983,9 @@ class TestCloudPostgresBackupExecutor(object):
         mock_upload_controller.assert_called_once_with(
             cloud_interface=executor._cloud_interface,
             key_prefix=key_prefix,
-            max_archive_size=100000000000,
+            max_archive_size=100 * 1024 * 1024 * 1024,  # 100GiB
             compression=None,
-            min_chunk_size=5000000,
+            min_chunk_size=5 * 1024 * 1024,  # 5MiB
             max_bandwidth=512000,  # 512 kB/s converted to 512000 B/s
             staging_dir=executor._tarball_dest,
         )
@@ -2858,8 +2858,8 @@ class TestCloudBackupExecutor(object):
         executor.server = mock.Mock()
         mock_config = mock.Mock()
         mock_config.name = "test_server"
-        mock_config.cloud_upload_max_archive_size = 100000000000
-        mock_config.cloud_upload_min_chunk_size = 5000000
+        mock_config.cloud_upload_max_archive_size = 100 * 1024 * 1024 * 1024  # 100 GiB
+        mock_config.cloud_upload_min_chunk_size = 5 * 1024 * 1024  # 5 MiB
         mock_config.bandwidth_limit = None
         executor.config = mock_config
 
@@ -2895,10 +2895,10 @@ class TestCloudBackupExecutor(object):
         mock_uploader_class.assert_called_once_with(
             server_name="test_server",
             cloud_interface=mock_cloud_interface,
-            max_archive_size=100000000000,  # 100 GB
+            max_archive_size=100 * 1024 * 1024 * 1024,  # 100 GiB
             postgres=mock_postgres,
             backup_name="test_backup",
-            min_chunk_size=5000000,  # 5 MB
+            min_chunk_size=5 * 1024 * 1024,  # 5 MiB
             max_bandwidth=None,
         )
 
@@ -2940,8 +2940,8 @@ class TestCloudBackupExecutor(object):
         executor.server = mock.Mock()
         mock_config = mock.Mock()
         mock_config.name = "test_server"
-        mock_config.cloud_upload_max_archive_size = 100000000000
-        mock_config.cloud_upload_min_chunk_size = 5000000
+        mock_config.cloud_upload_max_archive_size = 100 * 1024 * 1024 * 1024  # 100 GiB
+        mock_config.cloud_upload_min_chunk_size = 5 * 1024 * 1024  # 5 MiB
         mock_config.bandwidth_limit = None
         executor.config = mock_config
 
@@ -2977,8 +2977,8 @@ class TestCloudBackupExecutor(object):
         executor.server = mock.Mock()
         mock_config = mock.Mock()
         mock_config.name = "test_server"
-        mock_config.cloud_upload_max_archive_size = 100000000000
-        mock_config.cloud_upload_min_chunk_size = 5000000
+        mock_config.cloud_upload_max_archive_size = 100 * 1024 * 1024 * 1024  # 100 GiB
+        mock_config.cloud_upload_min_chunk_size = 5 * 1024 * 1024  # 5 MiB
         mock_config.bandwidth_limit = 100  # 100 kB/s
         executor.config = mock_config
 
@@ -3014,10 +3014,10 @@ class TestCloudBackupExecutor(object):
         mock_uploader_class.assert_called_once_with(
             server_name="test_server",
             cloud_interface=mock_cloud_interface,
-            max_archive_size=100000000000,
+            max_archive_size=100 * 1024 * 1024 * 1024,  # 100 GiB
             postgres=mock_postgres,
             backup_name="test_backup",
-            min_chunk_size=5000000,
+            min_chunk_size=5 * 1024 * 1024,  # 5 MiB
             max_bandwidth=100000,  # 100 kB/s converted to 100000 B/s
         )
 

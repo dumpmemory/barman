@@ -322,8 +322,8 @@ def build_config_dictionary(config_keys=None):
         "check_timeout": 30,
         "cloud_delete_batch_size": None,
         "cloud_staging_directory": "/tmp/barman/cloud-staging",
-        "cloud_staging_max_size": 30000000000,
-        "cloud_upload_max_archive_size": 100000000000,
+        "cloud_staging_max_size": 30 * 1024 * 1024 * 1024,  # 30GiB
+        "cloud_upload_max_archive_size": 100 * 1024 * 1024 * 1024,  # 100GiB
         "cloud_upload_min_chunk_size": None,
         "custom_compression_filter": None,
         "custom_decompression_filter": None,

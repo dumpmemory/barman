@@ -59,14 +59,14 @@ Parameters
     The maximum size that ``--cloud-staging-directory`` can grow to before Barman stops
     generating new backup chunks. This is used to prevent the staging directory from
     growing in case the speed of uploading chunks does not keep up with the speed of
-    streaming them from Postgres. The default value is ``30G``.
+    streaming them from Postgres. The default value is ``30Gi``.
 
     Extremely low values are discouraged as they may lead to performance degradation.
-    We recommend a minimum of at least ``10G``. The optimal value will depend on the
+    We recommend a minimum of at least ``10Gi``. The optimal value will depend on the
     transfer speed of the backup to Barman and from Barman to the cloud, as well as the
     size of the backup.
 
-    The accepted format is ``n {k|Ki|M|Mi|G|Gi|T|Ti}`` and case-sensitive, where ``n``
+    The accepted format is ``n{k|Ki|M|Mi|G|Gi|T|Ti}`` and case-sensitive, where ``n``
     is an integer greater than zero, with an optional SI or IEC suffix. k stands for
     kilo with k = 1000, while Ki stands for kilobytes Ki = 1024. The rest of the options
     have the same reasoning for greater units of measure.

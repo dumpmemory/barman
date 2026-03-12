@@ -19,7 +19,7 @@
     basebackups_directory = s3://my-bucket/barman
     wals_directory = s3://my-bucket/barman
     cloud_staging_directory = /tmp/barman/cloud-staging
-    cloud_staging_max_size = 30G
+    cloud_staging_max_size = 30Gi
     ```
 
     The backup structure in the cloud storage follows the same patterns as the current

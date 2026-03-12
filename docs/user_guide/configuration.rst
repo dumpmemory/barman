@@ -853,10 +853,12 @@ Scope: Global / Server / Model.
 
 Specifies the maximum size in bytes for individual archive files during cloud uploads.
 When uploading backups to cloud storage, Barman splits the backup into multiple archive
-files if it exceeds this size. The default value is ``100G``.
+files if it exceeds this size. The default value is ``100Gi``.
 
-This option accepts human-readable size formats using SI or IEC suffixes (e.g., ``50G``,
-``100Gi``, ``1T``).
+The accepted format is ``n{k|Ki|M|Mi|G|Gi|T|Ti}`` and case-sensitive, where ``n``
+is an integer greater than zero, with an optional SI or IEC suffix. k stands for
+kilo with k = 1000, while Ki stands for kilobytes Ki = 1024. The rest of the options
+have the same reasoning for greater units of measure.
 
 .. note::
   Only supported when ``backup_method`` is ``postgres`` or ``local-to-cloud``, and
@@ -871,8 +873,10 @@ cloud storage. This controls the size of each part when uploading large files to
 object storage. When not set, defaults to the chunk size of the cloud provider: ``5Mi``
 for S3, and ``64Ki`` for Azure Blob. Not applicable for GCS.
 
-This option accepts human-readable size formats using SI or IEC suffixes (e.g., ``5Mi``,
-``10M``, ``20Mi``).
+The accepted format is ``n{k|Ki|M|Mi|G|Gi|T|Ti}`` and case-sensitive, where ``n``
+is an integer greater than zero, with an optional SI or IEC suffix. k stands for
+kilo with k = 1000, while Ki stands for kilobytes Ki = 1024. The rest of the options
+have the same reasoning for greater units of measure.
 
 .. note::
   Only supported when ``backup_method`` is ``postgres`` or ``local-to-cloud``, and
@@ -891,14 +895,14 @@ Scope: Global / Server / Model.
 The maximum size that ``cloud_staging_directory`` can grow to before Barman stops
 generating new backup chunks. This is used to prevent the staging directory from
 growing in case the speed of uploading chunks does not keep up with the speed of
-streaming them from Postgres. The default value is ``30G``.
+streaming them from Postgres. The default value is ``30Gi``.
 
 Extremely low values are discouraged as they may lead to performance degradation. We
-recommend a minimum of at least ``10G``. The optimal value will depend on the transfer
+recommend a minimum of at least ``10Gi``. The optimal value will depend on the transfer
 speed of the backup to Barman and from Barman to the cloud, as well as the size of the
 backup.
 
-The accepted format is ``n {k|Ki|M|Mi|G|Gi|T|Ti}`` and case-sensitive, where ``n`` is
+The accepted format is ``n{k|Ki|M|Mi|G|Gi|T|Ti}`` and case-sensitive, where ``n`` is
 an integer greater than zero, with an optional SI or IEC suffix. k stands for kilo with
 k = 1000, while Ki stands for kilobytes Ki = 1024. The rest of the options have the same
 reasoning for greater units of measure.
@@ -1476,7 +1480,7 @@ Scope: Global / Server / Model.
 Specifies the minimum acceptable size for the latest successful backup. If the latest
 backup is smaller than this size, the barman check command will report an error. If
 left empty (default), the latest backup is always considered valid. The accepted
-format is ``"n {k|Ki|M|Mi|G|Gi|T|Ti}"`` and case-sensitive, where ``n`` is an integer
+format is ``"n{k|Ki|M|Mi|G|Gi|T|Ti}"`` and case-sensitive, where ``n`` is an integer
 greater than zero, with an optional SI or IEC suffix. k stands for kilo with k = 1000,
 while Ki stands for kilobytes Ki = 1024. The rest of the options have the same
 reasoning for greater units of measure.

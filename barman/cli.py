@@ -569,7 +569,7 @@ def backup_completer(prefix, parsed_args, **kwargs):
             "--cloud-staging-max-size",
             help="Max size that `--cloud-staging-directory` can reach. "
             "If this value is ever surparsed then the backup process is paused and "
-            "only resumed when enough space is available. Default is 30G.",
+            "only resumed when enough space is available. Default is 30Gi.",
             type=parse_si_suffix,
         ),
     ]
