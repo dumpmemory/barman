@@ -21,7 +21,8 @@
   and `wals_directory` to a cloud storage URL (e.g., `s3://my-bucket/barman`).
 
   Example configuration:
-  ```
+
+  ```ini
   [myserver]
   backup_method = postgres
   basebackups_directory = s3://my-bucket/barman
@@ -68,7 +69,8 @@
   API and uploading backups directly to cloud object storage.
 
   Example configuration:
-  ```
+
+  ```ini
   [myserver]
   backup_method = local-to-cloud
   basebackups_directory = s3://my-bucket/barman/backups
