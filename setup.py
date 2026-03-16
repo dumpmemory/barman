@@ -45,7 +45,6 @@ setup_requires = pytest_runner
 install_requires = [
     "psycopg2 >= 2.4.2",
     "python-dateutil",
-    "setuptools",  # Python 3.12+ no longer includes setuptools by default
 ]
 
 extras_requires = {
