@@ -52,7 +52,6 @@ The minimal system requirements needed to run a Barman server are the following:
 
   * ``psycopg2`` >= 2.4.2: Required to connect to the Postgres server
   * ``python-dateutil``
-  * ``setuptools``
   * ``argcomplete`` (optional)
 * PostgreSQL client tools: Required to interact with the Postgres server
 * PostgreSQL server >= 13
