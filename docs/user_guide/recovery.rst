@@ -388,13 +388,6 @@ The process involves a few steps:
 3. When additional operations are required, the staging directory is removed after the
    subsequent operation have finished.
 
-Since Barman does not have knowledge of the deployment environment, it depends on the
-``staging_path`` and ``staging_location`` options to determine an appropriate location
-for the staging directory. Set the option in the global/server configuration or use the
-``--staging-path`` and ``--staging-location`` options with the ``barman restore``
-command. Failing to do so will result in an error, as Barman cannot guess a suitable
-location on its own.
-
 .. _recovery-recovering-block-level-incremental-backups:
 
 Recovering block-level incremental Backups
@@ -402,13 +395,7 @@ Recovering block-level incremental Backups
 
 If you are recovering from a block-level incremental backup, Barman combines the backup
 chain using ``pg_combinebackup``. This chain consists of the root backup and all
-subsequent incremental backups up to the one being recovered. 
-
-To successfully recover from a block-level incremental backup, you must specify the
-``staging_path`` and ``staging_location`` options in the global/server configuration or
-use the equivalent ``--staging-path`` and ``--staging-location`` options with the
-``barman restore`` command. Failing to do so will result in an error, as Barman cannot
-automatically determine a suitable staging location.
+subsequent incremental backups up to the one being recovered.
 
 The process involves the following steps:
 
