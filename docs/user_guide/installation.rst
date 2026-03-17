@@ -3,13 +3,19 @@
 Installing
 ==========
 
-Barman official packages are provided by :term:`PGDG`. These packages use the default
-version of Python 3 that comes with the operating system.
+Barman official community packages are provided by :term:`PGDG`.
 
-There are three packages that make up the suite of Barman features: ``barman``,
-``barman-cli`` and ``barman-cli-cloud``.
+.. note::
+    If you are an EnterpriseDB customer, you should use the packages provided by
+    EDB. This will ensure better compatibility with other EDB products.
+
+There are four packages that make up the suite of Barman features: ``barman``,
+``python3-barman``, ``barman-cli`` and ``barman-cli-cloud``.
 
 * ``barman`` is the main package and it must be installed.
+
+* ``python3-barman`` is a package that holds the Python libraries of Barman. It
+  is a package required by all the other Barman packages.
 
 * ``barman-cli`` is an optional package that holds the ``barman-wal-restore`` and
   ``barman-wal-archive`` utilites. This package is mandatory if you plan to use those
@@ -23,9 +29,9 @@ There are three packages that make up the suite of Barman features: ``barman``,
 
 
 .. note::
-    Barman packages can be found in several different repositories. We recommend using
-    PGDG repositories because it ensures compatibility, stability and access to
-    the latest updates.
+    Barman packages can be found in several different repositories. Unless you have an
+    EDB subscription, we recommend using PGDG repositories, because it ensures
+    compatibility, stability and access to the latest updates.
 
 .. warning::
     Do not upgrade Barman using different repositories. By doing so you risk losing your
