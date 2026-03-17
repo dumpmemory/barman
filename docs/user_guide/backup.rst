@@ -148,6 +148,17 @@ safely stored in the cloud.
   same path, for both options. This ensures a consistent storage structure in the cloud
   as Barman organizes data of each server in dedicated subdirectories.
 
+.. warning::
+  Changing the value of ``basebackups_directory`` and/or ``wals_directory`` on an
+  active server is discouraged. Even if done with care, by deactivating the server,
+  moving existing data to the new location, and reactivating it, there are potential
+  risks of data loss or misconfiguration.
+
+  Instead, the safe option is to create a new server configuration with the new value
+  for ``basebackups_directory`` or ``wals_directory``, perform a new full backup to the
+  new server, and then decommission the old server once the new one is fully
+  operational.
+
 When using this feature, Barman requires a local staging space to process chunks before
 uploading them to the cloud. The amount of staging space allowed to be used as well as
 its location can be configured with the options ``cloud_staging_max_size`` and
@@ -337,6 +348,17 @@ Similarly, ``wals_directory`` should point to an S3 storage location for WAL arc
     It's recommended to use the same bucket and path for both ``basebackups_directory``
     and ``wals_directory`` to maintain a consistent storage structure in the cloud, as
     Barman organizes data of each server in dedicated subdirectories.
+
+.. warning::
+  Changing the value of ``basebackups_directory`` and/or ``wals_directory`` on an
+  active server is discouraged. Even if done with care, by deactivating the server,
+  moving existing data to the new location, and reactivating it, there are potential
+  risks of data loss or misconfiguration.
+
+  Instead, the safe option is to create a new server configuration with the new value
+  for ``basebackups_directory`` or ``wals_directory``, perform a new full backup to the
+  new server, and then decommission the old server once the new one is fully
+  operational.
 
 
 AWS S3 Configuration Options

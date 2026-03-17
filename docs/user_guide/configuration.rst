@@ -605,6 +605,17 @@ Destination for base backup files. It can be a local path if storing backups loc
 or a cloud storage URL if streaming backups to the cloud as described in
 :ref:`backup-streaming-backup-cloud`. Defaults to ``<backup_directory>/base``.
 
+.. warning::
+  Changing the value of ``basebackups_directory`` on an active server is discouraged.
+  Even if done with care, by deactivating the server, moving existing data to the new
+  location, and reactivating it, there are potential risks of data loss or
+  misconfiguration.
+
+  Instead, the safe option is to create a new server configuration with the new value
+  for ``basebackups_directory``, perform a new full backup to the new server, and then
+  decommission the old server once the new one is fully operational.
+
+
 Scope: Server.
 
 **basebackup_retry_sleep**
@@ -1357,6 +1368,16 @@ Scope: Server / Model.
 Destination for archived WAL files. It can be a local path if storing WAL files locally,
 or a cloud storage URL if storing WAL files in the cloud as described in
 :ref:`backup-streaming-backup-cloud`. Defaults to ``<backup_directory>/wals``.
+
+.. warning::
+  Changing the value of ``wals_directory`` on an active server is discouraged. Even if
+  done with care, by deactivating the server, moving existing data to the new location,
+  and reactivating it, there are potential risks of data loss or misconfiguration.
+
+  Instead, the safe option is to create a new server configuration with the new value
+  for ``wals_directory``, perform a new full backup to the new server, and then
+  decommission the old server once the new one is fully operational.
+
 
 Scope: Server.
 
