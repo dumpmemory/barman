@@ -208,6 +208,11 @@ This is a libpq connection string. Commonly used keys include: ``host``, ``hosta
 `libpq-connstring <https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING>`_
 PostgreSQL documentation for details.
 
+.. note::
+   Multi-host connection strings (e.g. ``host=primary_db,replica_db``) and
+   ``target_session_attrs`` are not supported. Each connection string must point
+   to a single, specific host.
+
 Scope: Server / Model.
 
 **create_slot**
@@ -389,6 +394,9 @@ Scope: Server / Model.
 Connection string for Barman to connect to the primary Postgres server during a
 standby backup.
 
+.. note::
+   Multi-host connection strings are not supported. See ``conninfo`` for details.
+
 Scope: Server / Model.
 
 **primary_ssh_command**
@@ -443,6 +451,9 @@ Scope: Global / Server / Model.
 **streaming_conninfo**
 
 Connection string for streaming replication protocol. Defaults to ``conninfo``.
+
+.. note::
+   Multi-host connection strings are not supported. See ``conninfo`` for details.
 
 Scope: Server / Model.
 
