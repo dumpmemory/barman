@@ -515,6 +515,12 @@ man_pages = [
         [author],
         1,
     ),
+    # As there would be a clash in the name of the man pages for the
+    # "barman-cloud-wal-archive" script and the "barman cloud-wal-archive" command, we
+    # decided not to have a man page for the command for now. Once we deprecate the
+    # script, we can do the other way around.
+    # TODO: have a man page for "barman cloud-wal-archive" command once the cloud script
+    # is deprecated.
     (
         "user_guide/commands/barman_cloud/wal_archive.inc",
         "barman-cloud-wal-archive",
