@@ -25,7 +25,6 @@ import signal
 import sys
 from argparse import ArgumentTypeError
 from datetime import datetime, timedelta
-from distutils.version import LooseVersion
 
 import mock
 import pytest
@@ -39,8 +38,266 @@ from testing_helpers import (
 import barman.utils
 from barman.infofile import BackupInfo, WalFileInfo, load_datetime_tz
 from barman.lockfile import LockFile
+from barman.utils import LooseVersion
 
 LOGFILE_NAME = "logfile.log"
+
+
+class TestLooseVersion(object):
+    """
+    Test LooseVersion class.
+    """
+
+    @pytest.mark.parametrize(
+        ("left", "right"),
+        [
+            # GIVEN two equal simple versions
+            ("9.5.3", "9.5.3"),
+            # GIVEN two equal single-component versions
+            ("10", "10"),
+            # GIVEN two equal versions with many components
+            ("1.2.3.4.5", "1.2.3.4.5"),
+        ],
+    )
+    def test_equality(self, left, right):
+        """Verify that equal version strings compare as equal."""
+        # WHEN we compare the two versions
+        # THEN they are equal in both directions
+        assert LooseVersion(left) == LooseVersion(right)
+        assert not (LooseVersion(left) != LooseVersion(right))
+
+    @pytest.mark.parametrize(
+        ("lesser", "greater"),
+        [
+            # GIVEN a lower patch version and a higher patch version
+            ("9.5.2", "9.5.3"),
+            # GIVEN a lower major version and a higher major version
+            ("9.6", "10.0"),
+            # GIVEN a shorter version and a longer version with the same prefix
+            ("1.0", "1.0.1"),
+            # GIVEN two single-component versions
+            ("9", "10"),
+            # GIVEN alphabetic parts that differ
+            ("1.0a", "1.0b"),
+        ],
+    )
+    def test_less_than(self, lesser, greater):
+        """Verify that version ordering works correctly."""
+        # WHEN we compare the two versions
+        # THEN the lesser version is less than the greater
+        assert LooseVersion(lesser) < LooseVersion(greater)
+        # AND the greater version is not less or equal to the lesser
+        assert not (LooseVersion(greater) <= LooseVersion(lesser))
+
+    @pytest.mark.parametrize(
+        ("lesser", "greater"),
+        [
+            # GIVEN a lower patch version and a higher patch version
+            ("9.5.2", "9.5.3"),
+            # GIVEN a lower major version and a higher major version
+            ("9.6", "10.0"),
+        ],
+    )
+    def test_greater_than(self, lesser, greater):
+        """Verify that the > operator works correctly."""
+        # WHEN we compare the two versions
+        # THEN the greater version is greater than the lesser
+        assert LooseVersion(greater) > LooseVersion(lesser)
+        # AND the lesser version is not greater or equal to the greater
+        assert not (LooseVersion(lesser) >= LooseVersion(greater))
+
+    @pytest.mark.parametrize(
+        ("left", "right"),
+        [
+            # GIVEN two equal versions
+            ("9.5.3", "9.5.3"),
+            # GIVEN a greater and a lesser version
+            ("10.0", "9.6"),
+        ],
+    )
+    def test_greater_equal(self, left, right):
+        """Verify that the >= operator works correctly."""
+        # WHEN we compare the two versions
+        # THEN the left version is >= the right
+        assert LooseVersion(left) >= LooseVersion(right)
+        # AND the right version is not greater than the left
+        assert not (LooseVersion(right) > LooseVersion(left))
+
+    @pytest.mark.parametrize(
+        ("left", "right"),
+        [
+            # GIVEN two equal versions
+            ("9.5.3", "9.5.3"),
+            # GIVEN a lesser and a greater version
+            ("9.6", "10.0"),
+        ],
+    )
+    def test_less_equal(self, left, right):
+        """Verify that the <= operator works correctly."""
+        # WHEN we compare the two versions
+        # THEN the left version is <= the right
+        assert LooseVersion(left) <= LooseVersion(right)
+        # AND the right version is not less than the left
+        assert not (LooseVersion(right) < LooseVersion(left))
+
+    @pytest.mark.parametrize(
+        ("left", "right"),
+        [
+            # GIVEN versions that differ in patch
+            ("9.5.2", "9.5.3"),
+            # GIVEN versions that differ in major
+            ("9.6", "10.0"),
+            # GIVEN versions with different component counts
+            ("1.0", "1.0.1"),
+        ],
+    )
+    def test_not_equal(self, left, right):
+        """Verify that unequal versions compare as not equal."""
+        # WHEN we compare the two versions
+        # THEN they are not equal in both directions
+        assert LooseVersion(left) != LooseVersion(right)
+        assert not (LooseVersion(left) == LooseVersion(right))
+
+    def test_mixed_int_str_comparison_raises_type_error(self):
+        """Verify that comparing versions with mismatched component types raises."""
+        # GIVEN two versions where a numeric component aligns with an alphabetic one
+        numeric = LooseVersion("1.0")
+        alpha = LooseVersion("1.a")
+        # WHEN we compare them
+        # THEN a TypeError is raised because int and str cannot be compared
+        with pytest.raises(TypeError):
+            numeric < alpha
+
+    def test_str(self):
+        """Verify that str() returns the original version string."""
+        # GIVEN a version string
+        vstring = "9.5.3"
+        # WHEN we convert the LooseVersion to string
+        # THEN it matches the original input
+        assert str(LooseVersion(vstring)) == vstring
+
+    def test_str_preserves_original(self):
+        """Verify that str() preserves separators and formatting."""
+        # GIVEN a version string with non-standard separators
+        vstring = "1.0-beta2"
+        # WHEN we convert the LooseVersion to string
+        # THEN it preserves the original formatting
+        assert str(LooseVersion(vstring)) == vstring
+
+    def test_repr(self):
+        """Verify that repr() returns a useful representation."""
+        # GIVEN a LooseVersion instance
+        version = LooseVersion("9.5.3")
+        # WHEN we get the repr
+        # THEN it includes the class name and version string
+        assert repr(version) == "LooseVersion('9.5.3')"
+
+    def test_hash_equal_versions(self):
+        """Verify that equal versions produce equal hashes."""
+        # GIVEN two equal versions
+        v1 = LooseVersion("9.5.3")
+        v2 = LooseVersion("9.5.3")
+        # WHEN we compare their hashes
+        # THEN the hashes are equal
+        assert hash(v1) == hash(v2)
+
+    def test_hash_usable_in_set(self):
+        """Verify that LooseVersion instances can be used in sets."""
+        # GIVEN a set with a version
+        versions = {LooseVersion("9.5.3")}
+        # WHEN we check membership
+        # THEN an equal version is found in the set
+        assert LooseVersion("9.5.3") in versions
+
+    def test_non_numeric_input(self):
+        """Verify that a non-numeric version string is accepted."""
+        # GIVEN a version string that is purely alphabetic
+        version = LooseVersion("beta")
+        # WHEN we convert to string
+        # THEN it matches the original input
+        assert str(version) == "beta"
+
+    def test_comparison_with_unsupported_type_returns_not_implemented(self):
+        """Verify that comparing with an unsupported type returns NotImplemented."""
+        # GIVEN a LooseVersion instance
+        version = LooseVersion("1.0")
+        # WHEN we compare with an unsupported type
+        # THEN __eq__ returns NotImplemented
+        assert version.__eq__(1.0) is NotImplemented
+        # AND __lt__ returns NotImplemented
+        assert version.__lt__(1.0) is NotImplemented
+
+    @pytest.mark.parametrize(
+        ("version", "string", "expected"),
+        [
+            # GIVEN a LooseVersion and an equal string
+            ("9.5.3", "9.5.3", True),
+            # GIVEN a LooseVersion and a different string
+            ("9.5.3", "10.0", False),
+        ],
+    )
+    def test_equality_with_string(self, version, string, expected):
+        """Verify that a string is auto-cast to LooseVersion for equality."""
+        # WHEN we compare a LooseVersion with a plain string
+        # THEN the string is coerced and compared correctly
+        assert (LooseVersion(version) == string) is expected
+
+    @pytest.mark.parametrize(
+        ("version", "string", "expected"),
+        [
+            # GIVEN a lower version and a higher version string
+            ("9.5.3", "10.0", True),
+            # GIVEN a higher version and a lower version string
+            ("10.0", "9.5.3", False),
+        ],
+    )
+    def test_less_than_with_string(self, version, string, expected):
+        """Verify that a string is auto-cast to LooseVersion for ordering."""
+        # WHEN we compare a LooseVersion with a plain string
+        # THEN the string is coerced and compared correctly
+        assert (LooseVersion(version) < string) is expected
+
+    def test_greater_than_with_string(self):
+        """Verify that a string is auto-cast to LooseVersion for > comparison."""
+        # GIVEN a LooseVersion greater than a version string
+        # WHEN we compare them
+        # THEN the comparison works correctly
+        assert LooseVersion("10.0") > "9.5.3"
+        assert not (LooseVersion("9.5.3") > "10.0")
+
+    def test_init_with_non_string_input(self):
+        """Verify that non-string input is coerced via str()."""
+        # GIVEN an integer input
+        version = LooseVersion(10)
+        # WHEN we compare it
+        # THEN it behaves like the string "10"
+        assert version == LooseVersion("10")
+        # AND str() returns the coerced string
+        assert str(version) == "10"
+
+    def test_case_insensitive_alpha(self):
+        """Verify that alphabetic components are compared case-insensitively."""
+        # GIVEN two versions differing only in case
+        # WHEN we compare them
+        # THEN they are equal
+        assert LooseVersion("1.0.Alpha") == LooseVersion("1.0.alpha")
+
+    @pytest.mark.parametrize(
+        ("versions", "expected_order"),
+        [
+            # GIVEN a list of PostgreSQL-like versions
+            (
+                ["15.1", "9.6.24", "10.0", "14.7", "9.5.3"],
+                ["9.5.3", "9.6.24", "10.0", "14.7", "15.1"],
+            ),
+        ],
+    )
+    def test_sorting(self, versions, expected_order):
+        """Verify that a list of versions sorts correctly."""
+        # WHEN we sort the versions
+        result = sorted(LooseVersion(v) for v in versions)
+        # THEN the order matches the expected sorted order
+        assert [str(v) for v in result] == expected_order
 
 
 # noinspection PyMethodMayBeStatic
@@ -552,7 +809,7 @@ class TestBarmanEncoder(object):
 
     def test_version_objects(self):
         """
-        Test the BarmanEncoder on distutils version objects
+        Test the BarmanEncoder on Version objects
         """
         json_dump = json.dumps(LooseVersion("9.5.3"), cls=barman.utils.BarmanEncoder)
         assert json_dump == '"9.5.3"'
@@ -643,7 +900,7 @@ class TestBarmanEncoderV2(object):
 
     def test_version_objects(self):
         """
-        Test the BarmanEncoderV2 on distutils version objects
+        Test the BarmanEncoderV2 on Version objects
         """
         json_dump = json.dumps(LooseVersion("9.5.3"), cls=barman.utils.BarmanEncoderV2)
         assert json_dump == '"9.5.3"'
