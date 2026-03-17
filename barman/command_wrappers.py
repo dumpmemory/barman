@@ -33,7 +33,6 @@ import subprocess
 import sys
 import threading
 import time
-from distutils.version import LooseVersion as Version
 
 import barman.utils
 from barman.exceptions import (
@@ -41,6 +40,7 @@ from barman.exceptions import (
     CommandFailedException,
     CommandMaxRetryExceeded,
 )
+from barman.utils import LooseVersion as Version
 
 _logger = logging.getLogger(__name__)
 

@@ -37,7 +37,6 @@ import threading
 import time
 from abc import ABCMeta, abstractmethod
 from contextlib import closing
-from distutils.version import LooseVersion as Version
 from functools import partial
 from io import BytesIO
 
@@ -71,6 +70,7 @@ from barman.infofile import BackupInfo
 from barman.postgres import PostgresKeepAlive
 from barman.postgres_plumbing import EXCLUDE_LIST, PGDATA_EXCLUDE_LIST
 from barman.remote_status import RemoteStatusMixin
+from barman.utils import LooseVersion as Version
 from barman.utils import (
     check_aws_expiration_date_format,
     check_aws_snapshot_lock_cool_off_period_range,

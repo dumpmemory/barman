@@ -22,7 +22,6 @@ import math
 import os
 import shutil
 from datetime import datetime
-from distutils.version import LooseVersion as Version
 from io import RawIOBase
 
 import botocore
@@ -44,6 +43,7 @@ from barman.exceptions import (
     SnapshotBackupException,
     SnapshotInstanceNotFoundException,
 )
+from barman.utils import LooseVersion as Version
 
 _logger = logging.getLogger(__name__)
 

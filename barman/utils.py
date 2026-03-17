@@ -36,7 +36,7 @@ import sys
 from abc import ABCMeta, abstractmethod
 from argparse import ArgumentTypeError
 from contextlib import contextmanager
-from distutils.version import Version
+from functools import total_ordering
 from glob import glob
 
 from dateutil import tz
@@ -64,6 +64,110 @@ RESERVED_BACKUP_IDS = (
     "last-full",
     "auto",
 )
+
+
+@total_ordering
+class LooseVersion:
+    """
+    Loose version comparison.
+
+    Parses a version string into a sequence of components (numeric and
+    alphabetic) and compares them element-wise. Numeric parts are compared
+    as integers, alphabetic parts as case-insensitive strings. Numeric
+    parts always sort before alphabetic parts.
+
+    :cvar _COMPONENT_RE: regex to split version strings into components.
+    """
+
+    _COMPONENT_RE = re.compile(r"(\d+|[a-zA-Z]+)")
+
+    def __init__(self, vstring):
+        """
+        Initialize a LooseVersion instance.
+
+        :param str vstring: version string to be parsed.
+        """
+        self._vstring = str(vstring)
+        self._components = self._parse(self._vstring)
+
+    @staticmethod
+    def _parse(vstring):
+        """
+        Parse a version string into a list of components.
+
+        :param str vstring: version string to be parsed.
+        :return: list of components (integers and lowercase strings)
+        :rtype: list
+        """
+        parts = []
+        for token in LooseVersion._COMPONENT_RE.findall(vstring):
+            if token.isdigit():
+                parts.append(int(token))
+            else:
+                parts.append(token.lower())
+        return parts
+
+    def __str__(self):
+        """
+        Return the original version string.
+        """
+        return self._vstring
+
+    def __repr__(self):
+        """
+        Return a string representation of the LooseVersion instance.
+        """
+        return "%s('%s')" % (self.__class__.__name__, self._vstring)
+
+    def _coerce(self, other):
+        """
+        Coerce *other* to a :class:`LooseVersion` if it is a string,
+        or return it unchanged if it already is one.
+
+        :param other: value to coerce.
+        :return: a :class:`LooseVersion` instance, or *NotImplemented*
+            if *other* is not a supported type.
+        """
+        if isinstance(other, LooseVersion):
+            return other
+        if isinstance(other, str):
+            return LooseVersion(other)
+        return NotImplemented
+
+    def __eq__(self, other):
+        """
+        Check if this version is equal to another version.
+
+        If *other* is a string it is automatically cast to
+        :class:`LooseVersion` before comparing.
+
+        :param other: another LooseVersion instance or a version string.
+        :return: ``True`` if the versions are equal, ``False`` otherwise.
+        :rtype: bool
+        """
+        other = self._coerce(other)
+        if other is NotImplemented:
+            return NotImplemented
+        return self._components == other._components
+
+    def __lt__(self, other):
+        """
+        Check if this version is less than another version.
+
+        If *other* is a string it is automatically cast to
+        :class:`LooseVersion` before comparing.
+
+        :param other: another LooseVersion instance or a version string.
+        :return: ``True`` if this version is less than *other*.
+        :rtype: bool
+        """
+        other = self._coerce(other)
+        if other is NotImplemented:
+            return NotImplemented
+        return self._components < other._components
+
+    def __hash__(self):
+        return hash(tuple(self._components))
 
 
 def drop_privileges(user):
@@ -413,11 +517,11 @@ class BarmanEncoder(json.JSONEncoder):
     @staticmethod
     def version_to_str(obj):
         """
-        Manage (Loose|Strict)Version objects as strings.
+        Manage LooseVersion objects as strings.
         :param obj:
         :return: None|str
         """
-        if isinstance(obj, Version):
+        if isinstance(obj, LooseVersion):
             return str(obj)
 
 

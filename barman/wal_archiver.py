@@ -22,7 +22,6 @@ import logging
 import os
 import shutil
 from abc import ABCMeta, abstractmethod
-from distutils.version import LooseVersion as Version
 from glob import glob
 from tempfile import NamedTemporaryFile
 
@@ -40,6 +39,7 @@ from barman.exceptions import (
 from barman.hooks import HookScriptRunner, RetryHookScriptRunner
 from barman.infofile import WalFileInfo
 from barman.remote_status import RemoteStatusMixin
+from barman.utils import LooseVersion as Version
 from barman.utils import fsync_dir, fsync_file, mkpath, with_metaclass
 from barman.xlog import is_partial_file
 

@@ -28,7 +28,6 @@ import lzma
 import shutil
 from abc import ABCMeta, abstractmethod, abstractproperty
 from contextlib import closing
-from distutils.version import LooseVersion as Version
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -40,6 +39,7 @@ from barman.exceptions import (
     FileNotFoundException,
 )
 from barman.fs import unix_command_factory
+from barman.utils import LooseVersion as Version
 from barman.utils import force_str, with_metaclass
 
 _logger = logging.getLogger(__name__)

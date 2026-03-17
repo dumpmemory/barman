@@ -33,7 +33,6 @@ import socket
 import tempfile
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from distutils.version import LooseVersion as Version
 from io import BytesIO
 
 import dateutil.parser
@@ -71,6 +70,7 @@ from barman.exceptions import (
     UnsupportedCompressionFormat,
 )
 from barman.infofile import BackupInfo, BackupInfoFactory, VolatileBackupInfo
+from barman.utils import LooseVersion as Version
 from barman.utils import (
     force_str,
     get_major_version,
