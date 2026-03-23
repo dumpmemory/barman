@@ -50,6 +50,7 @@ from barman.recovery_executor import (
     ConfigurationFileMangeler,
     DecompressOperation,
     DecryptOperation,
+    DownloadOperation,
     MainRecoveryExecutor,
     RecoveryExecutor,
     RecoveryOperation,
@@ -3238,6 +3239,305 @@ class TestRecoveryOperation(object):
         assert operation.staging_path in args
 
 
+class TestDownloadOperation(object):
+    """
+    Tests for the :class:`DownloadOperation` class.
+    """
+
+    @pytest.mark.parametrize("use_backup_cloud_storage", [True, False])
+    def test_should_execute(self, use_backup_cloud_storage):
+        # GIVEN a DownloadOperation instance
+        operation = DownloadOperation(
+            config=mock.Mock(),
+            server=mock.Mock(use_backup_cloud_storage=use_backup_cloud_storage),
+            backup_manager=mock.Mock(),
+        )
+        # WHEN _should_execute is called
+        mock_backup_info = mock.Mock()
+        # THEN it returns True if backup cloud storage is in use, False otherwise
+        assert operation._should_execute(mock_backup_info) == use_backup_cloud_storage
+
+    def test_execute(self):
+        # GIVEN a DownloadOperation instance
+        operation = DownloadOperation(
+            config=mock.Mock(),
+            server=mock.Mock(),
+            backup_manager=mock.Mock(),
+        )
+        operation._execute_on_chain = mock.Mock()
+
+        args = [
+            "backup_info",
+            "destination",
+            "tablespaces",
+            "remote_command",
+            "recovery_info",
+            "safe_horizon",
+            "is_last_operation",
+        ]
+        # WHEN _execute is called
+        operation._execute(*args)
+        # THEN _execute_on_chain is called with the correct parameters
+        operation._execute_on_chain.assert_called_once_with(
+            "backup_info",
+            "destination",
+            operation._download_backup,
+            "tablespaces",
+            "is_last_operation",
+        )
+
+    @pytest.mark.parametrize("is_last_operation", [True, False])
+    @mock.patch(
+        "barman.recovery_executor.DownloadOperation._create_volatile_backup_info"
+    )
+    @mock.patch("barman.recovery_executor.DownloadOperation._get_tablespace_mapping")
+    @mock.patch("barman.recovery_executor.CloudBackupCatalog")
+    @mock.patch("barman.recovery_executor.DownloadOperation._link_tablespaces")
+    def test_download_backup(
+        self,
+        mock_link_tablespaces,
+        mock_cloud_backup_catalog,
+        mock_get_tablespace_mapping,
+        mock_create_volatile_backup_info,
+        is_last_operation,
+    ):
+        """
+        Test that :meth:`_download_backup` downloads the backup files from the cloud to
+        the respective destinations and links the tablespaces correctly.
+
+        .. note::
+            In this test, we simulate the most complete case where there are additional
+            files for both pgdata and tablespaces are present. Also test with different
+            values of ``is_last_operation`` for completeness.
+        """
+        # Prepare mocks
+        # Simulate a server with a cloud interface
+        mock_cloud_interface = mock.Mock()
+        server = mock.Mock(get_backup_cloud_interface=lambda: mock_cloud_interface)
+
+        # Simulate a config with a name for the cloud backup catalog
+        config = mock.Mock()
+        config.name = "server-name"
+
+        # Simulate a volatile backup info representing the backup being downloaded
+        # Note: its data directory is only used when this is not the last operation
+        mock_vol_backup_info = mock.Mock(
+            get_data_directory=lambda: "/staging/barman-download2323/backup_id/data"
+        )
+        mock_create_volatile_backup_info.return_value = mock_vol_backup_info
+
+        # Simulate a cloud backup catalog with backup files for pgdata and tablespaces
+        # Note: we simulate pgdata and tbspc having additional files because this is
+        # the most complete case so by asserting this we are also asserting simpler cases
+        pgdata_file_info2 = mock.Mock(path="/cloud/path/data_001.tar")
+        pgdata_file_info = mock.Mock(
+            path="/cloud/path/data.tar", additional_files=[pgdata_file_info2]
+        )
+        tbspc_file_info2 = mock.Mock(path="/cloud/path/12345_001.tar")
+        tbspc_file_info = mock.Mock(
+            path="/cloud/path/12345.tar", additional_files=[tbspc_file_info2]
+        )
+        ret_backup_files = {None: pgdata_file_info, "12345": tbspc_file_info}
+        mock_cloud_backup_catalog.return_value.get_backup_files.return_value = (
+            ret_backup_files
+        )
+
+        # Simulate tablespace being remapped to the following location
+        ret_tbspc_mapping = {
+            "/cloud/path/12345.tar": "/path/to/tbs1",
+            "/cloud/path/12345_001.tar": "/path/to/tbs1",
+        }
+        mock_get_tablespace_mapping.return_value = ret_tbspc_mapping
+
+        # GIVEN a DownloadOperation instance
+        operation = DownloadOperation(
+            config=config,
+            server=server,
+            backup_manager=mock.Mock(),
+        )
+
+        # WHEN _download_backup is called with the following parameters
+        mock_backup_info, destination, tablespaces = (
+            mock.Mock(),
+            "/fake/pgdata/destination",
+            {"tbs1": "/path/to/tbs1"},
+        )
+        operation._download_backup(
+            mock_backup_info, destination, tablespaces, is_last_operation
+        )
+
+        # THEN a volatile backup info is created correctly
+        mock_create_volatile_backup_info.assert_called_once_with(
+            mock_backup_info, destination
+        )
+        vol_backup_info = mock_create_volatile_backup_info.return_value
+
+        # AND a cloud backup catalog is instantiated correctly
+        mock_cloud_backup_catalog.assert_called_once_with(
+            mock_cloud_interface, "server-name"
+        )
+        ret_mock_cloud_catalog = mock_cloud_backup_catalog.return_value
+
+        # AND the backup files are retrieved from the cloud backup instance
+        ret_mock_cloud_catalog.get_backup_files.assert_called_once_with(
+            mock_backup_info
+        )
+
+        # AND the tablespace mappings are retrieved correctly
+        mock_get_tablespace_mapping.assert_called_once_with(
+            mock_backup_info,
+            vol_backup_info,
+            tablespaces,
+            ret_backup_files,
+            is_last_operation,
+        )
+
+        # AND finally the pgdata and tablespaces files are downloaded
+        # from the cloud to their respective destinations
+        expected_pgdata_dest = destination
+        if not is_last_operation:
+            expected_pgdata_dest = "/staging/barman-download2323/backup_id/data"
+        mock_cloud_interface.extract_tar.assert_has_calls(
+            [
+                mock.call("/cloud/path/data.tar", expected_pgdata_dest),
+                mock.call("/cloud/path/data_001.tar", expected_pgdata_dest),
+                mock.call("/cloud/path/12345.tar", "/path/to/tbs1"),
+                mock.call("/cloud/path/12345_001.tar", "/path/to/tbs1"),
+            ]
+        )
+
+        # AND lastly the tablespaces are linked in pg_tblspc
+        mock_link_tablespaces.assert_called_once_with(
+            vol_backup_info, expected_pgdata_dest, tablespaces, is_last_operation
+        )
+
+    @pytest.mark.parametrize(
+        "is_last_operation, tablespaces_relocation, expected_result",
+        [
+            # Case 1: Last operation, no relocation
+            # Tablespaces go from the cloud path to their original location on the server
+            (
+                True,
+                None,
+                {
+                    "/cloud/path/12345.tar": "/path/on/server/tbs1",
+                    "/cloud/path/12345_001.tar": "/path/on/server/tbs1",
+                    "/cloud/path/54321.tar": "/path/on/server/tbs2",
+                    "/cloud/path/54321_001.tar": "/path/on/server/tbs2",
+                },
+            ),
+            # Case 2: Not last operation, no relocation
+            # Tablespaces go from the cloud path to the volatile backup respective directory
+            (
+                False,
+                None,
+                {
+                    "/cloud/path/12345.tar": "/staging/download123/backup_id/12345",
+                    "/cloud/path/12345_001.tar": "/staging/download123/backup_id/12345",
+                    "/cloud/path/54321.tar": "/staging/download123/backup_id/54321",
+                    "/cloud/path/54321_001.tar": "/staging/download123/backup_id/54321",
+                },
+            ),
+            # Case 3: Last operation, with relocation
+            # Tablespaces go from the cloud path backup to the relocation path
+            (
+                True,
+                {"tbs1": "/path/to/relocation", "tbs2": "/path/to/relocation2"},
+                {
+                    "/cloud/path/12345.tar": "/path/to/relocation",
+                    "/cloud/path/12345_001.tar": "/path/to/relocation",
+                    "/cloud/path/54321.tar": "/path/to/relocation2",
+                    "/cloud/path/54321_001.tar": "/path/to/relocation2",
+                },
+            ),
+            # Case 4: Not last operation, with relocation
+            # Tablespaces go from the cloud path to the volatile backup respective directory
+            (
+                False,
+                {"tbs1": "/path/to/relocation", "tbs2": "/path/to/relocation2"},
+                {
+                    "/cloud/path/12345.tar": "/staging/download123/backup_id/12345",
+                    "/cloud/path/12345_001.tar": "/staging/download123/backup_id/12345",
+                    "/cloud/path/54321.tar": "/staging/download123/backup_id/54321",
+                    "/cloud/path/54321_001.tar": "/staging/download123/backup_id/54321",
+                },
+            ),
+        ],
+    )
+    def test_get_tablespace_mapping(
+        self,
+        is_last_operation,
+        tablespaces_relocation,
+        expected_result,
+    ):
+        """
+        Test that :meth:`_get_tablespace_mapping` returns the correct mapping of
+        tablespace files to their respective destinations.
+
+        .. note::
+            We test different values of ``is_last_operation`` and with/without
+            relocation of tablesapces for completeness. We also simulate files
+            for both pgdata and tablespaces having additional files as this is the
+            most complete case, so by asserting this we are also asserting simpler
+            cases.
+        """
+        # Prepare mocks
+        # Simulate a backup with two tablespaces to be restored
+        tbspc1 = mock.Mock(oid=12345, location="/path/on/server/tbs1")
+        tbspc1.name = "tbs1"
+        tbspc2 = mock.Mock(oid=54321, location="/path/on/server/tbs2")
+        tbspc2.name = "tbs2"
+        backup_info = mock.Mock(tablespaces=[tbspc1, tbspc2])
+
+        # Mock its respective volatile backup info
+        vol_backup_info = mock.Mock(
+            get_data_directory=lambda oid: f"/staging/download123/backup_id/{oid}",
+        )
+
+        # Mock the backup info files (as returned by the
+        # CloudBackupCatalog.get_backup_files method)
+        # We simulate that both pgdata and tablespaces have additional files as this is
+        # the most complete case, so by asserting this we are also asserting simpler cases
+        pgdata_file_info2 = mock.Mock(path="/cloud/path/data_001.tar")
+        pgdata_file_info = mock.Mock(
+            path="/cloud/path/data.tar", additional_files=[pgdata_file_info2]
+        )
+
+        tbspc1_file_info2 = mock.Mock(path="/cloud/path/12345_001.tar")
+        tbspc1_file_info1 = mock.Mock(
+            path="/cloud/path/12345.tar", additional_files=[tbspc1_file_info2]
+        )
+
+        tbspc2_file_info2 = mock.Mock(path="/cloud/path/54321_001.tar")
+        tbspc2_file_info1 = mock.Mock(
+            path="/cloud/path/54321.tar", additional_files=[tbspc2_file_info2]
+        )
+        backup_files = {
+            None: pgdata_file_info,
+            12345: tbspc1_file_info1,
+            54321: tbspc2_file_info1,
+        }
+
+        # GIVEN a CombineOperation instance
+        operation = DownloadOperation(
+            config=mock.Mock(),
+            server=mock.Mock(),
+            backup_manager=mock.Mock(),
+        )
+
+        # WHEN _get_tablespace_mapping is called
+        ret = operation._get_tablespace_mapping(
+            backup_info,
+            vol_backup_info,
+            tablespaces_relocation,
+            backup_files,
+            is_last_operation,
+        )
+
+        # THEN the mapping is correct
+        assert ret == expected_result
+
+
 class TestRsyncCopyOperation(object):
     """
     Tests for the :class:`RsyncCopyOperation` class.
@@ -4665,209 +4965,323 @@ class TestMainRecoveryExecutor(object):
         # staging_location is "remote" because this not a valid combination
         # and it's blocked directly in the CLI, so such cases will never
         # arrive to this method. Besides that, every combination is tested
-        "is_remote_recovery, staging_location, is_incremental, any_compressed, any_encrypted, expected_operations",
+        "is_remote_recovery, staging_location, is_incremental, any_compressed, any_encrypted, use_cloud_storage, expected_operations",
         [
             (
-                False,
-                "local",
-                False,
-                False,
-                False,
-                [RsyncCopyOperation],
+                False,  # is_remote_recovery
+                "local",  # staging_location
+                False,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [RsyncCopyOperation],  # expected_operations
             ),
             (
-                True,
-                "local",
-                False,
-                False,
-                False,
-                [RsyncCopyOperation],
+                True,  # is_remote_recovery
+                "local",  # staging_location
+                False,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [RsyncCopyOperation],  # expected_operations
             ),
             (
-                False,
-                "local",
-                False,
-                False,
-                True,
-                [DecryptOperation],
+                False,  # is_remote_recovery
+                "local",  # staging_location
+                False,  # is_incremental
+                False,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
+                [DecryptOperation],  # expected_operations
             ),
             (
-                True,
-                "local",
-                False,
-                False,
-                True,
-                [DecryptOperation, RsyncCopyOperation],
+                True,  # is_remote_recovery
+                "local",  # staging_location
+                False,  # is_incremental
+                False,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
+                [DecryptOperation, RsyncCopyOperation],  # expected_operations
             ),
             (
-                False,
-                "local",
-                True,
-                False,
-                False,
-                [CombineOperation],
+                False,  # is_remote_recovery
+                "local",  # staging_location
+                True,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [CombineOperation],  # expected_operations
             ),
             (
-                True,
-                "local",
-                True,
-                False,
-                False,
-                [CombineOperation, RsyncCopyOperation],
+                True,  # is_remote_recovery
+                "local",  # staging_location
+                True,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [CombineOperation, RsyncCopyOperation],  # expected_operations
             ),
             (
-                False,
-                "local",
-                True,
-                False,
-                True,
-                [DecryptOperation, CombineOperation],
+                False,  # is_remote_recovery
+                "local",  # staging_location
+                True,  # is_incremental
+                False,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
+                [DecryptOperation, CombineOperation],  # expected_operations
             ),
             (
-                True,
-                "local",
-                True,
-                False,
-                True,
-                [DecryptOperation, CombineOperation, RsyncCopyOperation],
+                True,  # is_remote_recovery
+                "local",  # staging_location
+                True,  # is_incremental
+                False,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
+                [
+                    DecryptOperation,
+                    CombineOperation,
+                    RsyncCopyOperation,
+                ],  # expected_operations
             ),
             (
-                False,
-                "local",
-                True,
-                True,
-                False,
-                [DecompressOperation, CombineOperation],
+                False,  # is_remote_recovery
+                "local",  # staging_location
+                True,  # is_incremental
+                True,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [DecompressOperation, CombineOperation],  # expected_operations
             ),
             (
-                True,
-                "local",
-                True,
-                True,
-                False,
-                [DecompressOperation, CombineOperation, RsyncCopyOperation],
+                True,  # is_remote_recovery
+                "local",  # staging_location
+                True,  # is_incremental
+                True,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [
+                    DecompressOperation,
+                    CombineOperation,
+                    RsyncCopyOperation,
+                ],  # expected_operations
             ),
             (
-                False,
-                "local",
-                True,
-                True,
-                True,
-                [DecryptOperation, DecompressOperation, CombineOperation],
+                False,  # is_remote_recovery
+                "local",  # staging_location
+                True,  # is_incremental
+                True,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
+                [
+                    DecryptOperation,
+                    DecompressOperation,
+                    CombineOperation,
+                ],  # expected_operations
             ),
             (
-                True,
-                "local",
-                True,
-                True,
-                True,
+                True,  # is_remote_recovery
+                "local",  # staging_location
+                True,  # is_incremental
+                True,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
                 [
                     DecryptOperation,
                     DecompressOperation,
                     CombineOperation,
                     RsyncCopyOperation,
-                ],
+                ],  # expected_operations
             ),
             (
-                False,
-                "local",
-                False,
-                True,
-                False,
-                [DecompressOperation],
+                False,  # is_remote_recovery
+                "local",  # staging_location
+                False,  # is_incremental
+                True,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [DecompressOperation],  # expected_operations
             ),
             (
-                True,
-                "local",
-                False,
-                True,
-                False,
-                [DecompressOperation, RsyncCopyOperation],
+                True,  # is_remote_recovery
+                "local",  # staging_location
+                False,  # is_incremental
+                True,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [DecompressOperation, RsyncCopyOperation],  # expected_operations
             ),
             (
-                False,
-                "local",
-                False,
-                True,
-                True,
-                [DecryptOperation, DecompressOperation],
+                False,  # is_remote_recovery
+                "local",  # staging_location
+                False,  # is_incremental
+                True,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
+                [DecryptOperation, DecompressOperation],  # expected_operations
             ),
             (
-                True,
-                "local",
-                False,
-                True,
-                True,
-                [DecryptOperation, DecompressOperation, RsyncCopyOperation],
+                True,  # is_remote_recovery
+                "local",  # staging_location
+                False,  # is_incremental
+                True,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
+                [
+                    DecryptOperation,
+                    DecompressOperation,
+                    RsyncCopyOperation,
+                ],  # expected_operations
             ),
             (
-                True,
-                "remote",
-                False,
-                False,
-                False,
-                [RsyncCopyOperation],
+                True,  # is_remote_recovery
+                "remote",  # staging_location
+                False,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [RsyncCopyOperation],  # expected_operations
             ),
             (
-                True,
-                "remote",
-                False,
-                False,
-                True,
-                [DecryptOperation, RsyncCopyOperation],
+                True,  # is_remote_recovery
+                "remote",  # staging_location
+                False,  # is_incremental
+                False,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
+                [DecryptOperation, RsyncCopyOperation],  # expected_operations
             ),
             (
-                True,
-                "remote",
-                True,
-                False,
-                False,
-                [RsyncCopyOperation, CombineOperation],
+                True,  # is_remote_recovery
+                "remote",  # staging_location
+                True,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [RsyncCopyOperation, CombineOperation],  # expected_operations
             ),
             (
-                True,
-                "remote",
-                True,
-                False,
-                True,
-                [DecryptOperation, RsyncCopyOperation, CombineOperation],
+                True,  # is_remote_recovery
+                "remote",  # staging_location
+                True,  # is_incremental
+                False,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
+                [
+                    DecryptOperation,
+                    RsyncCopyOperation,
+                    CombineOperation,
+                ],  # expected_operations
             ),
             (
-                True,
-                "remote",
-                True,
-                True,
-                False,
-                [RsyncCopyOperation, DecompressOperation, CombineOperation],
+                True,  # is_remote_recovery
+                "remote",  # staging_location
+                True,  # is_incremental
+                True,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [
+                    RsyncCopyOperation,
+                    DecompressOperation,
+                    CombineOperation,
+                ],  # expected_operations
             ),
             (
-                True,
-                "remote",
-                True,
-                True,
-                True,
+                True,  # is_remote_recovery
+                "remote",  # staging_location
+                True,  # is_incremental
+                True,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
                 [
                     DecryptOperation,
                     RsyncCopyOperation,
                     DecompressOperation,
                     CombineOperation,
-                ],
+                ],  # expected_operations
             ),
             (
-                True,
-                "remote",
-                False,
-                True,
-                False,
-                [RsyncCopyOperation, DecompressOperation],
+                True,  # is_remote_recovery
+                "remote",  # staging_location
+                False,  # is_incremental
+                True,  # any_compressed
+                False,  # any_encrypted
+                False,  # use_cloud_storage
+                [RsyncCopyOperation, DecompressOperation],  # expected_operations
             ),
             (
-                True,
-                "remote",
-                False,
-                True,
-                True,
-                [DecryptOperation, RsyncCopyOperation, DecompressOperation],
+                True,  # is_remote_recovery
+                "remote",  # staging_location
+                False,  # is_incremental
+                True,  # any_compressed
+                True,  # any_encrypted
+                False,  # use_cloud_storage
+                [
+                    DecryptOperation,
+                    RsyncCopyOperation,
+                    DecompressOperation,
+                ],  # expected_operations
+            ),
+            (
+                False,  # is_remote_recovery
+                "local",  # staging_location
+                False,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                True,  # use_cloud_storage
+                [DownloadOperation],  # expected_operations
+            ),
+            (
+                True,  # is_remote_recovery
+                "local",  # staging_location
+                False,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                True,  # use_cloud_storage
+                [DownloadOperation, RsyncCopyOperation],  # expected_operations
+            ),
+            (
+                False,  # is_remote_recovery
+                "local",  # staging_location
+                True,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                True,  # use_cloud_storage
+                [DownloadOperation, CombineOperation],  # expected_operations
+            ),
+            (
+                True,  # is_remote_recovery
+                "local",  # staging_location
+                True,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                True,  # use_cloud_storage
+                [
+                    DownloadOperation,
+                    CombineOperation,
+                    RsyncCopyOperation,
+                ],  # expected_operations
+            ),
+            (
+                True,  # is_remote_recovery
+                "remote",  # staging_location
+                False,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                True,  # use_cloud_storage
+                [DownloadOperation, RsyncCopyOperation],  # expected_operations
+            ),
+            (
+                True,  # is_remote_recovery
+                "remote",  # staging_location
+                True,  # is_incremental
+                False,  # any_compressed
+                False,  # any_encrypted
+                True,  # use_cloud_storage
+                [
+                    DownloadOperation,
+                    RsyncCopyOperation,
+                    CombineOperation,
+                ],  # expected_operations
             ),
         ],
     )
@@ -4878,6 +5292,7 @@ class TestMainRecoveryExecutor(object):
         is_incremental,
         any_compressed,
         any_encrypted,
+        use_cloud_storage,
         expected_operations,
     ):
         """
@@ -4888,6 +5303,7 @@ class TestMainRecoveryExecutor(object):
         mock_backup_manager = testing_helpers.build_backup_manager(
             main_conf={"staging_location": staging_location}
         )
+        mock_backup_manager.server.use_backup_cloud_storage = use_cloud_storage
 
         # AND a backup_info object (it has a parent if it is incremental)
         parent = None
