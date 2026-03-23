@@ -40,6 +40,7 @@ import dateutil.tz
 
 import barman.fs as fs
 from barman import output, xlog
+from barman.cloud import CloudBackupCatalog
 from barman.cloud_providers import get_snapshot_interface_from_backup_info
 from barman.command_wrappers import (
     Command,
@@ -2067,6 +2068,7 @@ class RecoveryOperation(ABC):
                 except FsOperationFailed as e:
                     output.error("File system error: %s", str(e))
                     output.close_and_exit()
+
             backups[volatile_backup.backup_id] = volatile_backup
             if main_vol_backup is None:
                 main_vol_backup = volatile_backup
@@ -2288,6 +2290,161 @@ class RecoveryOperation(ABC):
                 self.staging_path,
                 e,
             )
+
+
+class DownloadOperation(RecoveryOperation):
+    """
+    Operation responsible for downloading the backup data from a cloud object storage.
+
+    This operation also performs streaming decompression of the backup data during
+    the download, if needed, as to avoid duplicating the backup data on disk.
+
+    :cvar NAME: str: The name of the operation, used for identification
+    """
+
+    NAME = "barman-download"
+
+    def _should_execute(self, backup_info):
+        return self.server.use_backup_cloud_storage
+
+    def _execute(
+        self,
+        backup_info,
+        destination,
+        tablespaces,
+        remote_command,
+        recovery_info,
+        safe_horizon,
+        is_last_operation,
+    ):
+        return self._execute_on_chain(
+            backup_info,
+            destination,
+            self._download_backup,
+            tablespaces,
+            is_last_operation,
+        )
+
+    def _download_backup(
+        self, backup_info, destination, tablespaces, is_last_operation
+    ):
+        """
+        Perform the download of the backup data to the specified destination.
+
+        Decompression is also perform during the download, if needed. This avoids
+        duplicating the backup data on disk, specially important for large backups.
+        For this reason, this operation is never used in conjunction with the
+        :class:`DecompressOperation` in the same pipeline.
+
+        :param barman.infofile.LocalBackupInfo backup_info: The backup info of the
+            backup to be downloaded
+        :param str destination: The destination directory where the backup will be
+            downloaded to
+        :param dict[str,str]|None tablespaces: A dictionary mapping tablespace names to
+            their target directories. This is the relocation chosen by the user when
+            invoking the ``restore`` command. If ``None``, it means no relocation was
+            chosen
+        :param bool is_last_operation: Whether this is the last operation in the
+            recovery chain
+        :return barman.infofile.VolatileBackupInfo: The respective volatile backup info
+            of *backup_info* which reflects all changes performed by the operation
+        """
+        vol_backup_info = self._create_volatile_backup_info(backup_info, destination)
+
+        if not is_last_operation:
+            destination = vol_backup_info.get_data_directory()
+
+        # Get the list of backup files from the cloud catalog
+        # backup_files is dict like [None|int, BackupFileInfo], where the key is the
+        # OID of a tablespace (None for the PGDATA) and value is a BackupFileInfo which
+        # represents a tar file in the cloud. BackupFileInfo.additional_files will
+        # contain items for cases where a single tarball is split into multiple tar
+        # files (due to the --max-archive limit)
+        cloud_interface = self.server.get_backup_cloud_interface()
+        cloud_catalog = CloudBackupCatalog(cloud_interface, self.config.name)
+        backup_files = cloud_catalog.get_backup_files(backup_info)
+
+        # Add PGDATA file(s) to a download list
+        pgdata_file_info = backup_files[None]
+        download_items = [(pgdata_file_info.path, destination)]
+        for add_file in pgdata_file_info.additional_files:
+            download_items.append((add_file.path, destination))
+
+        # Add tablespaces files to the download list
+        tablespaces_mapping = self._get_tablespace_mapping(
+            backup_info, vol_backup_info, tablespaces, backup_files, is_last_operation
+        )
+        for cloud_path, dest in tablespaces_mapping.items():
+            download_items.append((cloud_path, dest))
+
+        # Perform the download/decompress of all items in the download list
+        for cloud_path, dest in download_items:
+            _logger.debug("Downloading %s to %s", cloud_path, dest)
+            cloud_interface.extract_tar(cloud_path, dest)
+
+        # Create the tablespaces symbolic links in the destination directory
+        self._link_tablespaces(
+            vol_backup_info, destination, tablespaces, is_last_operation
+        )
+
+        return vol_backup_info
+
+    def _get_tablespace_mapping(
+        self, backup_info, vol_backup_info, tablespaces, backup_files, is_last_operation
+    ):
+        """
+        Get the mapping of tablespaces from their cloud path to their destination.
+
+        If this is the last operation, tablespaces are mapped to their final
+        destination, honoring relocation, if requested. Otherwise, they are mapped to
+        their directory in the volatile backup's directory (in the staging directory).
+
+        :param barman.infofile.LocalBackupInfo backup_info: The backup info to process
+        :param barman.infofile.VolatileBackupInfo vol_backup_info: The equivalent
+            volatile backup info of the backup being processed by the operation
+        :param dict[str,str]|None tablespaces: A dictionary mapping tablespace names to
+            their target directories. This is the relocation chosen by the user when
+            invoking the ``restore`` command. If ``None``, it means no relocation was
+            chosen
+        :param dict[None|int, barman.cloud.BackupFileInfo] backup_files: A mapping of
+            backup file OIDs to their respective file info objects. The PGDATA file is
+            identified by a `None` key in this dictionary
+        :param bool is_last_operation: Whether this is the last operation in the
+            recovery chain
+        :return dict[str,str]: A mapping of source tablespace, from their cloud path
+            to their destination directories
+        """
+        tbspc_mapping = {}
+
+        backup_info_tbspc = {t.oid: t for t in (backup_info.tablespaces or [])}
+        for oid, file_info in backup_files.items():
+            if oid is None:  # This is a PGDATA file, so skip it
+                continue
+
+            # Find the respective tablespace object in the backup info
+            tablespace = backup_info_tbspc.get(oid)
+            if not tablespace:
+                _logger.warning(
+                    "Tablespace with OID %s found in the object storage but not present "
+                    "in the backup.info. Skipping download of object %s."
+                    % (oid, file_info.path)
+                )
+                continue
+            # If it's the last operation, the tablespace goes to its final destination
+            # Otherwise, it goes to the volatile backup directory in the staging area
+            if is_last_operation:
+                destination = tablespace.location
+                if tablespaces and tablespace.name in tablespaces:
+                    destination = tablespaces[tablespace.name]
+            else:
+                destination = vol_backup_info.get_data_directory(tablespace.oid)
+            # As with PGDATA, tablespaces can also be split into multiple files (due to
+            # max-archive limit), so we also need to iterate over additional_files
+            tbspc_mapping[file_info.path] = destination
+            for add_file in file_info.additional_files:
+                tbspc_mapping[add_file.path] = destination
+
+        return tbspc_mapping
 
 
 class RsyncCopyOperation(RecoveryOperation):
@@ -2567,6 +2724,15 @@ class DecryptOperation(RecoveryOperation):
     ):
         return self._execute_on_chain(backup_info, destination, self._decrypt_backup)
 
+    def _should_execute(self, backup_info):
+        """
+        Check if the decryption operation should be executed on the given backup.
+
+        :param barman.infofile.LocalBackupInfo backup_info: The backup info to check
+        :return bool: ``True`` if the operation should be executed, ``False`` otherwise
+        """
+        return backup_info.encryption is not None
+
     def _get_command_interface(self, remote_command):
         """
         Returns a command interface for executing commands locally.
@@ -2591,15 +2757,6 @@ class DecryptOperation(RecoveryOperation):
                 "still honor the configured 'staging_location'."
             )
         return fs.unix_command_factory(None, self.server.path)
-
-    def _should_execute(self, backup_info):
-        """
-        Check if the decryption operation should be executed on the given backup.
-
-        :param barman.infofile.LocalBackupInfo backup_info: The backup info to check
-        :return bool: ``True`` if the operation should be executed, ``False`` otherwise
-        """
-        return backup_info.encryption is not None
 
     def _decrypt_backup(self, backup_info, destination):
         """
@@ -3275,8 +3432,10 @@ class MainRecoveryExecutor(RemoteConfigRecoveryExecutor):
                 DecryptOperation(self.config, self.server, self.backup_manager)
             )
 
+        # Compression is already performed by the DownloadOperation for cloud backups
+        # so we can skip decompression in case this is a cloud backup
         any_compressed = any([b.compression is not None for b in backup_chain])
-        if any_compressed:
+        if any_compressed and not self.server.use_backup_cloud_storage:
             operations.append(
                 DecompressOperation(self.config, self.server, self.backup_manager)
             )
@@ -3292,13 +3451,19 @@ class MainRecoveryExecutor(RemoteConfigRecoveryExecutor):
                     RsyncCopyOperation(self.config, self.server, self.backup_manager)
                 )
             elif self.config.staging_location == "remote":
-                # If the staging location is remote, the copy operation must be the
-                # first one to be executed, only after the decryption
+                # If the staging location is remote, the copy operation must preceed
+                # all other operations except decryption (which always happens locally)
                 index = 1 if any_encrypted else 0
                 operations.insert(
                     index,
                     RsyncCopyOperation(self.config, self.server, self.backup_manager),
                 )
+
+        if self.server.use_backup_cloud_storage:
+            # For cloud backups the download operation must always be the first one
+            operations.insert(
+                0, DownloadOperation(self.config, self.server, self.backup_manager)
+            )
 
         if not operations:
             # If no operations were required, it means it is a local recovery of a plain
