@@ -103,9 +103,10 @@ the configured Postgres servers that are being backed up by Barman.
     barman diagnose
 
 
-The ``diagnose`` command output is a full snapshot of the barman server, providing useful information, such as global configuration, SSH version,
-Python version, ``rsync`` version, PostgreSQL clients version,
-as well as current configuration and status of all servers.
+The ``diagnose`` command output is a full snapshot of the barman server, providing
+useful information, such as global configuration, SSH version, Python version, ``rsync``
+version, PostgreSQL clients version, as well as current configuration and status of
+all servers.
 
 The ``diagnose`` command is extremely useful for troubleshooting problems,
 as it gives a global view on the status of your Barman installation.

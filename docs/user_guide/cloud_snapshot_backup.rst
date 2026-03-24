@@ -26,8 +26,8 @@ ones created with ``rsync`` or ``postgres`` backup methods.
     * ``network_compression``
     * ``reuse_backup`` (``--reuse-backup``)
 
-To configure a backup using snapshot, include the following parameters in the Barman server
-configuration file:
+To configure snapshot backups, include the following parameters in the Barman
+configuration file for the specific Postgres server:
 
 .. code-block:: text
 

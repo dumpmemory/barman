@@ -192,8 +192,8 @@ Scenario 1: Backup via streaming protocol
 As stated in :ref:`Streaming Backups <concepts-barman-concepts-streaming-backups>`,
 this approach uses the Postgres streaming protocol for transferring cluster files to your
 Barman server. This is done with the use of the  ``pg_basebackup`` utility. In Barman,
-this method can be set by having ``backup_method = postgres`` in your Barman server
-configurations.
+this method can be set by having ``backup_method = postgres`` in the configuration for
+the specific Postgres server.
 
 With this approach, you can leverage from :ref:`block-level incremental backups <concepts-barman-concepts-block-level-incremental-backups>`
 support provided by ``pg_basebackup``, available in Postgres 17 or later. Block-level
@@ -282,9 +282,10 @@ The figure below illustrates how this setup would function in practice.
    :align: center
 
 To accomplish this, you will need to configure the ``backup_method`` as ``rsync``, and
-set ``streaming_archiver`` to ``on`` in your Barman server configuration. You will also
-need to have a streaming replication connection to be used by ``pg_receivewal`` for WAL
-archiving and an SSH connection to be used by Rsync for base backup operations.
+set ``streaming_archiver`` to ``on`` in the configuration of the specific Postgres
+server. You will also need to have a streaming replication connection to be used by
+``pg_receivewal`` for WAL archiving and an SSH connection to be used by Rsync for base
+backup operations.
 
 
 WAL archiving fallback redundancy

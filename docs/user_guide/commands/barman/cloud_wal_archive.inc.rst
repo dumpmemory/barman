@@ -28,7 +28,7 @@ Parameters
 ^^^^^^^^^^
 
 ``SERVER_NAME``
-    The name of the Barman server for which the WAL file is being archived.
+    The name of the Postgres server for which the WAL file is being archived.
 
 ``WAL_PATH``
     The value of the ``%p`` keyword (according to ``archive_command``).

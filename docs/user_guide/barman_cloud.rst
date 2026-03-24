@@ -3,7 +3,7 @@
 Barman for the cloud
 ====================
 
-Barman provides various ways for backing up Postgres servers to the cloud:
+Barman provides various ways for backing up Postgres clusters to the cloud:
 
 * **Using a Barman server**
 
@@ -29,6 +29,11 @@ Barman provides various ways for backing up Postgres servers to the cloud:
      the only method that allows you to have incremental backups (block-level) in the
      cloud. If you choose this approach, please consult the
      :ref:`backup-streaming-backup-cloud` section for details.
+  4. Set up Barman locally on the Postgres server, and use the ``local-to-cloud`` backup
+     method to create backups directly in the cloud, without ever storing them locally.
+     WAL files can be archived directly to the object store using 
+     ``barman cloud-wal-archive`` as the ``archive_command``. If you choose this
+     approach, please consult the :ref:`backup-local-to-cloud` section for details. 
 
 * **Using the cloud scripts, without the need of a Barman server**
 

@@ -106,9 +106,9 @@ Synchronous WAL streaming
 Barman can also reduce the :term:`RPO` to zero, by collecting the transaction WAL files
 like a synchronous standby server would.
 
-To configure a scenario with :term:`RPO` zero, the Barman server must be configured to archive WALs via
-a streaming connection and the receive-wal process has to be configured as a
-synchronous connection to the Postgres server.
+To configure a scenario with :term:`RPO` zero, the configuration on the Barman server
+must archive WALs via a streaming connection and the receive-wal process has to be
+configured as a synchronous connection to the Postgres server.
 
 First, you need to retrieve the application name of the Barman receive-wal process with the 
 ``show-servers`` command:

@@ -191,8 +191,8 @@ Rsync Backups
 Barman can perform a backup of a Postgres server using Rsync, which uses SSH as a
 transport mechanism.
 
-To configure a backup using rsync, include the following parameters in the Barman server
-configuration file:
+To configure a backup using rsync, include the following parameters in the Barman
+configuration file for the specific Postgres server:
 
 .. code-block:: text
 

@@ -38,8 +38,8 @@ the ``.conf`` suffix. You may have one or multiple files for servers. You can ov
 default location by setting the ``configuration_files_directory`` option in the global
 configuration file and placing the files in that particular location.
 
-3. **Model Configuration**: It comprises one or more files with a set of
-configurations overrides that can be applied to Barman servers within the same cluster as
+3. **Model Configuration**: It comprises one or more files with a set of configuration
+overrides that can be applied to backups of Postgres servers within the same cluster as
 the model. These overrides can be implemented using the barman ``config-switch`` command.
 Default location is ``/etc/barman.d`` and must use the ``.conf`` suffix. The same
 ``configuration_files_directory`` override option from the server configuration applies for
@@ -1585,7 +1585,7 @@ the identifiers of server sections and model sections.
 
 To apply a configuration model, execute the
 ``barman config-switch SERVER_NAME MODEL_NAME``. This command facilitates the application
-of the model's overrides to the relevant Barman server associated with the specified
+of the model's overrides to the relevant Postgres server associated with the specified
 cluster name.
 
 If you wish to remove the overrides, the deletion of the model configuration file alone
@@ -1604,7 +1604,7 @@ command, as follows: ``barman config-switch SERVER_NAME --reset``.
 Benefits
 """"""""
 
-* Consistency: Ensures uniform configuration across multiple Barman servers within a
+* Consistency: Ensures uniform configuration across multiple Postgres servers within a
   cluster.
 * Efficiency: Simplifies configuration management by allowing centralized updates and
   overrides.
