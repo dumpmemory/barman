@@ -44,6 +44,7 @@ from barman.cli import (
     cloud_wal_archive,
     command,
     config_switch,
+    export_backup,
     generate_manifest,
     get_model,
     get_models_list,
@@ -2879,3 +2880,186 @@ class TestCloudWalArchiveCli:
         mock_get_server.return_value.cloud_wal_archive.assert_called_once_with(
             "/pg_wal/000000010000000000000001"
         )
+
+
+class TestExportBackup(object):
+    """Test class for export_backup command."""
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.error")
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    def test_export_backup_invalid_backup_status(
+        self, mock_get_server, mock_parse_backup, mock_output_error, mock_close_and_exit
+    ):
+        """
+        Test that export_backup fails when backup status is not DONE.
+        """
+        # GIVEN a backup with non-DONE status
+        args = Mock()
+        args.server_name = "test_server"
+        args.backup_id = "20240101T120000"
+        args.export_path = "/tmp/export"
+
+        mock_server = Mock()
+        mock_server.config.name = "test_server"
+        mock_get_server.return_value = mock_server
+
+        mock_backup_info = Mock()
+        mock_backup_info.status = BackupInfo.STARTED
+        mock_parse_backup.return_value = mock_backup_info
+
+        # Mock close_and_exit to actually exit
+        mock_close_and_exit.side_effect = SystemExit(1)
+
+        # WHEN export_backup is called
+        with pytest.raises(SystemExit):
+            export_backup(args)
+
+        # THEN error should be reported and command should exit
+        mock_output_error.assert_called_once_with(
+            "Cannot export backup '%s' from server '%s': backup status is '%s', expected 'DONE'",
+            args.backup_id,
+            mock_server.config.name,
+            BackupInfo.STARTED,
+        )
+        mock_close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.error")
+    @patch("barman.cli.os.path.exists", return_value=False)
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    def test_export_backup_export_path_not_exists(
+        self,
+        mock_get_server,
+        mock_parse_backup,
+        mock_exists,
+        mock_output_error,
+        mock_close_and_exit,
+    ):
+        """
+        Test that export_backup fails when export path doesn't exist.
+        """
+        # GIVEN a valid backup but non-existent export path
+        args = Mock()
+        args.server_name = "test_server"
+        args.backup_id = "20240101T120000"
+        args.export_path = "/nonexistent/path"
+
+        mock_server = Mock()
+        mock_server.config.name = "test_server"
+        mock_get_server.return_value = mock_server
+
+        mock_backup_info = Mock()
+        mock_backup_info.status = BackupInfo.DONE
+        mock_parse_backup.return_value = mock_backup_info
+
+        # Mock close_and_exit to actually exit
+        mock_close_and_exit.side_effect = SystemExit(1)
+
+        # WHEN export_backup is called
+        with pytest.raises(SystemExit):
+            export_backup(args)
+
+        # THEN error should be reported and command should exit
+        mock_output_error.assert_called_once_with(
+            "Export path '%s' does not exist",
+            args.export_path,
+        )
+        mock_close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.error")
+    @patch("barman.cli.os.path.isdir", return_value=False)
+    @patch("barman.cli.os.path.exists", return_value=True)
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    def test_export_backup_export_path_not_directory(
+        self,
+        mock_get_server,
+        mock_parse_backup,
+        mock_exists,
+        mock_isdir,
+        mock_output_error,
+        mock_close_and_exit,
+    ):
+        """
+        Test that export_backup fails when export path is not a directory.
+        """
+        # GIVEN a valid backup but export path that exists but is not a directory
+        args = Mock()
+        args.server_name = "test_server"
+        args.backup_id = "20240101T120000"
+        args.export_path = "/path/to/file.txt"
+
+        mock_server = Mock()
+        mock_server.config.name = "test_server"
+        mock_get_server.return_value = mock_server
+
+        mock_backup_info = Mock()
+        mock_backup_info.status = BackupInfo.DONE
+        mock_parse_backup.return_value = mock_backup_info
+
+        # Mock close_and_exit to actually exit
+        mock_close_and_exit.side_effect = SystemExit(1)
+
+        # WHEN export_backup is called
+        with pytest.raises(SystemExit):
+            export_backup(args)
+
+        # THEN error should be reported and command should exit
+        mock_output_error.assert_called_once_with(
+            "Export path '%s' is not a directory",
+            args.export_path,
+        )
+        mock_close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.error")
+    @patch("barman.cli.os.access", return_value=False)
+    @patch("barman.cli.os.path.isdir", return_value=True)
+    @patch("barman.cli.os.path.exists", return_value=True)
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    def test_export_backup_export_path_not_writable(
+        self,
+        mock_get_server,
+        mock_parse_backup,
+        mock_exists,
+        mock_isdir,
+        mock_access,
+        mock_output_error,
+        mock_close_and_exit,
+    ):
+        """
+        Test that export_backup fails when export path doesn't have write/execute
+        permissions.
+        """
+        # GIVEN a valid backup but export path without write/execute permissions
+        args = Mock()
+        args.server_name = "test_server"
+        args.backup_id = "20240101T120000"
+        args.export_path = "/readonly/path"
+
+        mock_server = Mock()
+        mock_server.config.name = "test_server"
+        mock_get_server.return_value = mock_server
+
+        mock_backup_info = Mock()
+        mock_backup_info.status = BackupInfo.DONE
+        mock_parse_backup.return_value = mock_backup_info
+
+        # Mock close_and_exit to actually exit
+        mock_close_and_exit.side_effect = SystemExit(1)
+
+        # WHEN export_backup is called
+        with pytest.raises(SystemExit):
+            export_backup(args)
+
+        # THEN error should be reported and command should exit
+        mock_output_error.assert_called_once_with(
+            "Export path '%s' does not have the required write and execute permissions",
+            args.export_path,
+        )
+        mock_close_and_exit.assert_called_once_with()
