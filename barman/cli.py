@@ -2159,6 +2159,86 @@ def verify_backup(args):
         argument(
             "server_name",
             completer=server_completer,
+            help="specifies the server name for the command",
+        ),
+        argument(
+            "backup_id",
+            completer=backup_completer,
+            help="specifies the backup ID to export",
+        ),
+        argument(
+            "export_path",
+            help="directory where the exported tarball will be saved",
+        ),
+    ],
+)
+def export_backup(args):
+    """
+    Export a backup for the given server and backup ID to a tarball
+    """
+    # Get server
+    server = get_server(
+        args,
+        skip_inactive=False,
+        skip_disabled=False,
+        inactive_is_error=False,
+        disabled_is_error=True,
+    )
+
+    # Parse backup ID and validate backup exists
+    backup_info = parse_backup_id(server, args)
+
+    # Get export path from CLI
+    export_path = args.export_path
+
+    # Validate backup status is DONE
+    if backup_info.status != BackupInfo.DONE:
+        output.error(
+            "Cannot export backup '%s' from server '%s': backup status is '%s', expected 'DONE'",
+            args.backup_id,
+            server.config.name,
+            backup_info.status,
+        )
+        output.close_and_exit()
+
+    # Validate export path exists and is writable
+    if not os.path.exists(export_path):
+        output.error(
+            "Export path '%s' does not exist",
+            export_path,
+        )
+        output.close_and_exit()
+
+    if not os.path.isdir(export_path):
+        output.error(
+            "Export path '%s' is not a directory",
+            export_path,
+        )
+        output.close_and_exit()
+
+    if not os.access(export_path, os.W_OK | os.X_OK):
+        output.error(
+            "Export path '%s' does not have the required write and execute permissions",
+            export_path,
+        )
+        output.close_and_exit()
+
+    # Log the export operation
+    output.info(
+        "Exporting backup '%s' from server '%s' to '%s'",
+        args.backup_id,
+        server.config.name,
+        export_path,
+    )
+
+    output.close_and_exit()
+
+
+@command(
+    [
+        argument(
+            "server_name",
+            completer=server_completer,
             help="specifies the server name for the command ",
         ),
         argument(
