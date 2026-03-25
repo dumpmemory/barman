@@ -22,10 +22,12 @@ This module represents a backup.
 
 import datetime
 import io
+import json
 import logging
 import os
 import re
 import shutil
+import tarfile
 import tempfile
 from collections import defaultdict
 from contextlib import closing
@@ -83,6 +85,7 @@ from barman.remote_status import RemoteStatusMixin
 from barman.storage.local_file_manager import LocalFileManager
 from barman.utils import (
     SHA256,
+    BarmanEncoderV2,
     force_str,
     fsync_dir,
     fsync_file,
@@ -2069,6 +2072,84 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             output.error(e.args[0]["err"])
             return
         output.info(pg_verifybackup.get_output()[0].strip())
+
+    def export_backup(self, backup_info, export_path, identity_data, barman_data):
+        """
+        Export a completed backup to a portable tarball format.
+
+        This method creates a tarball containing:
+        - ``backup/`` directory with complete backup data
+        - ``identity.json`` from server
+        - ``backup.info`` metadata
+        - ``barman.json`` with system information
+
+        The caller (server.py) is responsible for:
+        - Generating the export filename
+        - Collecting server-level metadata
+        - Handling checksum calculation and file renaming
+        - Cleanup on failure
+
+        :param BackupInfo backup_info: the backup to export
+        :param str export_path: full path to the output tarball file
+        :param dict identity_data: server identity information
+        :param dict barman_data: system information for ``barman.json``
+        """
+        output.debug("Starting export of backup '%s'" % backup_info.backup_id)
+
+        # Get source backup directory
+        backup_dir = backup_info.get_basebackup_directory()
+
+        # Create the export tarball
+        output.debug("Creating export tarball at '%s'" % export_path)
+
+        with tarfile.open(export_path, "w|") as tar:
+            # Add backup data with backup/ prefix
+            output.debug("Adding backup data from '%s'" % backup_dir)
+            tar.add(backup_dir, arcname="backup")
+
+            # Add metadata files to tarball root
+            self._add_metadata_to_tar(tar, identity_data, backup_info, barman_data)
+
+    def _add_metadata_to_tar(self, tar, identity_data, backup_info, barman_data):
+        """
+        Add metadata files to the tarball root.
+
+        :param TarFile tar: the tar file object
+        :param dict identity_data: server identity information
+        :param BackupInfo backup_info: backup information object
+        :param dict barman_data: system information
+        """
+        output.debug("Adding metadata files")
+
+        # Add identity.json
+        # 'identity_data' is known to be non-empty at this point, otherwise
+        # the Server.export_backup would have errored out before.
+        identity_json = json.dumps(identity_data, indent=4, sort_keys=True)
+        self._add_json_to_tar(tar, "identity.json", identity_json)
+
+        # Add backup.info file directly (preserves original format)
+        tar.add(backup_info.get_filename(), arcname="backup.info")
+
+        # Add barman.json
+        barman_json = json.dumps(
+            barman_data, cls=BarmanEncoderV2, indent=4, sort_keys=True
+        )
+        self._add_json_to_tar(tar, "barman.json", barman_json)
+
+    def _add_json_to_tar(self, tar, filename, json_content):
+        """
+        Add a JSON string as a file to the tarball.
+
+        :param TarFile tar: the tar file object
+        :param str filename: name of the file in the tarball
+        :param str json_content: JSON string content
+        """
+        json_bytes = json_content.encode("utf-8")
+        tarinfo = tarfile.TarInfo(name=filename)
+        tarinfo.size = len(json_bytes)
+        tarinfo.mode = 0o644
+
+        tar.addfile(tarinfo, io.BytesIO(json_bytes))
 
     def get_wal_file_info(self, filename):
         """

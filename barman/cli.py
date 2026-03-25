@@ -2174,7 +2174,7 @@ def verify_backup(args):
 )
 def export_backup(args):
     """
-    Export a backup for the given server and backup ID to a tarball
+    Export a backup for the given server and backup ID to a tarball.
     """
     # Get server
     server = get_server(
@@ -2230,6 +2230,10 @@ def export_backup(args):
         server.config.name,
         export_path,
     )
+
+    # Delegate to server for orchestration
+    with closing(server):
+        server.export_backup(backup_info, export_path)
 
     output.close_and_exit()
 

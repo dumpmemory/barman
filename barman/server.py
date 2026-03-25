@@ -53,6 +53,7 @@ from barman.compression import (
     compression_registry,
 )
 from barman.copy_controller import RsyncCopyController
+from barman.diagnose import get_barman_system_info
 from barman.encryption import get_passphrase_from_command
 from barman.exceptions import (
     ArchiverFailure,
@@ -1946,6 +1947,89 @@ class Server(RemoteStatusMixin):
             # warn the user and terminate
             output.error("Permission denied, unable to access '%s'" % e)
             return False
+
+    def export_backup(self, backup_info, export_directory):
+        """
+        Export a backup to a portable tarball format.
+
+        This method handles orchestration of the export process:
+        - Generates temporary and final filenames
+        - Collects server-level metadata (identity data, system info)
+        - Delegates core tarball creation to backup_manager
+        - Handles checksum calculation and file renaming
+        - Cleans up on failure
+
+        :param BackupInfo backup_info: the backup to export
+        :param str export_directory: directory where the export file will be created
+        """
+        # Cloud storage is not yet supported for backup export
+        if self.use_backup_cloud_storage or self.use_wal_cloud_storage:
+            output.error("Backup export is not supported for cloud storage")
+            return
+
+        # Verify identity file exists - required for import validation
+        identity_data = self.read_identity_file()
+        if not identity_data:
+            output.error(
+                "No identity file found for server '%s'. "
+                "The identity file is required to validate the backup during import."
+                % self.config.name
+            )
+            return
+
+        # Generate export filename format:
+        # backup-export-{SERVER_NAME}-{BACKUP_ID}-{ISO_DATE}-{CHECKSUM}.tar
+        iso_date = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y%m%dT%H%M%S"
+        )
+
+        # Create temporary filename without checksum first
+        temp_filename = "backup-export-%s-%s-%s.tmp" % (
+            self.config.name,
+            backup_info.backup_id,
+            iso_date,
+        )
+        temp_filepath = os.path.join(export_directory, temp_filename)
+
+        try:
+            # Collect system information for barman.json
+            barman_data = get_barman_system_info()
+
+            # Delegate core export work to backup_manager
+            self.backup_manager.export_backup(
+                backup_info, temp_filepath, identity_data, barman_data
+            )
+
+            # Calculate checksum of the completed tarball
+            output.debug("Calculating checksum for integrity verification")
+            checksum = file_hash(temp_filepath)[:8]
+
+            # Create final filename with checksum
+            export_filename = "backup-export-%s-%s-%s-%s.tar" % (
+                self.config.name,
+                backup_info.backup_id,
+                iso_date,
+                checksum,
+            )
+            export_filepath = os.path.join(export_directory, export_filename)
+
+            # Rename to final filename
+            os.rename(temp_filepath, export_filepath)
+
+            output.info("Export completed successfully: %s" % export_filepath)
+
+        except Exception:
+            # Clean up temporary file if it exists
+            if os.path.exists(temp_filepath):
+                try:
+                    os.remove(temp_filepath)
+                except OSError as cleanup_error:
+                    output.warning(
+                        "Failed to clean up temporary file '%s': %s",
+                        temp_filepath,
+                        cleanup_error,
+                    )
+            raise
 
     def backup(self, wait=False, wait_timeout=None, backup_name=None, **kwargs):
         """

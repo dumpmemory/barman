@@ -19,6 +19,7 @@
 import errno
 import os
 import shutil
+import tarfile
 from datetime import datetime, timedelta
 
 import dateutil.parser
