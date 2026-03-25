@@ -59,6 +59,7 @@ from barman.cloud import (
     CloudTarUploader,
     CloudUploadController,
     CloudUploadingError,
+    CloudWalDownloader,
     FileUploadStatistics,
 )
 from barman.cloud_providers import (
@@ -5608,3 +5609,183 @@ def test_validate_google_cloud_url(url, is_valid):
 def test_validate_azure_blob_storage_url(url, is_valid):
     """Test the ``validate_azure_blob_storage_url`` function."""
     assert validate_azure_blob_storage_url(url) == is_valid
+
+
+class TestCloudWalDownloader:
+    """
+    Tests for the :class:`CloudWalDownloader` class.
+    """
+
+    def test__init__(self):
+        """Test that the CloudWalDownloader is initialized with the expected args."""
+        mock_cloud_interface = MagicMock()
+        server_name = "test_server"
+        downloader = CloudWalDownloader(mock_cloud_interface, server_name)
+        assert downloader.cloud_interface == mock_cloud_interface
+        assert downloader.server_name == server_name
+
+    @mock.patch("barman.cloud.xlog.is_any_xlog_file", new=mock.Mock(return_value=True))
+    @mock.patch("barman.cloud.xlog.is_backup_file", new=mock.Mock(return_value=False))
+    @mock.patch("barman.cloud.xlog.is_partial_file", new=mock.Mock(return_value=False))
+    @pytest.mark.parametrize(
+        "cloud_item, identified_compression",
+        (
+            ("barman/test-server/wals/0000000100000001/0000000100000000000000A1", None),
+            (
+                "barman/test-server/wals/0000000100000001/0000000100000000000000A1.gz",
+                "gzip",
+            ),
+            (
+                "barman/test-server/wals/0000000100000001/0000000100000000000000A1.bz2",
+                "bzip2",
+            ),
+            (
+                "barman/test-server/wals/0000000100000001/0000000100000000000000A1.zst",
+                "zstd",
+            ),
+            (
+                "barman/test-server/wals/0000000100000001/0000000100000000000000A1.lz4",
+                "lz4",
+            ),
+            (
+                "barman/test-server/wals/0000000100000001/0000000100000000000000A1.xz",
+                "xz",
+            ),
+            (
+                "barman/test-server/wals/0000000100000001/0000000100000000000000A1.snappy",
+                "snappy",
+            ),
+        ),
+    )
+    @mock.patch("barman.cloud.xlog.hash_dir", return_value="0000000100000001")
+    def test_download_wal(self, _, cloud_item, identified_compression):
+        """
+        Test that :meth:`CloudWalDownloader.download_wal` correctly downloads
+        a WAL file to the expected destination.
+        """
+        # Prepare mocks
+        # Simulate the WAL being returned by list_bucket when called with the object prefix
+        mock_cloud_interface = MagicMock(
+            path="barman", list_bucket=mock.Mock(return_value=[cloud_item])
+        )
+        # Instantiate the downloader
+        downloader = CloudWalDownloader(mock_cloud_interface, "test-server")
+
+        # WHEN download_wal is called with a given WAL name and destination
+        wal_name = "0000000100000000000000A1"
+        wal_dest = "/path/to/destination"
+        downloader.download_wal(wal_name, wal_dest, False)
+
+        # THEN download_file is called with the correct arguments
+        mock_cloud_interface.download_file.assert_called_once_with(
+            cloud_item, wal_dest, identified_compression
+        )
+        # AND also assert the list bucket call was made with the expected prefix i.e.
+        # the WAL complete path without any extensions
+        mock_cloud_interface.list_bucket.assert_called_once_with(
+            "barman/test-server/wals/0000000100000001/0000000100000000000000A1"
+        )
+
+    @mock.patch("barman.cloud.xlog.is_any_xlog_file", new=mock.Mock(return_value=False))
+    @mock.patch("barman.cloud.xlog.is_backup_file", new=mock.Mock(return_value=False))
+    @mock.patch("barman.cloud.xlog.is_partial_file", new=mock.Mock(return_value=False))
+    @mock.patch("barman.cloud._logger")
+    def test_download_wal_unknown_name_is_ignored(self, mock_logger):
+        """
+        Test that :meth:`TestCloudWalDownloader.download_wal` ignores files which share
+        the same prefix as the WAL but have an unknown format (i.e. they don't match the
+        expected WAL name format or have an expected compression extension).
+        """
+        # Prepare mocks
+        # Simulate a WAL file with a strange format being returned
+        # by list_bucket when called with the object prefix
+        cloud_item = (
+            "barman/test-server/wals/0000000100000001/0000000100000000000000A1unknown"
+        )
+        mock_cloud_interface = MagicMock(
+            path="barman", list_bucket=mock.Mock(return_value=[cloud_item])
+        )
+        # Instantiate the downloader
+        downloader = CloudWalDownloader(mock_cloud_interface, "test-server")
+
+        # WHEN download_wal is called with a given WAL name and destination
+        wal_name = "0000000100000000000000A1"
+        wal_dest = "/path/to/destination"
+
+        # THEN an error is raised and the file is ignored
+        with pytest.raises(OperationErrorExit):
+            downloader.download_wal(wal_name, wal_dest, False)
+        mock_cloud_interface.download_file.assert_not_called()
+        mock_logger.warning.assert_called_once_with("Unknown WAL file: %s", cloud_item)
+
+    @mock.patch("barman.cloud.xlog.is_any_xlog_file", new=mock.Mock(return_value=True))
+    @mock.patch("barman.cloud.xlog.is_backup_file", new=mock.Mock(return_value=True))
+    @mock.patch("barman.cloud.xlog.is_partial_file", new=mock.Mock(return_value=False))
+    @mock.patch("barman.cloud._logger")
+    def test_download_wal_backup_file_is_ignored(self, mock_logger):
+        """
+        Test that :meth:`TestCloudWalDownloader.download_wal` ignores files which have
+        the same prefix as the WAL but are backup files.
+        """
+        # Prepare mocks
+        # Simulate a backup file with the same name as the WAL being returned
+        # by list_bucket when called with the object prefix
+        cloud_item = (
+            "barman/test-server/wals/0000000100000001/0000000100000000000000A1.backup"
+        )
+        mock_cloud_interface = MagicMock(
+            path="barman", list_bucket=mock.Mock(return_value=[cloud_item])
+        )
+        # Instatiate the downloader
+        downloader = CloudWalDownloader(mock_cloud_interface, "test-server")
+
+        # WHEN download_wal is called with a given WAL name and destination
+        wal_name = "0000000100000000000000A1"
+        wal_dest = "/path/to/destination"
+
+        # THEN the process exits and the file is ignored
+        with pytest.raises(OperationErrorExit):
+            downloader.download_wal(wal_name, wal_dest, False)
+        mock_cloud_interface.download_file.assert_not_called()
+        mock_logger.info.assert_any_call("Skipping backup file: %s", cloud_item)
+
+    @mock.patch("barman.cloud.xlog.is_any_xlog_file", new=mock.Mock(return_value=True))
+    @mock.patch("barman.cloud.xlog.is_backup_file", new=mock.Mock(return_value=False))
+    @mock.patch("barman.cloud.xlog.is_partial_file", new=mock.Mock(return_value=True))
+    @pytest.mark.parametrize("no_partial", (True, False))
+    @mock.patch("barman.cloud._logger")
+    def test_download_wal_partial_file_is_ignored_when_requested(
+        self, mock_logger, no_partial
+    ):
+        """
+        Test that :meth:`TestCloudWalDownloader.download_wal` ignores files which have
+        the same prefix as the WAL but are .partial files when requested.
+        """
+        # Prepare mocks
+        # Simulate a .partial file with the same name as the WAL being returned
+        # by list_bucket when called with the object prefix
+        cloud_item = (
+            "barman/test-server/wals/0000000100000001/0000000100000000000000A1.partial"
+        )
+        mock_cloud_interface = MagicMock(
+            path="barman", list_bucket=mock.Mock(return_value=[cloud_item])
+        )
+        # Instatiate the downloader
+        downloader = CloudWalDownloader(mock_cloud_interface, "test-server")
+
+        # WHEN download_wal is called with a given WAL name and destination
+        wal_name = "0000000100000000000000A1"
+        wal_dest = "/path/to/destination"
+
+        # THEN if --no-partial is set the process exits without any uploads
+        if no_partial:
+            with pytest.raises(OperationErrorExit):
+                downloader.download_wal(wal_name, wal_dest, no_partial)
+            mock_cloud_interface.download_file.assert_not_called()
+            mock_logger.info.assert_any_call("Skipping partial file: %s", cloud_item)
+        # Otherwise the file is downloaded
+        else:
+            downloader.download_wal(wal_name, wal_dest, no_partial)
+            mock_cloud_interface.download_file.assert_called_once_with(
+                cloud_item, wal_dest, None
+            )

@@ -42,6 +42,7 @@ from barman.cli import (
     check_target_action,
     check_wal_archive,
     cloud_wal_archive,
+    cloud_wal_restore,
     command,
     config_switch,
     export_backup,
@@ -2880,6 +2881,53 @@ class TestCloudWalArchiveCli:
         mock_get_server.return_value.cloud_wal_archive.assert_called_once_with(
             "/pg_wal/000000010000000000000001"
         )
+
+
+class TestCloudWalRestoreCli:
+    """Test ``barman cloud-wal-restore`` outcomes."""
+
+    @pytest.fixture
+    def mock_args(self):
+        return MagicMock(
+            server_name="test-server",
+            wal_name="0000000100000000000000A1",
+            wal_dest="/var/lib/pgsql/17/data/pg_wal/0000000100000000000000A1",
+        )
+
+    @patch("barman.cli.get_server")
+    def test_cloud_wal_restore_success(self, mock_get_server, mock_args):
+        """
+        Test :func:`cloud_wal_restore`.
+
+        It should call cloud_wal_restore on the server with the provided WAL path.
+        """
+        with pytest.raises(SystemExit):
+            cloud_wal_restore(mock_args)
+
+        mock_get_server.return_value.cloud_wal_restore.assert_called_once_with(
+            "0000000100000000000000A1",
+            "/var/lib/pgsql/17/data/pg_wal/0000000100000000000000A1",
+        )
+
+    @patch("barman.cli.output")
+    def test_cloud_wal_restore_wal_path_not_valid_wal_file(
+        self, mock_output, mock_args
+    ):
+        """
+        Test :func:`cloud_wal_restore`.
+
+        It should error out if the provided WAL name is not valid.
+        """
+        mock_output.close_and_exit.side_effect = SystemExit(1)
+
+        with patch("barman.cli.is_any_xlog_file", return_value=False):
+            with pytest.raises(SystemExit):
+                cloud_wal_restore(mock_args)
+
+        mock_output.error.assert_called_once_with(
+            "File is not a valid WAL file: 0000000100000000000000A1"
+        )
+        mock_output.close_and_exit.assert_called_once_with()
 
 
 class TestExportBackup(object):

@@ -3671,6 +3671,45 @@ class TestServer(object):
         # AND no error is logged
         mock_output.error.assert_not_called()
 
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=PropertyMock)
+    def test_cloud_wal_restore_success(self, mock_use_wal_cloud_storage):
+        """
+        Test that the cloud_wal_restore method successfully restores the WAL file
+        when the server is properly configured for cloud storage by asserting the
+        backup manager is called with the correct parameters.
+        """
+        server = build_real_server()
+        server.backup_manager = Mock()
+        mock_use_wal_cloud_storage.return_value = True
+
+        server.cloud_wal_restore("some_wal_file", "some_dest_path")
+
+        server.backup_manager.cloud_wal_restore.assert_called_once_with(
+            "some_wal_file", "some_dest_path"
+        )
+
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=PropertyMock)
+    @patch("barman.server.output")
+    def test_cloud_wal_restore_no_cloud_storage_configured(
+        self, mock_output, mock_use_wal_cloud_storage
+    ):
+        """
+        Test that the cloud_wal_restore method logs an error and returns without
+        calling the backup manager when no cloud storage is configured for the server.
+        """
+        server = build_real_server()
+        server.backup_manager = Mock()
+        mock_use_wal_cloud_storage.return_value = False
+
+        server.cloud_wal_restore("some_wal_file", "some_dest_path")
+
+        server.backup_manager.cloud_wal_restore.assert_not_called()
+        mock_output.error.assert_called_once_with(
+            "cloud-wal-restore is not supported for server %s because no cloud "
+            "storage configuration is set in 'wals_directory'. Please check the "
+            "configuration of the server." % server.config.name,
+        )
+
     def test_get_systemid_file_path(self):
         # Basic test for the get_systemid_file_path function
         server = build_real_server()

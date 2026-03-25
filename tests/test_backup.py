@@ -3060,6 +3060,32 @@ class TestCloudBackup(object):
             "that the `wals_directory` points to a cloud object storage."
         )
 
+    @patch("barman.backup.CloudWalDownloader")
+    def test_cloud_wal_restore(self, mock_wal_downloader):
+        """
+        Test cloud_wal_restore calls the wal_storage restore method for a server using
+        cloud storage for WALs.
+        """
+        # Prepare the server and backup manager
+        mock_cloud_interface = mock.Mock()
+        server = mock.Mock(
+            get_wal_cloud_interface=lambda: mock_cloud_interface,
+        )
+        backup_manager = build_backup_manager(server)
+        backup_manager.config.name = "test-server"
+
+        # WHEN cloud_wal_restore is called
+        wal_name = "000000010000000000000001"
+        wal_dest = "/var/lib/pgsql/17/data/pg_wal/000000010000000000000001"
+        backup_manager.cloud_wal_restore(wal_name, wal_dest)
+
+        # THEN a CloudWalDownloader is created with the cloud interface and server name
+        mock_wal_downloader.assert_called_once_with(mock_cloud_interface, "test-server")
+        # AND the download_wal method is called correctly
+        mock_wal_downloader.return_value.download_wal.assert_called_once_with(
+            wal_name, wal_dest, False
+        )
+
 
 class TestSnapshotBackup(object):
     """Test handling of snapshot backups by BackupManager."""

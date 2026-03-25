@@ -107,7 +107,7 @@ class TestMain(object):
             )
         assert exc.value.code == 1
         assert (
-            "WAL file 000000080000ABFF000000C1 for server test-server does not exists\n"
+            "WAL file 000000080000ABFF000000C1 for server test-server does not exist\n"
             in caplog.text
         )
 
@@ -129,7 +129,7 @@ class TestMain(object):
             )
         assert exc.value.code == 1
         assert (
-            "WAL file 000000080000ABFF000000C0 for server test-server does not exists\n"
+            "WAL file 000000080000ABFF000000C0 for server test-server does not exist\n"
             in caplog.text
         )
 
