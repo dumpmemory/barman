@@ -720,6 +720,19 @@ the AWS region where the S3 bucket is located.
 
 Scope: Global / Server / Model.
 
+**aws_check_object_lock**
+
+When set to ``true``, Barman will check for S3 Object Lock before attempting to
+delete base backup files from S3 storage. If an object is locked, the deletion
+is aborted. Defaults to ``false``.
+
+.. note::
+   Only supported when ``backup_method`` is ``postgres`` or ``local-to-cloud``,
+   and ``basebackups_directory`` points to S3. If enabled with a non-S3 provider,
+   a warning will be logged and no lock checks will be performed.
+
+Scope: Global / Server / Model.
+
 **aws_encryption**
 
 Specifies the server-side encryption algorithm to use when storing objects in S3.
