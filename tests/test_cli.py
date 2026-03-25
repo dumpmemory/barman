@@ -858,6 +858,128 @@ class TestCli(object):
         _out, err = capsys.readouterr()
         assert "" == err
 
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    def test_restore_no_get_wal_cloud_storage_fallback(
+        self,
+        get_server_mock,
+        parse_backup_id_mock,
+        mock_backup_info,
+        mock_restore_args,
+        capsys,
+    ):
+        """
+        Test that a warning is issued and get-wal is re-enabled when --no-get-wal
+        is used with a server that has WALs stored in cloud storage, even when
+        GET_WAL was already in recovery_options.
+        """
+        # GIVEN a backup
+        parse_backup_id_mock.return_value = mock_backup_info
+        mock_backup_info.is_incremental = False
+        mock_backup_info.encryption = None
+        # AND a server configured for cloud WAL storage
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = True
+        # AND recovery_options already contains GET_WAL
+        get_server_mock.return_value.config.recovery_options = {
+            barman.config.RecoveryOptions.GET_WAL
+        }
+        # AND --no-get-wal is passed
+        mock_restore_args.get_wal = False
+        # WHEN the restore command is run
+        with pytest.raises(SystemExit):
+            restore(mock_restore_args)
+        # THEN a warning is logged
+        _out, err = capsys.readouterr()
+        assert (
+            "get-wal is required for servers with WALs stored in cloud storage. "
+            "Automatically enabling --get-wal."
+        ) in err
+        # AND GET_WAL is re-added to recovery_options
+        assert (
+            barman.config.RecoveryOptions.GET_WAL
+            in get_server_mock.return_value.config.recovery_options
+        )
+
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    def test_restore_get_wal_enabled_when_no_get_wal_flag_with_cloud_storage(
+        self,
+        get_server_mock,
+        parse_backup_id_mock,
+        mock_backup_info,
+        mock_restore_args,
+        capsys,
+    ):
+        """
+        Test that a warning is issued and get-wal is automatically enabled when
+        --no-get-wal is used with a server that has WALs stored in cloud storage.
+        """
+        # GIVEN a backup
+        parse_backup_id_mock.return_value = mock_backup_info
+        mock_backup_info.is_incremental = False
+        mock_backup_info.encryption = None
+        # AND a server configured for cloud WAL storage
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = True
+        get_server_mock.return_value.config.recovery_options = set()
+        # AND --no-get-wal is passed
+        mock_restore_args.get_wal = False
+        # WHEN the restore command is run
+        with pytest.raises(SystemExit):
+            restore(mock_restore_args)
+        # THEN a warning is logged
+        _out, err = capsys.readouterr()
+        assert (
+            "get-wal is required for servers with WALs stored in cloud storage. "
+            "Automatically enabling --get-wal."
+        ) in err
+        # AND GET_WAL is added to recovery_options
+        assert (
+            barman.config.RecoveryOptions.GET_WAL
+            in get_server_mock.return_value.config.recovery_options
+        )
+
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    def test_restore_get_wal_enabled_when_not_in_recovery_options_with_cloud_storage(
+        self,
+        get_server_mock,
+        parse_backup_id_mock,
+        mock_backup_info,
+        mock_restore_args,
+        capsys,
+    ):
+        """
+        Test that a warning is issued and get-wal is automatically enabled when
+        recovery_options does not contain get-wal and server has WALs stored in
+        cloud storage.
+        """
+        # GIVEN a backup
+        parse_backup_id_mock.return_value = mock_backup_info
+        mock_backup_info.is_incremental = False
+        mock_backup_info.encryption = None
+        # AND a server configured for cloud WAL storage
+        get_server_mock.return_value.use_backup_cloud_storage = False
+        get_server_mock.return_value.use_wal_cloud_storage = True
+        get_server_mock.return_value.config.recovery_options = set()
+        # AND no get-wal flag is passed
+        del mock_restore_args.get_wal
+        # WHEN the restore command is run
+        with pytest.raises(SystemExit):
+            restore(mock_restore_args)
+        # THEN a warning is logged
+        _out, err = capsys.readouterr()
+        assert (
+            "get-wal is required for servers with WALs stored in cloud storage. "
+            "Automatically enabling --get-wal."
+        ) in err
+        # AND GET_WAL is added to recovery_options
+        assert (
+            barman.config.RecoveryOptions.GET_WAL
+            in get_server_mock.return_value.config.recovery_options
+        )
+
     @pytest.mark.parametrize(
         (
             "recovery_options",
