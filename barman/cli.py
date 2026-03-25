@@ -2504,6 +2504,48 @@ def cloud_wal_archive(args):
     output.close_and_exit()
 
 
+@command(
+    [
+        argument(
+            "server_name",
+            completer=server_completer,
+            help="specifies the server name for the command",
+        ),
+        argument(
+            "wal_name",
+            help="The value of the '%%f' keyword (according to 'restore_command')",
+        ),
+        argument(
+            "wal_dest",
+            help="The value of the '%%p' keyword (according to 'restore_command')",
+        ),
+    ]
+)
+def cloud_wal_restore(args):
+    """
+    Pull a WAL file from a configured cloud object storage to the local disk.
+
+    This command is intended to be used as 'restore_command' in Postgres when restoring
+    WALs from a cloud object storage.
+    """
+    if not is_any_xlog_file(args.wal_name):
+        output.error(f"File is not a valid WAL file: {args.wal_name}")
+        output.close_and_exit()
+
+    server = get_server(
+        args,
+        skip_inactive=False,
+        skip_disabled=False,
+        inactive_is_error=False,
+        disabled_is_error=True,
+    )
+
+    with closing(server):
+        server.cloud_wal_restore(args.wal_name, args.wal_dest)
+
+    output.close_and_exit()
+
+
 def pretty_args(args):
     """
     Prettify the given argparse namespace to be human readable

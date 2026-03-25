@@ -17,21 +17,17 @@
 # along with Barman.  If not, see <http://www.gnu.org/licenses/>.
 
 import logging
-import os
-import sys
 from contextlib import closing
 
 from barman.clients.cloud_cli import (
     CLIErrorExit,
     GeneralErrorExit,
-    OperationErrorExit,
     create_argument_parser,
 )
-from barman.cloud import ALLOWED_COMPRESSIONS, configure_logging
+from barman.cloud import CloudWalDownloader, configure_logging
 from barman.cloud_providers import get_cloud_interface
-from barman.exceptions import BarmanException
 from barman.utils import force_str
-from barman.xlog import hash_dir, is_any_xlog_file, is_backup_file, is_partial_file
+from barman.xlog import is_any_xlog_file
 
 _logger = logging.getLogger(__name__)
 
@@ -101,106 +97,6 @@ def parse_arguments(args=None):
         help="The value of the '%%p' keyword (according to 'restore_command').",
     )
     return parser.parse_args(args=args)
-
-
-class CloudWalDownloader(object):
-    """
-    Cloud storage download client
-    """
-
-    def __init__(self, cloud_interface, server_name):
-        """
-        Object responsible for handling interactions with cloud storage
-
-        :param CloudInterface cloud_interface: The interface to use to
-          upload the backup
-        :param str server_name: The name of the server as configured in Barman
-        """
-
-        self.cloud_interface = cloud_interface
-        self.server_name = server_name
-
-    def download_wal(self, wal_name, wal_dest, no_partial):
-        """
-        Download a WAL file from cloud storage
-
-        :param str wal_name: Name of the WAL file
-        :param str wal_dest: Full path of the destination WAL file
-        :param bool no_partial: Do not download partial WAL files
-        """
-
-        # Correctly format the source path on s3
-        source_dir = os.path.join(
-            self.cloud_interface.path, self.server_name, "wals", hash_dir(wal_name)
-        )
-        # Add a path separator if needed
-        if not source_dir.endswith(os.path.sep):
-            source_dir += os.path.sep
-
-        wal_path = os.path.join(source_dir, wal_name)
-
-        remote_name = None
-        # Automatically detect compression based on the file extension
-        compression = None
-        for item in self.cloud_interface.list_bucket(wal_path):
-            # perfect match (uncompressed file)
-            if item == wal_path:
-                remote_name = item
-                continue
-            # look for compressed files or .partial files
-
-            # Detect compression
-            basename = item
-            for e, c in ALLOWED_COMPRESSIONS.items():
-                if item[-len(e) :] == e:
-                    # Strip extension
-                    basename = basename[: -len(e)]
-                    compression = c
-                    break
-
-            # Check basename is a known xlog file (.partial?)
-            if not is_any_xlog_file(basename):
-                _logger.warning("Unknown WAL file: %s", item)
-                continue
-            # Exclude backup informative files (not needed in recovery)
-            elif is_backup_file(basename):
-                _logger.info("Skipping backup file: %s", item)
-                continue
-            # Exclude partial files if required
-            elif no_partial and is_partial_file(basename):
-                _logger.info("Skipping partial file: %s", item)
-                continue
-
-            # Found candidate
-            remote_name = item
-            _logger.info(
-                "Found WAL %s for server %s as %s",
-                wal_name,
-                self.server_name,
-                remote_name,
-            )
-            break
-
-        if not remote_name:
-            _logger.info(
-                "WAL file %s for server %s does not exists", wal_name, self.server_name
-            )
-            raise OperationErrorExit()
-
-        if compression and sys.version_info < (3, 0, 0):
-            raise BarmanException(
-                "Compressed WALs cannot be restored with Python 2.x - "
-                "please upgrade to a supported version of Python 3"
-            )
-
-        # Download the file
-        _logger.debug(
-            "Downloading %s to %s (%s)",
-            remote_name,
-            wal_dest,
-            "decompressing " + compression if compression else "no compression",
-        )
-        self.cloud_interface.download_file(remote_name, wal_dest, compression)
 
 
 if __name__ == "__main__":

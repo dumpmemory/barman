@@ -27,6 +27,7 @@ import operator
 import os
 import shutil
 import signal
+import sys
 import tarfile
 import time
 from abc import ABCMeta, abstractmethod, abstractproperty
@@ -2825,3 +2826,102 @@ class SnapshotsInfo(object):
             snapshot_info.to_dict() for snapshot_info in self.snapshots
         ]
         return info
+
+
+class CloudWalDownloader(object):
+    """
+    Cloud storage download client
+    """
+
+    def __init__(self, cloud_interface, server_name):
+        """
+        Object responsible for handling interactions with cloud storage
+
+        :param CloudInterface cloud_interface: The interface used to
+          download WAL files from cloud storage for restore operations
+        :param str server_name: The name of the server as configured in Barman
+        """
+
+        self.cloud_interface = cloud_interface
+        self.server_name = server_name
+
+    def download_wal(self, wal_name, wal_dest, no_partial):
+        """
+        Download a WAL file from cloud storage
+
+        :param str wal_name: Name of the WAL file
+        :param str wal_dest: Full path of the destination WAL file
+        :param bool no_partial: Do not download partial WAL files
+        """
+        # Correctly format the source path on s3
+        source_dir = os.path.join(
+            self.cloud_interface.path, self.server_name, "wals", xlog.hash_dir(wal_name)
+        )
+        # Add a path separator if needed
+        if not source_dir.endswith(os.path.sep):
+            source_dir += os.path.sep
+
+        wal_path = os.path.join(source_dir, wal_name)
+
+        remote_name = None
+        # Automatically detect compression based on the file extension
+        compression = None
+        for item in self.cloud_interface.list_bucket(wal_path):
+            # perfect match (uncompressed file)
+            if item == wal_path:
+                remote_name = item
+                continue
+            # look for compressed files or .partial files
+
+            # Detect compression
+            basename = item
+            for e, c in ALLOWED_COMPRESSIONS.items():
+                if item[-len(e) :] == e:
+                    # Strip extension
+                    basename = basename[: -len(e)]
+                    compression = c
+                    break
+
+            # Check basename is a known xlog file (.partial?)
+            if not xlog.is_any_xlog_file(basename):
+                _logger.warning("Unknown WAL file: %s", item)
+                continue
+            # Exclude backup informative files (not needed in recovery)
+            elif xlog.is_backup_file(basename):
+                _logger.info("Skipping backup file: %s", item)
+                continue
+            # Exclude partial files if required
+            elif no_partial and xlog.is_partial_file(basename):
+                _logger.info("Skipping partial file: %s", item)
+                continue
+
+            # Found candidate
+            remote_name = item
+            _logger.info(
+                "Found WAL %s for server %s as %s",
+                wal_name,
+                self.server_name,
+                remote_name,
+            )
+            break
+
+        if not remote_name:
+            _logger.info(
+                "WAL file %s for server %s does not exist", wal_name, self.server_name
+            )
+            raise OperationErrorExit()
+
+        if compression and sys.version_info < (3, 0, 0):
+            raise BarmanException(
+                "Compressed WALs cannot be restored with Python 2.x - "
+                "please upgrade to a supported version of Python 3"
+            )
+
+        # Download the file
+        _logger.debug(
+            "Downloading %s to %s (%s)",
+            remote_name,
+            wal_dest,
+            "decompressing " + compression if compression else "no compression",
+        )
+        self.cloud_interface.download_file(remote_name, wal_dest, compression)

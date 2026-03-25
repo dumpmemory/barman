@@ -3084,6 +3084,23 @@ class Server(RemoteStatusMixin):
             self.config.name,
         )
 
+    def cloud_wal_restore(self, wal_name, wal_dest):
+        """
+        Restore a WAL file from a cloud object storage.
+
+        :param str wal_name: the name of the WAL file to restore
+        :param str wal_dest: the destination path where to restore the WAL file
+        """
+        if not self.use_wal_cloud_storage:
+            output.error(
+                "cloud-wal-restore is not supported for server %s because no cloud "
+                "storage configuration is set in 'wals_directory'. Please check the "
+                "configuration of the server." % self.config.name
+            )
+            return
+
+        return self.backup_manager.cloud_wal_restore(wal_name, wal_dest)
+
     def cron(self, wals=True, retention_policies=True, keep_descriptors=False):
         """
         Maintenance operations

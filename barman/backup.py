@@ -48,7 +48,7 @@ from barman.backup_executor import (
     SnapshotBackupExecutor,
 )
 from barman.backup_manifest import BackupManifest
-from barman.cloud import CloudBackupCatalog
+from barman.cloud import CloudBackupCatalog, CloudWalDownloader
 from barman.cloud_providers import (
     get_snapshot_interface_from_backup_info,
     recognize_cloud_provider,
@@ -1354,6 +1354,17 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             self.server.copy_wal_file_to_errors_directory(
                 wal_info.orig_filename, wal_info.name, "duplicate"
             )
+
+    def cloud_wal_restore(self, wal_name, wal_dest):
+        """
+        Restore a WAL file from a cloud object storage.
+
+        :param str wal_name: the name of the WAL file to restore
+        :param str wal_dest: the destination path where to restore the WAL file
+        """
+        cloud_interface = self.server.get_wal_cloud_interface()
+        wal_downloader = CloudWalDownloader(cloud_interface, self.config.name)
+        wal_downloader.download_wal(wal_name, wal_dest, False)
 
     def cron_retention_policy(self):
         """
