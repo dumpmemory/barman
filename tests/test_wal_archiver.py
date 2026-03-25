@@ -2548,7 +2548,7 @@ class TestCloudWalStorageStrategy:
             [
                 "my-bucket/server/wals/0000000100000001/000000010000000000000001.gz",
                 "my-bucket/server/wals/0000000100000001/000000010000000000000002.lz4",
-            ]
+            ],
         )
 
     @patch("barman.wal_archiver.xlog.hash_dir", return_value="0000000100000001")
@@ -2578,7 +2578,7 @@ class TestCloudWalStorageStrategy:
         wal_storage.cloud_interface.delete_objects.assert_called_once_with(
             [
                 "my-bucket/server/wals/0000000100000001/000000010000000000000001",
-            ]
+            ],
         )
 
     @pytest.mark.parametrize(

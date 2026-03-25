@@ -461,10 +461,82 @@ class TestBackup(object):
                 "my-backups/my-server/base/%s/data.tar" % backup_info.backup_id,
                 "my-backups/my-server/base/%s/tbs1.tar" % backup_info.backup_id,
                 "my-backups/my-server/base/%s/backup.info" % backup_info.backup_id,
-            ]
+            ],
+            check_locks=False,
         )
         # AND the backup manifest file is deleted from the local meta directory
         mock_unlink.assert_called_once_with(manifest_path)
+
+    @pytest.mark.parametrize("aws_check_object_lock", [True, False])
+    @patch("barman.backup.os.unlink")
+    @patch("barman.backup.os.path.exists", return_value=True)
+    def test_delete_cloud_backup_data_check_object_lock(
+        self, _, mock_unlink, aws_check_object_lock
+    ):
+        """
+        Test that aws_check_object_lock is passed correctly to delete_objects.
+
+        References: BAR-1113.
+        """
+        # GIVEN a BackupManager with aws_check_object_lock configured
+        backup_manager = build_backup_manager(name="my-server")
+        backup_manager.config.aws_check_object_lock = aws_check_object_lock
+        manifest_path = os.path.join(
+            backup_manager.server.meta_directory, "test_backup_id-backup_manifest"
+        )
+        backup_info = Mock(
+            backup_id="test_backup_id",
+            get_backup_manifest_path=lambda: manifest_path,
+            get_basebackup_directory=lambda: "my-backups/my-server/base/test_backup_id",
+        )
+        cloud_interface_mock = Mock(
+            path="my-backups",
+            list_bucket=Mock(
+                return_value=["my-backups/my-server/base/test_backup_id/data.tar"]
+            ),
+        )
+        backup_manager.server.get_backup_cloud_interface = lambda: cloud_interface_mock
+        # WHEN _delete_cloud_backup_data is called
+        backup_manager._delete_cloud_backup_data(backup_info)
+        # THEN delete_objects is called with the correct check_locks value
+        cloud_interface_mock.delete_objects.assert_called_once_with(
+            ["my-backups/my-server/base/test_backup_id/data.tar"],
+            check_locks=aws_check_object_lock,
+        )
+
+    @patch("barman.backup.os.unlink")
+    @patch("barman.backup.os.path.exists", return_value=False)
+    def test_delete_cloud_backup_data_check_object_lock_non_s3_warning(
+        self, _, mock_unlink
+    ):
+        """
+        Test that a warning is logged when aws_check_object_lock is enabled
+        but the cloud provider is not S3.
+
+        References: BAR-1113.
+        """
+        # GIVEN a BackupManager with aws_check_object_lock=True
+        backup_manager = build_backup_manager(name="my-server")
+        backup_manager.config.aws_check_object_lock = True
+        backup_info = Mock(
+            backup_id="test_backup_id",
+            get_backup_manifest_path=lambda: "/some/path",
+            get_basebackup_directory=lambda: "my-backups/my-server/base/test_backup_id",
+        )
+        # AND a non-S3 cloud interface (e.g. Azure)
+        cloud_interface_mock = Mock(spec=["list_bucket", "delete_objects"])
+        cloud_interface_mock.list_bucket = Mock(return_value=[])
+        backup_manager.server.get_backup_cloud_interface = lambda: cloud_interface_mock
+
+        # WHEN _delete_cloud_backup_data is called
+        with patch("barman.backup._logger") as mock_logger:
+            backup_manager._delete_cloud_backup_data(backup_info)
+            # THEN a warning is logged about non-S3 provider
+            mock_logger.warning.assert_called_once_with(
+                "aws_check_object_lock is only supported for S3 storage. "
+                "Object lock checks will not be performed for server '%s'.",
+                "my-server",
+            )
 
     @patch("barman.backup.output")
     @patch("barman.backup.os.unlink", side_effect=OSError("Some error"))

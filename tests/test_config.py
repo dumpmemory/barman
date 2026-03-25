@@ -346,6 +346,7 @@ class TestConfig(object):
         expected = testing_helpers.build_config_dictionary(
             {
                 "config": main.config,
+                "aws_check_object_lock": False,
                 "worm_mode": False,
                 "autogenerate_manifest": False,
                 "backup_compression": "none",
@@ -386,6 +387,7 @@ class TestConfig(object):
             {
                 "_active_model_file": "/some/barman/home/web/.active-model.auto",
                 "config": web.config,
+                "aws_check_object_lock": False,
                 "worm_mode": False,
                 "autogenerate_manifest": False,
                 "backup_directory": "/some/barman/home/web",
@@ -1428,6 +1430,7 @@ class TestModelConfig:
         expected = {
             "active": None,
             "archiver": None,
+            "aws_check_object_lock": None,
             "worm_mode": None,
             "archiver_batch_size": None,
             "autogenerate_manifest": None,
@@ -1538,6 +1541,7 @@ class TestModelConfig:
         expected = {
             "active": {"source": "SOME_SOURCE", "value": None},
             "archiver": {"source": "SOME_SOURCE", "value": None},
+            "aws_check_object_lock": {"source": "SOME_SOURCE", "value": None},
             "worm_mode": {"source": "SOME_SOURCE", "value": None},
             "archiver_batch_size": {"source": "SOME_SOURCE", "value": None},
             "autogenerate_manifest": {"source": "SOME_SOURCE", "value": None},
