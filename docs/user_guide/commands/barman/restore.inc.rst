@@ -99,6 +99,13 @@ Parameters
     Enable/disable usage of ``get-wal`` for WAL fetching during recovery. Default is based on
     ``recovery_options`` setting.
 
+    .. note::
+        When ``wals_directory`` is configured to use cloud storage (e.g. S3, Azure,
+        GCS), restores always require ``get-wal`` for WAL fetching. If you specify
+        ``--no-get-wal`` or omit ``get-wal`` from ``recovery_options``, Barman will
+        automatically enable ``get-wal`` for the restore operation and issue a
+        warning.
+
 ``-h`` / ``--help``
     Show a help message and exit. Provides information about command usage.
 
