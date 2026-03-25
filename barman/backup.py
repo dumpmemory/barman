@@ -1502,9 +1502,21 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         # In the future we might replace this with just calling the cloud interface's
         # delete_under_prefix method instead, but currently that is only implemented for S3
         cloud_interface = self.server.get_backup_cloud_interface()
+        if self.config.aws_check_object_lock:
+            from barman.cloud_providers.aws_s3 import S3CloudInterface
+
+            if not isinstance(cloud_interface, S3CloudInterface):
+                _logger.warning(
+                    "aws_check_object_lock is only supported for S3 storage. "
+                    "Object lock checks will not be performed for server '%s'.",
+                    self.config.name,
+                )
         objects_keys = [k for k in cloud_interface.list_bucket(backup_path + "/")]
         _logger.debug("Deleting all backup data from cloud path: %s" % backup_path)
-        cloud_interface.delete_objects(objects_keys)
+        cloud_interface.delete_objects(
+            objects_keys,
+            check_locks=self.config.aws_check_object_lock,
+        )
         # Lastly delete the backup manifest from the local meta dir, if it exists
         manifest_path = backup.get_backup_manifest_path()
         if os.path.exists(manifest_path):

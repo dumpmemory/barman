@@ -680,6 +680,9 @@ class CloudWalStorageStrategy(WalStorageStrategy):
                 wal_objects_to_delete.append(object_key)
                 self._run_pre_delete_wal_scripts(wal_info)
 
+        # Remove WALs without checking locks. Since base backup is already gone,
+        # the WALs no longer have value, and it's not worth the overhead of checking
+        # their lock status.
         self.cloud_interface.delete_objects(wal_objects_to_delete)
 
         wals_deleted = []
