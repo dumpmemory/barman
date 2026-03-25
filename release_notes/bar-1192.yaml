@@ -1,0 +1,11 @@
+---
+- summary: Enforce get-wal for restores when WALs are stored in cloud storage
+  description: |
+    When a server has `wals_directory` configured to use cloud storage,
+    `get-wal` is now always required for restore operations. If `--no-get-wal`
+    is specified or `get-wal` is absent from `recovery_options`, Barman will
+    automatically enable `get-wal` and issue a warning so the restore can
+    proceed without interruption.
+  type: minor_change
+  jira_tickets:
+    - BAR-1192
