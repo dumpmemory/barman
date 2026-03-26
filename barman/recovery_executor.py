@@ -1123,8 +1123,17 @@ class RecoveryExecutor(object):
                     "Custom restore command override: restore_command = '%s'",
                     escaped_custom_command,
                 )
+
+            # If WALs are in the cloud, write the 'barman cloud-wal-restore' command
+            elif self.server.use_wal_cloud_storage:
+                restore_command = (
+                    "restore_command = 'barman cloud-wal-restore %s %%f %%p'"
+                    % self.config.name
+                )
+                recovery_conf_lines.append(restore_command)
+
+            # Otherwise, generate the default command (get-wal / barman-wal-restore)
             else:
-                # No custom command, generate default restore command for get_wal
                 port_option = ""
                 if recovery_info["recovery_option_port"] is not None:
                     port_option = "--port %s" % recovery_info["recovery_option_port"]
