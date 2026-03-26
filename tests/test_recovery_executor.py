@@ -1176,6 +1176,58 @@ class TestRecoveryExecutor(object):
         # standby_mode is not a valid configuration in PostgreSQL 12
         assert "standby_mode" not in pg_auto_conf
 
+    @mock.patch("barman.recovery_executor.open")
+    def test_generate_recovery_conf_wals_stored_in_cloud(self, _):
+        """
+        Assert that the ``restore_command`` is correctly generated with
+        ``barman cloud-wal-restore`` when `--get-wal` is ``True`` and the server is
+        configured to use WAL cloud storage.
+        """
+        # Prepare argsuments for _generate_recovery_conf
+        recovery_info = {
+            "get_wal": True,
+            "wal_dest": None,
+            "custom_restore_command": None,
+            "results": {},
+        }
+        mock_backup_info = mock.Mock(version=180000)
+        dest = "/path/to/nowhere"
+        immediate = False
+        exclusive = False
+        remote_command = None
+        target_name = None
+        target_time = None
+        target_tli = None
+        target_xid = None
+        target_lsn = None
+        standby_mode = False
+
+        # Simulate a server configured to use WAL cloud storage
+        mock_server = mock.Mock(use_wal_cloud_storage=True)
+        executor = RecoveryExecutor(mock_server)
+        executor.config = mock.Mock()
+        executor.config.name = "test-server"
+
+        # WHEN _generate_recovery_conf is called
+        executor._generate_recovery_conf(
+            recovery_info,
+            mock_backup_info,
+            dest,
+            immediate,
+            exclusive,
+            remote_command,
+            target_name,
+            target_time,
+            target_tli,
+            target_xid,
+            target_lsn,
+            standby_mode,
+        )
+
+        # THEN the restore_command should be generated with barman cloud-wal-restore
+        expected = ["restore_command = 'barman cloud-wal-restore test-server %f %p'"]
+        assert recovery_info["auto_conf_append_lines"] == expected
+
     def parse_auto_conf_lines(self, recovery_info):
         assert "auto_conf_append_lines" in recovery_info
         pg_auto_conf = {}
