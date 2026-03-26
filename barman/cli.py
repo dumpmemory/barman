@@ -1311,6 +1311,15 @@ def restore(args):
             server.config.recovery_options.add(RecoveryOptions.GET_WAL)
         elif RecoveryOptions.GET_WAL in server.config.recovery_options:
             server.config.recovery_options.remove(RecoveryOptions.GET_WAL)
+    if (
+        server.use_wal_cloud_storage
+        and RecoveryOptions.GET_WAL not in server.config.recovery_options
+    ):
+        output.warning(
+            "get-wal is required for servers with WALs stored in cloud storage. "
+            "Automatically enabling --get-wal."
+        )
+        server.config.recovery_options.add(RecoveryOptions.GET_WAL)
     if args.jobs is not None:
         server.config.parallel_jobs = args.jobs
     if args.jobs_start_batch_size is not None:
