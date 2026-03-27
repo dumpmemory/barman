@@ -1,0 +1,10 @@
+---
+- summary: Add new barman export-backup command for exporting backups to tarball
+  description: |
+    Introduced a new `barman export-backup` command that exports a backup to a
+    tarball format. The command takes a server name, backup ID, and destination
+    directory as arguments, and creates a tarball containing the backup data.
+    This provides an easy way to share or archive backups.
+  type: minor_change
+  jira_tickets:
+    - BAR-1180
