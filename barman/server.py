@@ -287,7 +287,7 @@ class Server(RemoteStatusMixin):
         self.archivers = []
 
         # Postgres configuration is available only if node is not passive
-        if not self.passive_node:
+        if self.config.active and not self.passive_node:
             self._init_postgres(config)
 
         # Initialize the backup manager
@@ -295,7 +295,7 @@ class Server(RemoteStatusMixin):
 
         self._init_wal_storage()
 
-        if not self.passive_node:
+        if self.config.active and not self.passive_node:
             self._init_archivers()
 
         # Set global and tablespace bandwidth limits
@@ -691,7 +691,7 @@ class Server(RemoteStatusMixin):
                 # Check WAL archive
                 self.check_archive(check_strategy)
                 # Postgres configuration is not available on passive nodes
-                if not self.passive_node:
+                if self.config.active and not self.passive_node:
                     self.check_postgres(check_strategy)
                     self.check_wal_streaming(check_strategy)
                 # Check barman directories from barman configuration
@@ -716,8 +716,9 @@ class Server(RemoteStatusMixin):
                 self.check_identity(check_strategy)
                 # Executes check() for every archiver, passing
                 # remote status information for efficiency
-                for archiver in self.archivers:
-                    archiver.check(check_strategy)
+                if self.config.active:
+                    for archiver in self.archivers:
+                        archiver.check(check_strategy)
 
                 # Check archiver errors
                 self.check_archiver_errors(check_strategy)
@@ -1733,8 +1734,8 @@ class Server(RemoteStatusMixin):
             active_model,
         )
 
-        # Postgres status is available only if node is not passive
-        if not self.passive_node:
+        # Postgres status is available only if node is active and is not passive
+        if self.config.active and not self.passive_node:
             self.status_postgres()
             self.status_wal_archiver()
 

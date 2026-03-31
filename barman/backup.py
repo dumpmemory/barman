@@ -21,6 +21,7 @@ This module represents a backup.
 """
 
 import datetime
+import io
 import logging
 import os
 import re
@@ -70,7 +71,12 @@ from barman.exceptions import (
 )
 from barman.fs import unix_command_factory
 from barman.hooks import HookScriptRunner, RetryHookScriptRunner
-from barman.infofile import BackupInfo, BackupInfoFactory, WalFileInfo
+from barman.infofile import (
+    BackupInfo,
+    BackupInfoFactory,
+    CloudLocalBackupInfo,
+    WalFileInfo,
+)
 from barman.lockfile import ServerBackupIdLock, ServerBackupSyncLock
 from barman.recovery_executor import recovery_executor_factory
 from barman.remote_status import RemoteStatusMixin
@@ -115,24 +121,25 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             self.server.meta_directory, self.server.config.basebackups_directory
         )
         self.executor = None
-        try:
-            if server.passive_node:
-                self.executor = PassiveBackupExecutor(self)
-            elif self.config.backup_method == "local-to-cloud":
-                self.executor = CloudBackupExecutor(self)
-            elif self.config.backup_method == "postgres":
-                if recognize_cloud_provider(self.config.basebackups_directory):
-                    self.executor = CloudPostgresBackupExecutor(self)
+        if self.config.active:
+            try:
+                if server.passive_node:
+                    self.executor = PassiveBackupExecutor(self)
+                elif self.config.backup_method == "local-to-cloud":
+                    self.executor = CloudBackupExecutor(self)
+                elif self.config.backup_method == "postgres":
+                    if recognize_cloud_provider(self.config.basebackups_directory):
+                        self.executor = CloudPostgresBackupExecutor(self)
+                    else:
+                        self.executor = PostgresBackupExecutor(self)
+                elif self.config.backup_method == "local-rsync":
+                    self.executor = RsyncBackupExecutor(self, local_mode=True)
+                elif self.config.backup_method == "snapshot":
+                    self.executor = SnapshotBackupExecutor(self)
                 else:
-                    self.executor = PostgresBackupExecutor(self)
-            elif self.config.backup_method == "local-rsync":
-                self.executor = RsyncBackupExecutor(self, local_mode=True)
-            elif self.config.backup_method == "snapshot":
-                self.executor = SnapshotBackupExecutor(self)
-            else:
-                self.executor = RsyncBackupExecutor(self)
-        except SshCommandException as e:
-            self.config.update_msg_list_and_disable_server(force_str(e).strip())
+                    self.executor = RsyncBackupExecutor(self)
+            except SshCommandException as e:
+                self.config.update_msg_list_and_disable_server(force_str(e).strip())
 
     @property
     def mode(self):
@@ -202,6 +209,34 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         for filename in glob("%s/*-backup.info" % self.server.meta_directory):
             backup = BackupInfoFactory.build_backup_info(self.server, filename)
             self._backup_cache[backup.backup_id] = backup
+        # If the server is disabled and configured to use cloud storage for backups, it
+        # might be a new Barman instance on a target host configured specifically for
+        # restoring a cloud backup taken by another Barman instance. In that case, we
+        # should load the backup.info files from the cloud storage to populate the
+        # backup cache so that list-backups, show-backup and restore operations work
+        if not self.config.active and self.server.use_backup_cloud_storage:
+            self._load_backups_from_cloud()
+
+    def _load_backups_from_cloud(self):
+        """
+        Fetch ``backup.info`` files from the cloud storage and populate the cache.
+        """
+        cloud_catalog = CloudBackupCatalog(
+            cloud_interface=self.server.get_backup_cloud_interface(),
+            server_name=self.config.name,
+        )
+        backup_list = cloud_catalog.get_backup_list()
+        for bk_name, bk_info in backup_list.items():
+            # get_backup_list() returns a dict of BackupInfo objects. To be more
+            # accurate with types, we convert them to CloudLocalBackupInfo objects
+            buffer = io.BytesIO()
+            bk_info.save(file_object=buffer)
+            buffer.seek(0)
+            cloud_backup_info = CloudLocalBackupInfo(
+                server=self.server, backup_id=bk_info.backup_id
+            )
+            cloud_backup_info.load(file_object=buffer)
+            self._backup_cache[bk_name] = cloud_backup_info
 
     def backup_cache_add(self, backup_info):
         """
