@@ -1319,6 +1319,22 @@ class CloudLocalBackupInfo(LocalBackupInfo):
         self._wal_cloud_interface = server.get_wal_cloud_interface()
         super(CloudLocalBackupInfo, self).__init__(server, *args, **kwargs)
 
+    def save(self, filename=None, file_object=None):
+        super(CloudLocalBackupInfo, self).save(
+            filename=filename, file_object=file_object
+        )
+        # When file_object is provided, the parent save() writes to that
+        # in-memory object rather than to the local file on disk. In that
+        # case there is no local file to upload, so we skip the cloud sync.
+        if not file_object:
+            _logger.debug(
+                "Updating backup.info of backup %s in the cloud storage", self.backup_id
+            )
+            backup_info_path = filename or self.get_filename()
+            with open(backup_info_path, "rb") as backup_info_fileobj:
+                key = os.path.join(self.get_basebackup_directory(), "backup.info")
+                self._backup_cloud_interface.upload_fileobj(backup_info_fileobj, key)
+
     def get_base_directory(self):
         """
         Retrieve the base directory for this backup.
