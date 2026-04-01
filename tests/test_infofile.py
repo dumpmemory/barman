@@ -1865,3 +1865,40 @@ class TestCloudLocalBackupInfo:
                 "barman-backups/my-server/wals/0000000100000001/000000000000000000000002",
                 "barman-backups/my-server/wals/0000000100000001/000000000000000000000003",
             ]
+
+    @pytest.mark.parametrize("file_object", [None, io.BytesIO()])
+    @pytest.mark.parametrize("filename", [None, "/local/backup.info"])
+    @patch("barman.infofile.open", new_callable=mock.mock_open)
+    @patch("barman.infofile.LocalBackupInfo.save")
+    @patch("barman.infofile.CloudLocalBackupInfo.__init__", return_value=None)
+    def test_save(self, _, mock_parent_save, mock_open, filename, file_object):
+        """
+        Assert that cloud backup info files are also updated in the cloud storage when
+        the local file is updated.
+        """
+        # GIVEN a CloudLocalBackupInfo instance with mocked attributes
+        backup_info = CloudLocalBackupInfo(server=mock.Mock(), backup_id="fake_id")
+        backup_info.backup_id = "fake_id"
+        backup_info.get_filename = lambda: filename
+        backup_info.get_basebackup_directory = lambda: "barman/my-server/base/fake_id"
+        backup_info._backup_cloud_interface = mock.Mock(path="barman")
+
+        # WHEN save is called
+        backup_info.save(filename=filename, file_object=file_object)
+
+        # THEN the parent save method is always called
+        mock_parent_save.assert_called_once_with(
+            filename=filename, file_object=file_object
+        )
+
+        # AND if file_object is not provided, the backup.info is uploaded to cloud
+        if file_object is None:
+            mock_open.assert_called_once_with(filename, "rb")
+            backup_info._backup_cloud_interface.upload_fileobj.assert_called_once_with(
+                mock_open.return_value.__enter__.return_value,
+                "barman/my-server/base/fake_id/backup.info",
+            )
+        # AND if file_object is provided, no cloud upload occurs
+        else:
+            mock_open.assert_not_called()
+            backup_info._backup_cloud_interface.upload_fileobj.assert_not_called()
