@@ -820,7 +820,8 @@ class TestBackup(object):
         assert incremental_b_info.backup_id not in available_backups
         assert len(available_backups) == 1
 
-    def test_load_backup_cache(self, tmpdir):
+    @patch("barman.backup.BackupManager._load_backups_from_cloud")
+    def test_load_backup_cache(self, mock_load_backups_from_cloud, tmpdir):
         """
         Check the loading of backups inside the backup_cache
         """
@@ -846,6 +847,90 @@ class TestBackup(object):
         assert (
             backup_manager._backup_cache[b_info.backup_id].to_dict() == b_info.to_dict()
         )
+
+        # Should not check for cloud backups in this test
+        mock_load_backups_from_cloud.assert_not_called()
+
+    @patch("barman.backup.BackupManager._load_backups_from_cloud")
+    def test_load_backup_cache_loads_from_cloud_when_server_is_disabled(
+        self, mock_load_backups_from_cloud
+    ):
+        """
+        Test that when loading the backup cache, if the server is inactive and has
+        cloud storage enabled, it loads backups from the cloud.
+        """
+        # GIVEN a BackupManager with a server with cloud storage and inactive
+        server = mock.Mock(use_backup_cloud_storage=True)
+        server.config.active = False
+        backup_manager = build_backup_manager(server)
+
+        # WHEN _load_backup_cache is called
+        backup_manager._load_backup_cache()
+
+        # THEN it should load backups from the cloud
+        mock_load_backups_from_cloud.assert_called_once()
+
+    @patch("barman.backup.CloudLocalBackupInfo")
+    @patch("barman.backup.CloudBackupCatalog")
+    def test_load_backups_from_cloud(
+        self, mock_cloud_catalog_cls, mock_cloud_local_backup_info_cls
+    ):
+        """
+        Test that _load_backups_from_cloud fetches backup.info files from the
+        cloud storage and populates the cache with CloudLocalBackupInfo objects.
+        """
+        # Prepare mocks
+        # GIVEN a backup manager with a mocked cloud interface
+        mock_cloud_interface = mock.Mock()
+        server = mock.Mock(get_backup_cloud_interface=lambda: mock_cloud_interface)
+        backup_manager = build_backup_manager(server=server)
+        backup_manager._backup_cache = {}
+
+        # Simulate CloudBackupCatalog returning a list of backup info objects from the cloud
+        mock_backup_info_1 = mock.Mock(backup_id="backup_1")
+        mock_backup_info_2 = mock.Mock(backup_id="backup_2")
+        mock_cloud_catalog_cls.return_value.get_backup_list.return_value = {
+            "backup_1": mock_backup_info_1,
+            "backup_2": mock_backup_info_2,
+        }
+
+        # Mock CloudLocalBackupInfo to return mocks as to avoid actual instantiation
+        mock_cloud_backup_1 = mock.Mock()
+        mock_cloud_backup_2 = mock.Mock()
+        mock_cloud_local_backup_info_cls.side_effect = [
+            mock_cloud_backup_1,
+            mock_cloud_backup_2,
+        ]
+
+        # WHEN _load_backups_from_cloud is called
+        backup_manager._load_backups_from_cloud()
+
+        # THEN CloudBackupCatalog is instantiated with the cloud interface and server name
+        mock_cloud_catalog_cls.assert_called_once_with(
+            cloud_interface=mock_cloud_interface,
+            server_name=backup_manager.config.name,
+        )
+
+        # AND a CloudLocalBackupInfo is created for each backup returned by CloudBackupCatalog
+        assert mock_cloud_local_backup_info_cls.call_count == 2
+
+        # Creation of backup_1 (save, instantiate CloudLocalBackupInfo, load)
+        mock_backup_info_1.save.assert_called_once()
+        mock_cloud_local_backup_info_cls.assert_any_call(
+            server=backup_manager.server, backup_id="backup_1"
+        )
+        mock_cloud_backup_1.load.assert_called_once()
+
+        # Creation of backup_2 (save, instantiate CloudLocalBackupInfo, load)
+        mock_backup_info_2.save.assert_called_once()
+        mock_cloud_local_backup_info_cls.assert_any_call(
+            server=backup_manager.server, backup_id="backup_2"
+        )
+        mock_cloud_backup_2.load.assert_called_once()
+
+        # AND the CloudLocalBackupInfo objects are stored in the backup cache
+        assert backup_manager._backup_cache["backup_1"] is mock_cloud_backup_1
+        assert backup_manager._backup_cache["backup_2"] is mock_cloud_backup_2
 
     def test_backup_cache_add(self, tmpdir):
         """
