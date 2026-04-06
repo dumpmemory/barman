@@ -35,6 +35,23 @@ from barman.utils import BarmanEncoderV2
 _logger = logging.getLogger(__name__)
 
 
+def get_barman_system_info():
+    """
+    Collect local system information for the barman server.
+
+    :rtype: dict
+    :return: System information including OS, Python, rsync, ssh versions,
+             barman version, and current timestamp.
+    """
+    try:
+        system_info = fs.UnixLocalCommand().get_system_info()
+    except CommandFailedException as e:
+        system_info = {"error": repr(e)}
+    system_info["barman_ver"] = barman.__version__
+    system_info["timestamp"] = datetime.datetime.now(tz=tz.tzlocal())
+    return system_info
+
+
 def exec_diagnose(servers, models, errors_list, show_config_source):
     """
     Diagnostic command: gathers information from backup server
@@ -55,16 +72,7 @@ def exec_diagnose(servers, models, errors_list, show_config_source):
         barman.__config__.global_config_to_json(show_config_source)
     )
     diagnosis["global"]["config"]["errors_list"] = errors_list
-    try:
-        command = fs.UnixLocalCommand()
-        # basic system info
-        diagnosis["global"]["system_info"] = command.get_system_info()
-    except CommandFailedException as e:
-        diagnosis["global"]["system_info"] = {"error": repr(e)}
-    diagnosis["global"]["system_info"]["barman_ver"] = barman.__version__
-    diagnosis["global"]["system_info"]["timestamp"] = datetime.datetime.now(
-        tz=tz.tzlocal()
-    )
+    diagnosis["global"]["system_info"] = get_barman_system_info()
     # per server section
     for name in sorted(servers):
         server = servers[name]
