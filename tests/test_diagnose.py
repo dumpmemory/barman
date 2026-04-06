@@ -23,6 +23,8 @@ from testing_helpers import build_config_from_dicts
 
 import barman
 from barman.cli import diagnose
+from barman.command_wrappers import CommandFailedException
+from barman.diagnose import get_barman_system_info
 from barman.utils import redact_passwords
 
 
@@ -143,3 +145,56 @@ class TestDiagnose(object):
 
         # Assert that the JSON output syntax is correct
         json.loads(json_output)
+
+
+class TestGetBarmanSystemInfo(object):
+    """Test class for get_barman_system_info helper function."""
+
+    @patch("barman.diagnose.fs.UnixLocalCommand")
+    def test_get_barman_system_info_success(self, mock_unix_cmd):
+        """
+        Test that get_barman_system_info returns system info with barman version
+        and timestamp.
+        """
+        # GIVEN system info from UnixLocalCommand
+        mock_unix_cmd.return_value.get_system_info.return_value = {
+            "release": "Linux",
+            "python_ver": "3.10.0",
+        }
+
+        # WHEN get_barman_system_info is called
+        result = get_barman_system_info()
+
+        # THEN the result contains the system info
+        assert result["release"] == "Linux"
+        assert result["python_ver"] == "3.10.0"
+
+        # AND the barman version is included
+        assert "barman_ver" in result
+        assert result["barman_ver"] == barman.__version__
+
+        # AND a timestamp is included
+        assert "timestamp" in result
+
+    @patch("barman.diagnose.fs.UnixLocalCommand")
+    def test_get_barman_system_info_command_failure(self, mock_unix_cmd):
+        """
+        Test that get_barman_system_info handles CommandFailedException.
+        """
+        # GIVEN UnixLocalCommand raises CommandFailedException
+        mock_unix_cmd.return_value.get_system_info.side_effect = CommandFailedException(
+            "test error"
+        )
+
+        # WHEN get_barman_system_info is called
+        result = get_barman_system_info()
+
+        # THEN the result contains an error key
+        assert "error" in result
+
+        # AND the barman version is still included
+        assert "barman_ver" in result
+        assert result["barman_ver"] == barman.__version__
+
+        # AND a timestamp is still included
+        assert "timestamp" in result

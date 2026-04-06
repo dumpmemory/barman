@@ -4683,3 +4683,158 @@ class TestCheckStrategy(object):
 
     def test_get_backup_cloud_interface(self):
         pass
+
+
+class TestExportBackup(object):
+    """Test class for Server.export_backup."""
+
+    @patch("os.rename")
+    @patch("barman.server.file_hash", return_value="abc12345")
+    @patch("barman.server.get_barman_system_info")
+    def test_export_backup_success(
+        self, mock_get_system_info, mock_file_hash, mock_rename, tmpdir
+    ):
+        """
+        Test that export_backup orchestrates the export process correctly.
+        """
+        # GIVEN a server with a valid backup
+        export_dir = tmpdir.mkdir("export")
+
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=server,
+        )
+
+        # AND identity data and system info are available
+        identity_data = {"systemid": "1234567890"}
+        mock_get_system_info.return_value = {"barman_ver": "3.10.0"}
+
+        # WHEN export_backup is called
+        with patch.object(server, "read_identity_file", return_value=identity_data):
+            with patch.object(server.backup_manager, "export_backup") as mock_export:
+                server.export_backup(backup_info, export_dir.strpath)
+
+        # THEN backup_manager.export_backup was called with correct arguments
+        mock_export.assert_called_once()
+        call_args = mock_export.call_args
+        assert call_args[0][0] == backup_info
+        assert call_args[0][1].startswith(export_dir.strpath)
+        assert call_args[0][1].endswith(".tmp")
+        assert call_args[0][2] == identity_data
+        assert call_args[0][3] == {"barman_ver": "3.10.0"}
+
+        # AND file_hash was called on the temp file
+        mock_file_hash.assert_called_once()
+
+        # AND os.rename was called with correct temp and final paths
+        mock_rename.assert_called_once()
+        rename_args = mock_rename.call_args[0]
+        assert rename_args[0].endswith(".tmp")
+        assert rename_args[1].endswith(".tar")
+        assert "abc12345" in rename_args[1]
+
+    def test_export_backup_no_identity_returns_error(self, tmpdir, capsys):
+        """
+        Test that export_backup returns early with an error when no identity
+        file exists.
+        """
+        # GIVEN a server without an identity file
+        backup_dir = tmpdir.mkdir("base")
+        export_dir = tmpdir.mkdir("export")
+
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "basebackups_directory": backup_dir.strpath,
+            },
+        )
+
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=server,
+        )
+
+        # WHEN export_backup is called with no identity file
+        with patch.object(server, "read_identity_file", return_value={}):
+            server.export_backup(backup_info, export_dir.strpath)
+
+        # THEN no tarball is created
+        export_files = [f for f in os.listdir(export_dir.strpath) if f.endswith(".tar")]
+        assert len(export_files) == 0
+
+        # AND an error message is displayed
+        out, err = capsys.readouterr()
+        assert "No identity file found" in err
+        assert "identity file is required" in err
+
+    def test_export_backup_cloud_storage_returns_error(self, tmpdir, capsys):
+        """
+        Test that export_backup returns early with an error when cloud storage
+        is configured.
+        """
+        # GIVEN a server with cloud storage configured
+        export_dir = tmpdir.mkdir("export")
+
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=server,
+        )
+
+        # AND cloud storage is configured
+        with patch.object(
+            type(server), "use_backup_cloud_storage", new_callable=PropertyMock
+        ) as mock_cloud:
+            mock_cloud.return_value = True
+            # WHEN export_backup is called
+            server.export_backup(backup_info, export_dir.strpath)
+
+        # THEN no tarball is created
+        export_files = [f for f in os.listdir(export_dir.strpath) if f.endswith(".tar")]
+        assert len(export_files) == 0
+
+        # AND an error message is displayed
+        out, err = capsys.readouterr()
+        assert "not supported for cloud storage" in err
+
+    def test_export_backup_cleanup_on_failure(self, tmpdir):
+        """
+        Test that export_backup cleans up temp file on failure.
+        """
+        # GIVEN a server
+        backup_dir = tmpdir.mkdir("base")
+        export_dir = tmpdir.mkdir("export")
+
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "basebackups_directory": backup_dir.strpath,
+            },
+        )
+
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=server,
+        )
+
+        # AND the backup_manager.export_backup will raise an exception
+        with patch.object(
+            server.backup_manager, "export_backup", side_effect=Exception("Test error")
+        ):
+            with patch.object(
+                server, "read_identity_file", return_value={"systemid": "1234567890"}
+            ):
+                # WHEN export_backup is called
+                # THEN an exception is raised
+                with pytest.raises(Exception, match="Test error"):
+                    server.export_backup(backup_info, export_dir.strpath)
+
+        # AND no files are left in the export directory
+        assert len(os.listdir(export_dir.strpath)) == 0

@@ -3233,3 +3233,46 @@ class TestExportBackup(object):
             args.export_path,
         )
         mock_close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.os.access", return_value=True)
+    @patch("barman.cli.os.path.isdir", return_value=True)
+    @patch("barman.cli.os.path.exists", return_value=True)
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    def test_export_backup_success(
+        self,
+        mock_get_server,
+        mock_parse_backup,
+        mock_exists,
+        mock_isdir,
+        mock_access,
+        mock_close_and_exit,
+    ):
+        """
+        Test that export_backup delegates to server.export_backup when all
+        validations pass.
+        """
+        # GIVEN a valid backup with DONE status
+        args = Mock()
+        args.server_name = "test_server"
+        args.backup_id = "20240101T120000"
+        args.export_path = "/tmp/export"
+
+        mock_server = Mock()
+        mock_server.config.name = "test_server"
+        mock_get_server.return_value = mock_server
+
+        mock_backup_info = Mock()
+        mock_backup_info.status = BackupInfo.DONE
+        mock_parse_backup.return_value = mock_backup_info
+
+        # WHEN export_backup is called
+        export_backup(args)
+
+        # THEN server.export_backup is called with the correct arguments
+        mock_server.export_backup.assert_called_once_with(
+            mock_backup_info, args.export_path
+        )
+        # AND close_and_exit is called
+        mock_close_and_exit.assert_called_once_with()

@@ -17,6 +17,7 @@
 # along with Barman.  If not, see <http://www.gnu.org/licenses/>.
 
 import errno
+import json
 import os
 import shutil
 import tarfile
@@ -3247,3 +3248,66 @@ class TestSnapshotBackup(object):
             mock_shutil.rmtree.call_args_list[1][0][0]
             == backup_info.get_basebackup_directory()
         )
+
+
+class TestExportBackup(object):
+    """Test class for BackupManager.export_backup."""
+
+    def test_export_backup_success(self, tmpdir):
+        """
+        Test that export_backup creates a tarball with the expected contents.
+        """
+        # GIVEN a backup manager with a valid backup
+        backup_manager = build_backup_manager(
+            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
+        )
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=backup_manager.server,
+        )
+
+        # AND the backup directory exists with some data
+        build_backup_directories(backup_info)
+        data_dir = backup_info.get_data_directory()
+        test_file = os.path.join(data_dir, "test_file.txt")
+        with open(test_file, "w") as f:
+            f.write("test content")
+        backup_info.save()
+
+        # AND identity and barman data are provided
+        identity_data = {"systemid": "1234567890"}
+        barman_data = {"barman_ver": "3.10.0", "timestamp": "2024-01-01T12:00:00"}
+
+        # AND an export path is defined
+        export_path = os.path.join(tmpdir.strpath, "export.tar")
+
+        # WHEN export_backup is called
+        backup_manager.export_backup(
+            backup_info, export_path, identity_data, barman_data
+        )
+
+        # THEN the tarball is created
+        assert os.path.exists(export_path)
+
+        # AND the tarball contains the expected files with correct content
+        with tarfile.open(export_path, "r") as tar:
+            tar_members = tar.getnames()
+
+            # Should contain backup directory with its contents
+            assert any(name.startswith("backup/") for name in tar_members)
+
+            # Should contain metadata files
+            assert "identity.json" in tar_members
+            assert "backup.info" in tar_members
+            assert "barman.json" in tar_members
+
+            # Verify identity.json content
+            identity_file = tar.extractfile("identity.json")
+            identity_content = json.loads(identity_file.read().decode("utf-8"))
+            assert identity_content == {"systemid": "1234567890"}
+
+            # Verify barman.json content
+            barman_file = tar.extractfile("barman.json")
+            barman_content = json.loads(barman_file.read().decode("utf-8"))
+            assert barman_content["barman_ver"] == "3.10.0"
+            assert barman_content["timestamp"] == "2024-01-01T12:00:00"
