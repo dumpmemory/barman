@@ -66,6 +66,7 @@ from barman.exceptions import (
     CommandFailedException,
     CompressionIncompatibility,
     DuplicateWalFile,
+    ExportBackupException,
     LockFileBusy,
     MatchingDuplicateWalFile,
     SshCommandException,
@@ -2081,6 +2082,8 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
 
         This method creates a tarball containing:
         - ``backup/`` directory with complete backup data
+        - ``wals/`` directory with all required WAL files preserving hash structure
+        - ``xlog.db`` metadata file for exported WAL files
         - ``identity.json`` from server
         - ``backup.info`` metadata
         - ``barman.json`` with system information
@@ -2108,6 +2111,9 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             # Add backup data with backup/ prefix
             output.debug("Adding backup data from '%s'" % backup_dir)
             tar.add(backup_dir, arcname="backup")
+
+            # Add WAL files and xlog.db
+            self._add_wal_data_to_tar(tar, backup_info)
 
             # Add metadata files to tarball root
             self._add_metadata_to_tar(tar, identity_data, backup_info, barman_data)
@@ -2152,6 +2158,101 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         tarinfo.mode = 0o644
 
         tar.addfile(tarinfo, io.BytesIO(json_bytes))
+
+    def _add_wal_data_to_tar(self, tar, backup_info):
+        """
+        Add WAL files and xlog.db metadata to the tarball.
+
+        This method exports all WAL files required for backup consistency
+        from begin_wal to end_wal (inclusive) and creates an xlog.db file
+        containing metadata for the exported WAL files. Uses a single-pass
+        merge-step algorithm, isolated in a helper method.
+
+        Uses a temporary file to avoid memory overhead when exporting backups
+        with many WAL files.
+
+        :param TarFile tar: the tar file object
+        :param BackupInfo backup_info: the backup information
+        """
+        output.debug("Adding WAL files to export")
+
+        # Use export directory for temporary file to avoid memory overhead. As the
+        # export directory is expected to be big enough to hold the tarball, it should
+        # also be big enough to hold the temporary xlog.db file, which is very small
+        # compared to the tarball.
+        export_dir = os.path.dirname(tar.name)
+        xlogdb_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=export_dir, suffix=".xlogdb", delete=False
+            ) as xlogdb_file:
+                xlogdb_path = xlogdb_file.name
+                wal_count = self._collect_wal_files_for_export(
+                    tar, backup_info, xlogdb_file
+                )
+
+            # Add xlog.db to tar
+            tar.add(xlogdb_path, arcname="xlog.db")
+
+            output.debug("Successfully added %d WAL files to export" % wal_count)
+        finally:
+            # Clean up temp file
+            if xlogdb_path and os.path.exists(xlogdb_path):
+                os.unlink(xlogdb_path)
+
+    def _collect_wal_files_for_export(self, tar, backup_info, xlogdb_file):
+        """
+        Merge-step algorithm for collecting WAL files and xlog.db metadata for export.
+
+        Writes xlog.db lines directly to the provided file object to avoid
+        memory overhead for backups with many WAL files.
+
+        :param TarFile tar: the tar file object
+        :param BackupInfo backup_info: the backup information
+        :param file xlogdb_file: file object to write xlog.db metadata lines
+        :return: count of WAL files added to the tarball
+        :rtype: int
+        :raises ExportBackupException: for WAL/xlogdb mismatches or missing files
+        """
+        required_wals = backup_info.get_required_wal_segments()
+        # There is no need to add a fallback value for next() here because the CLI
+        # filters for DONE backups, which are guaranteed to have at least one required
+        # WAL segment, even if begin_wal is equal to end_wal.
+        current_required = next(required_wals)
+        wal_count = 0
+
+        with self.server.xlogdb("r") as fxlogdb:
+            for line in fxlogdb:
+                if current_required is None:
+                    # At this point we found all required WAL files, so we can stop
+                    # iterating through xlog.db
+                    break
+                wal_info = WalFileInfo.from_xlogdb_line(line)
+                if wal_info.name < current_required:
+                    continue
+                if wal_info.name > current_required:
+                    # Stop iterating as we did not find the required WAL in xlog.db.
+                    # That will cause execution to error out of the loop and report the
+                    # missing WAL file.
+                    break
+                wal_path = wal_info.fullpath(self.server)
+                if not os.path.exists(wal_path):
+                    raise ExportBackupException(
+                        "WAL file required for backup consistency not found for backup "
+                        "'%s': %s" % (backup_info.backup_id, wal_info.name)
+                    )
+                tar_path = "wals/%s" % wal_info.relpath()
+                tar.add(wal_path, arcname=tar_path)
+                xlogdb_file.write(line)
+                wal_count += 1
+                current_required = next(required_wals, None)
+
+        if current_required is not None:
+            raise ExportBackupException(
+                "WAL file required for backup consistency not found in xlog.db for "
+                "backup '%s': %s" % (backup_info.backup_id, current_required)
+            )
+        return wal_count
 
     def get_wal_file_info(self, filename):
         """

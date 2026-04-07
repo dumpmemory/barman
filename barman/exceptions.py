@@ -134,6 +134,12 @@ class SnapshotInstanceNotFoundException(SnapshotBackupException):
     """
 
 
+class ExportBackupException(BarmanException):
+    """
+    Exception for export-backup operation failures.
+    """
+
+
 class SyncError(SyncException):
     """
     Synchronisation error
