@@ -49,6 +49,8 @@ Barman server. Additionally, it can be utilized as a hook script for WAL archivi
 
 .. note::
   For GCP, only authentication with ``GOOGLE_APPLICATION_CREDENTIALS`` env is supported.
+  To use an alternative GCP universe (e.g. S3NS/T-Systems), set the
+  ``GOOGLE_CLOUD_UNIVERSE_DOMAIN`` environment variable to the desired universe domain.
 
 **Parameters**
 
