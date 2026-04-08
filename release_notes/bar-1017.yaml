@@ -1,0 +1,11 @@
+---
+- summary: Support alternative GCP universes via GOOGLE_CLOUD_UNIVERSE_DOMAIN environment variable
+  description: |
+    Barman now supports alternative GCP universes (e.g. S3NS/T-Systems) by
+    reading the ``GOOGLE_CLOUD_UNIVERSE_DOMAIN`` environment variable. When set,
+    the value is passed as ``client_options`` to the GCS storage client, allowing
+    ``barman-cloud-*`` commands to operate against non-standard GCP endpoints.
+    This feature was contributed by community member @mgarstecki.
+  type: minor_change
+  jira_tickets:
+    - BAR-1017
