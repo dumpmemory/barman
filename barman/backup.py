@@ -1393,16 +1393,20 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
                 wal_info.orig_filename, wal_info.name, "duplicate"
             )
 
-    def cloud_wal_restore(self, wal_name, wal_dest):
+    def cloud_wal_restore(self, wal_name, wal_dest, parallel, spool_dir):
         """
         Restore a WAL file from a cloud object storage.
 
         :param str wal_name: the name of the WAL file to restore
         :param str wal_dest: the destination path where to restore the WAL file
+        :param int parallel: the number of files to download in parallel
+        :param str spool_dir: the spool directory for extra WALs fetched in parallel
         """
         cloud_interface = self.server.get_wal_cloud_interface()
-        wal_downloader = CloudWalDownloader(cloud_interface, self.config.name)
-        wal_downloader.download_wal(wal_name, wal_dest, False)
+        wal_downloader = CloudWalDownloader(
+            cloud_interface, self.config.name, spool_dir
+        )
+        wal_downloader.download_wal(wal_name, wal_dest, False, parallel)
 
     def cron_retention_policy(self):
         """

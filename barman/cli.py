@@ -35,6 +35,7 @@ import barman.utils
 from barman import output
 from barman.annotations import KeepManager
 from barman.backup_manifest import BackupManifest
+from barman.cloud import CloudWalDownloader
 from barman.config import (
     ConfigChangesProcessor,
     RecoveryOptions,
@@ -2532,6 +2533,21 @@ def cloud_wal_archive(args):
             "wal_dest",
             help="The value of the '%%p' keyword (according to 'restore_command')",
         ),
+        argument(
+            "-p",
+            "--parallel",
+            default=0,
+            type=int,
+            help="Specifies the number of files to peek and download in parallel. "
+            "Default is 0 (disabled)",
+        ),
+        argument(
+            "--spool-dir",
+            default=CloudWalDownloader.DEFAULT_SPOOL_DIR,
+            metavar="SPOOL_DIR",
+            help="Specifies a spool directory for extra WAL files that are downloaded in "
+            "parallel. Defaults to '{0}'.".format(CloudWalDownloader.DEFAULT_SPOOL_DIR),
+        ),
     ]
 )
 def cloud_wal_restore(args):
@@ -2554,7 +2570,9 @@ def cloud_wal_restore(args):
     )
 
     with closing(server):
-        server.cloud_wal_restore(args.wal_name, args.wal_dest)
+        server.cloud_wal_restore(
+            args.wal_name, args.wal_dest, args.parallel, args.spool_dir
+        )
 
     output.close_and_exit()
 

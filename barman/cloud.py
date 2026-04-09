@@ -29,6 +29,7 @@ import shutil
 import signal
 import sys
 import tarfile
+import threading
 import time
 from abc import ABCMeta, abstractmethod, abstractproperty
 from io import BytesIO, RawIOBase
@@ -2833,7 +2834,9 @@ class CloudWalDownloader(object):
     Cloud storage download client
     """
 
-    def __init__(self, cloud_interface, server_name):
+    DEFAULT_SPOOL_DIR = "/var/tmp/walrestore"
+
+    def __init__(self, cloud_interface, server_name, spool_dir=None):
         """
         Object responsible for handling interactions with cloud storage
 
@@ -2841,17 +2844,130 @@ class CloudWalDownloader(object):
           download WAL files from cloud storage for restore operations
         :param str server_name: The name of the server as configured in Barman
         """
-
         self.cloud_interface = cloud_interface
         self.server_name = server_name
+        self.spool_dir = spool_dir or self.DEFAULT_SPOOL_DIR
 
-    def download_wal(self, wal_name, wal_dest, no_partial):
+    def _try_to_deliver_from_spool(self, wal_name, destination):
         """
-        Download a WAL file from cloud storage
+        Check if the requested WAL file is present in the spool directory. If so, move
+        it to the destination and return ``True``. Otherwise, return ``False``.
 
-        :param str wal_name: Name of the WAL file
-        :param str wal_dest: Full path of the destination WAL file
+        :param str wal_name: Name of the requested WAL file
+        :param str destination: Full path of the desired destination for the WAL file
+        :return bool: ``True`` if the file was found and moved, ``False``otherwise
+        :raises SystemExit: If the file is found but cannot be moved to the destination
+        """
+        wal_path = os.path.join(self.spool_dir, wal_name)
+        if os.path.isfile(wal_path):
+            try:
+                _logger.debug(
+                    "Moving WAL file %s for server %s from spool to destination %s"
+                    % (wal_name, self.server_name, destination)
+                )
+                shutil.move(wal_path, destination)
+                return True
+            except OSError as exc:
+                _logger.error(
+                    "Failure moving %s to %s: %s" % (wal_path, destination, exc)
+                )
+                sys.exit(2)
+        return False
+
+    def _ensure_spool_dir_exists(self):
+        """
+        Ensure that the spool directory exists, creating it if necessary.
+
+        If the directory cannot be created, an error is logged and a :exc:`SystemExit`
+        exception is raised.
+
+        :raises SystemExit: If the spool directory does not exist and cannot be created
+        """
+        if os.path.exists(self.spool_dir):
+            return
+        try:
+            _logger.info("Creating spool directory %s" % self.spool_dir)
+            os.makedirs(self.spool_dir)
+        except OSError as exc:
+            _logger.error("Cannot create %s directory: %s" % (self.spool_dir, exc))
+            sys.exit(2)
+
+    def download_wal(self, wal_name, wal_dest, no_partial, parallel):
+        """
+        Download a WAL file from cloud storage.
+
+        If *parallel* is greater than ``1``, it downloads the requested WAL file and the
+        next *parallel* - ``1`` WAL files in parallel.
+
+        :param str wal_name: Name of the requested WAL file
+        :param str wal_dest: Full path of the destination WAL file (including filename)
         :param bool no_partial: Do not download partial WAL files
+        :param int parallel: The number of WAL files to download in parallel
+        """
+        # If the requested WAL is present in the spool, just move it and return
+        if self._try_to_deliver_from_spool(wal_name, wal_dest):
+            _logger.debug(
+                "Found WAL file %s for server %s in the spool directory"
+                % (wal_name, self.server_name)
+            )
+            return
+
+        # Bring the list of WAL cloud paths to download. If parallel is > 1, this is
+        # the requested WAL + the parallel - 1 next WALs present in the same WAL directory
+        wals_to_download = self._get_wals_to_download(wal_name, no_partial, parallel)
+
+        # If the requested WAL is not found or no WAL is found at all, error out
+        if not wals_to_download or wal_name not in wals_to_download[0]:
+            _logger.info(
+                "WAL file %s for server %s does not exist", wal_name, self.server_name
+            )
+            raise OperationErrorExit()
+
+        # Pop the requested WAL, it is downloaded separately in the main thread
+        requested_wal_path = wals_to_download.pop(0)
+
+        # If extra WALs are present, ensure the spool dir exists to store them
+        if wals_to_download:
+            self._ensure_spool_dir_exists()
+
+        # Start the download of any extra WALs in parallel background threads
+        # Their destination is the spool directory, without any suffix
+        threads = []
+        for cloud_path in wals_to_download:
+            filename = os.path.basename(cloud_path)
+            filename = self._remove_compression_suffix(filename)
+            filename = filename.replace(".partial", "")
+            spool_dest = os.path.join(self.spool_dir, filename)
+            thread = threading.Thread(
+                target=self._download_single_wal, args=(cloud_path, spool_dest)
+            )
+            thread.start()
+            threads.append(thread)
+
+        # Download the requested WAL in the main thread
+        self._download_single_wal(requested_wal_path, wal_dest)
+
+        # Wait for the background threads to finish before exiting
+        for thread in threads:
+            thread.join()
+
+    def _get_wals_to_download(self, wal_name, no_partial, parallel):
+        """
+        Get the list of WAL files to download from cloud storage.
+
+        If *parallel* is greater than 1, it searches for the requested WAL file and
+        the next *parallel* - 1 WAL files in the same WAL directory. Otherwise, it
+        returns the requested WAL file only.
+
+        Note that it does not search WALs that are not present in the same directory
+        as the requested WAL.
+
+        The returned list is always sorted in ascending order.
+
+        :param str wal_name: Name of the requested WAL file
+        :param bool no_partial: Do not include partial WAL files in the search results
+        :param int parallel: The number of WAL files to download in parallel
+        :return list[str]: A sorted list of WAL paths to download from cloud storage
         """
         # Correctly format the source path on s3
         source_dir = os.path.join(
@@ -2861,67 +2977,112 @@ class CloudWalDownloader(object):
         if not source_dir.endswith(os.path.sep):
             source_dir += os.path.sep
 
-        wal_path = os.path.join(source_dir, wal_name)
+        # Prefetching is not possible when the requested WAL is a history file because
+        # they live in the root of the "wals" directory instead of a hashed directory
+        if xlog.is_history_file(wal_name):
+            parallel = 0
 
-        remote_name = None
-        # Automatically detect compression based on the file extension
-        compression = None
-        for item in self.cloud_interface.list_bucket(wal_path):
-            # perfect match (uncompressed file)
-            if item == wal_path:
-                remote_name = item
-                continue
-            # look for compressed files or .partial files
+        # If parallel > 1, we want to download the requested WAL + parallel - 1 next
+        # WALs in the same directory, so we use the directory as prefix. Otherwise, we
+        # use the full path of the requested WAL as prefix to avoid extra iterations
+        requested_wal_path = os.path.join(source_dir, wal_name)
+        prefix = source_dir if parallel > 1 else requested_wal_path
 
-            # Detect compression
-            basename = item
-            for e, c in ALLOWED_COMPRESSIONS.items():
-                if item[-len(e) :] == e:
-                    # Strip extension
-                    basename = basename[: -len(e)]
-                    compression = c
-                    break
+        wals_to_download = []
+        count = 0
+        for path in sorted(self.cloud_interface.list_bucket(prefix)):
+            is_requested_wal = path.startswith(requested_wal_path)
+            if is_requested_wal or (path > requested_wal_path and count < parallel):
+                if not self._validate_wal_path(path, no_partial):
+                    continue
+                _logger.info(
+                    "Found WAL %s for server %s as %s", wal_name, self.server_name, path
+                )
+                wals_to_download.append(path)
+                count += 1
 
-            # Check basename is a known xlog file (.partial?)
-            if not xlog.is_any_xlog_file(basename):
-                _logger.warning("Unknown WAL file: %s", item)
-                continue
-            # Exclude backup informative files (not needed in recovery)
-            elif xlog.is_backup_file(basename):
-                _logger.info("Skipping backup file: %s", item)
-                continue
-            # Exclude partial files if required
-            elif no_partial and xlog.is_partial_file(basename):
-                _logger.info("Skipping partial file: %s", item)
-                continue
+        return wals_to_download
 
-            # Found candidate
-            remote_name = item
-            _logger.info(
-                "Found WAL %s for server %s as %s",
-                wal_name,
-                self.server_name,
-                remote_name,
-            )
-            break
+    def _validate_wal_path(self, wal_path, no_partial):
+        """
+        Validate a WAL path from cloud storage.
 
-        if not remote_name:
-            _logger.info(
-                "WAL file %s for server %s does not exist", wal_name, self.server_name
-            )
-            raise OperationErrorExit()
+        It is considered valid if it is an xlog file AND it is not a backup file AND
+        is not a partial file (if *no_partial* is ``True``).
 
+        :param str wal_path: The path of the WAL file to validate
+        :param bool no_partial: If ``True``, partial files are not considered valid
+        :return bool: ``True`` if the WAL path is valid, ``False`` otherwise
+        """
+        # Remove any compression suffix if present
+        wal_path = self._remove_compression_suffix(wal_path)
+        if not xlog.is_any_xlog_file(wal_path):
+            _logger.warning("Unknown WAL file: %s", wal_path)
+            return False
+        elif xlog.is_backup_file(wal_path):
+            _logger.info("Skipping backup file: %s", wal_path)
+            return False
+        elif no_partial and xlog.is_partial_file(wal_path):
+            _logger.info("Skipping partial file: %s", wal_path)
+            return False
+        return True
+
+    def _remove_compression_suffix(self, wal_path):
+        """
+        Remove the compression suffix from a WAL path if it is present.
+
+        :param str wal_path: The path of the WAL file
+        :return str: The WAL path without the compression suffix
+        """
+        for extension in ALLOWED_COMPRESSIONS:
+            if wal_path.endswith(extension):
+                return wal_path[: -len(extension)]
+        return wal_path
+
+    def _download_single_wal(self, wal_path, wal_dest):
+        """
+        Perform the download of a single WAL file from cloud storage.
+
+        :param str wal_path: The path of the WAL file to download from cloud storage
+        :param str wal_dest: The full path of the destination WAL file
+            (including filename)
+
+        :raises BarmanException: If the WAL file is compressed but cannot be
+            decompressed due to an unsupported compression format or Python version.
+        """
+        compression = self._identify_cloud_compression(wal_path)
         if compression and sys.version_info < (3, 0, 0):
             raise BarmanException(
                 "Compressed WALs cannot be restored with Python 2.x - "
                 "please upgrade to a supported version of Python 3"
             )
-
-        # Download the file
         _logger.debug(
             "Downloading %s to %s (%s)",
-            remote_name,
+            wal_path,
             wal_dest,
             "decompressing " + compression if compression else "no compression",
         )
-        self.cloud_interface.download_file(remote_name, wal_dest, compression)
+        try:
+            self.cloud_interface.download_file(wal_path, wal_dest, compression)
+        # Use BaseException to also GeneralErrorExit raised by the cloud provider modules
+        except BaseException as exc:
+            _logger.error(
+                "Failure downloading WAL %s to %s: %s" % (wal_path, wal_dest, exc)
+            )
+            # Only reraise if on main thread as to avoid noise from background threads
+            if threading.current_thread() is threading.main_thread():
+                raise
+
+    def _identify_cloud_compression(self, wal_path):
+        """
+        Identify the compression of a WAL file based on its extension.
+
+        :param str wal_path: The path of the WAL file
+        :returns str|None: The compression type if the file is compressed, or ``None``
+            if not.
+        """
+        wal_name = os.path.basename(wal_path)
+        for extension, compression in ALLOWED_COMPRESSIONS.items():
+            if wal_name.endswith(extension):
+                return compression
+        return None
