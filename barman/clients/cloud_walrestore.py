@@ -57,10 +57,13 @@ def main(args=None):
                 raise SystemExit(0)
 
             downloader = CloudWalDownloader(
-                cloud_interface=cloud_interface, server_name=config.server_name
+                cloud_interface=cloud_interface,
+                server_name=config.server_name,
+                spool_dir=config.spool_dir,
             )
-
-            downloader.download_wal(config.wal_name, config.wal_dest, config.no_partial)
+            downloader.download_wal(
+                config.wal_name, config.wal_dest, config.no_partial, config.parallel
+            )
 
     except Exception as exc:
         _logger.error("Barman cloud WAL restore exception: %s", force_str(exc))
@@ -87,6 +90,21 @@ def parse_arguments(args=None):
         help="Do not download partial WAL files",
         action="store_true",
         default=False,
+    )
+    parser.add_argument(
+        "-p",
+        "--parallel",
+        default=0,
+        type=int,
+        help="Specifies the number of files to peek and download in parallel. "
+        "Default is 0 (disabled)",
+    )
+    parser.add_argument(
+        "--spool-dir",
+        default=CloudWalDownloader.DEFAULT_SPOOL_DIR,
+        metavar="SPOOL_DIR",
+        help="Specifies a spool directory for extra WAL files that are downloaded in "
+        "parallel. Defaults to '{0}'.".format(CloudWalDownloader.DEFAULT_SPOOL_DIR),
     )
     parser.add_argument(
         "wal_name",
