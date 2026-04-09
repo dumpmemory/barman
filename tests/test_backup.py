@@ -3164,13 +3164,17 @@ class TestCloudBackup(object):
         # WHEN cloud_wal_restore is called
         wal_name = "000000010000000000000001"
         wal_dest = "/var/lib/pgsql/17/data/pg_wal/000000010000000000000001"
-        backup_manager.cloud_wal_restore(wal_name, wal_dest)
+        parallel = 0
+        spool_dir = "/path/to/spool"
+        backup_manager.cloud_wal_restore(wal_name, wal_dest, parallel, spool_dir)
 
         # THEN a CloudWalDownloader is created with the cloud interface and server name
-        mock_wal_downloader.assert_called_once_with(mock_cloud_interface, "test-server")
+        mock_wal_downloader.assert_called_once_with(
+            mock_cloud_interface, "test-server", spool_dir
+        )
         # AND the download_wal method is called correctly
         mock_wal_downloader.return_value.download_wal.assert_called_once_with(
-            wal_name, wal_dest, False
+            wal_name, wal_dest, False, parallel
         )
 
 

@@ -3014,6 +3014,8 @@ class TestCloudWalRestoreCli:
             server_name="test-server",
             wal_name="0000000100000000000000A1",
             wal_dest="/var/lib/pgsql/17/data/pg_wal/0000000100000000000000A1",
+            parallel=0,
+            spool_dir="/path/to/spool",
         )
 
     @patch("barman.cli.get_server")
@@ -3029,6 +3031,8 @@ class TestCloudWalRestoreCli:
         mock_get_server.return_value.cloud_wal_restore.assert_called_once_with(
             "0000000100000000000000A1",
             "/var/lib/pgsql/17/data/pg_wal/0000000100000000000000A1",
+            0,
+            "/path/to/spool",
         )
 
     @patch("barman.cli.output")
