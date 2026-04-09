@@ -72,11 +72,15 @@ Parameters
     wait).
 
 ``-p`` / ``--parallel``
-    Indicate the number of files to ``peek`` and transfer simultaneously (defaults to
-    ``0`` - disabled).
+  Specifies the number of WAL files to fetch in parallel. Default is ``0`` (disabled).
+  When set to a value greater than ``1``, fetches the requested WAL file along with the
+  next ``N - 1`` files simultaneously. The additional files are staged in a local spool
+  directory (see ``--spool-dir``) so that subsequent restore requests can be served
+  immediately from local storage.
 
 ``--spool-dir``
-    Specify the spool directory for WAL files (defaults to ``/var/tmp/walrestore``).
+  Directory used for staging extra WALs fetched when using ``--parallel``. Default is
+  ``/var/tmp/walrestore``.
 
 ``-P`` /  ``--partial``
     Include partial WAL files (.partial) in the retrieval.

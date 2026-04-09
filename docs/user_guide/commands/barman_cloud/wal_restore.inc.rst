@@ -21,6 +21,8 @@
                   [ { --azure-credential | --credential } { azure-cli | managed-identity
                     | default } ]
                   [ --no-partial ]
+                  [ { -p, --parallel } PARALLEL ]
+                  [ --spool-dir SPOOL_DIR ]
                   SOURCE_URL SERVER_NAME WAL_NAME WAL_DEST
 
 **Description**
@@ -85,6 +87,17 @@ calling ``--no-partial`` option.
 
 ``--no-partial``
   Do not download partial WAL files
+
+``-p`` / ``--parallel``
+  Specifies the number of WAL files to fetch in parallel. Default is ``0`` (disabled).
+  When set to a value greater than ``1``, fetches the requested WAL file along with the
+  next ``N - 1`` files simultaneously. The additional files are staged in a local spool
+  directory (see ``--spool-dir``) so that subsequent restore requests can be served
+  immediately from local storage.
+
+``--spool-dir``
+  Directory used for staging extra WALs fetched when using ``--parallel``. Default is
+  ``/var/tmp/walrestore``.
 
 **Extra options for the AWS cloud provider**
 
