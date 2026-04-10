@@ -1,0 +1,22 @@
+- summary: Fix multiple warnings about intermediary files not being removed
+  description: |
+    When using WAL compression, Barman creates intermediary files in the
+    archive directory during the compression process. Intermediary file paths
+    are stored in a list and removed at the end of the file archival.
+
+    However, when archiving multiple files in batch, the list of intermediary
+    files was not being cleared after each processed file, causing later
+    archivals to attempt to remove files that no longer exist, resulting in
+    warnings like the below:
+
+    ```
+    WARNING: Could not remove intermediary file /home/gustavo/pg/streaming/0000000100000013000000FD: [Errno 2] No such file or directory: '/home/gustavo/pg/streaming/0000000100000013000000FD'
+    ```
+
+    This bug was introduced in version 3.18, commit 5db8ca9b. It is now fixed and such
+    warnings should no longer occur.
+  type: bugfix
+  jira_tickets:
+    - BAR-1228
+  support_tickets:
+    - CP-59700
