@@ -3200,10 +3200,29 @@ class CombineOperation(RecoveryOperation):
             )
             output.close_and_exit()
 
-        if self.config.combine_mode == "link":
+        # When using cloud storage, we are sure backups will be downloaded to the same
+        # filesystem, and that there will be no references to the original backup files.
+        # So, we can safely use "link" mode for better performance
+        if (
+            self.server.use_backup_cloud_storage
+            and Version(pg_combinebackup_major_version) >= Version("18")
+            and self.config.combine_mode != "link"
+        ):
+            self.config.combine_mode = "link"
+            output.info(
+                "Automatically setting 'combine_mode' to 'link' during the cloud "
+                "backup restore for better performance during combination of backups."
+            )
+        # If the user manually set link mode, we need to validate its usage as to avoid
+        # any potential issues with the original catalog data
+        if (
+            self.config.combine_mode == "link"
+            and not self.server.use_backup_cloud_storage
+        ):
             self.config.combine_mode = self._fallback_to_copy_if_link_is_not_supported(
                 backup_info, output_dest, remote_command, pg_combinebackup_major_version
             )
+
         # Prepare the pg_combinebackup command
         # We skip checking paths as we already did it in _fetch_remote_status(). Also,
         # it can cause errors if staging_location = remote, as it only checks locally
