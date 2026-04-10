@@ -4257,6 +4257,67 @@ class TestCombineOperation(object):
                 mock_full_command_quote.return_value
             )
 
+    @pytest.mark.parametrize(
+        "pg_combinebackup_version, expected_copy_mode",
+        [("18.0.0", "link"), ("17.0.0", "copy")],
+    )
+    @mock.patch("barman.recovery_executor.get_major_version", new=lambda x: x)
+    @mock.patch("barman.recovery_executor.CombineOperation._fetch_remote_status")
+    @mock.patch(
+        "barman.recovery_executor.CombineOperation._get_backup_chain_paths",
+        return_value=["/path/to/backup_id/data", "/path/to/backup_id/parent/data"],
+    )
+    @mock.patch("barman.recovery_executor.PgCombineBackup")
+    def test_run_pg_combinebackup_from_cloud_automatically_sets_link_mode_when_possible(
+        self,
+        mock_pg_combine_backup,
+        mock_get_backup_chain_paths,
+        mock_fetch_remote_status,
+        pg_combinebackup_version,
+        expected_copy_mode,
+    ):
+        """
+        Assert that ``combine_mode`` is set to ``link`` automatically whenever
+        combining backups from a cloud storage and the version of ``pg_combinebackup``
+        is 18.0.0 or higher.
+        """
+        # Prepare mocks
+        # Simulate the pg_combinebackup binary being as follows
+        mock_fetch_remote_status.return_value = {
+            "pg_combinebackup_path": "/path/to/pg_combinebackup",
+            "pg_combinebackup_version": pg_combinebackup_version,
+        }
+
+        # GIVEN a CombineOperation instance
+        operation = CombineOperation(
+            config=mock.Mock(combine_mode="copy"),  # default
+            server=mock.Mock(),
+            backup_manager=mock.Mock(),
+        )
+
+        # Build the method parameters
+        destination = "/path/to/destination"
+        backup_info = mock.Mock()
+        backup_info.pg_major_version.return_value = pg_combinebackup_version
+
+        # WHEN _run_pg_combinebackup is called
+        operation._run_pg_combinebackup(backup_info, destination, None, None)
+
+        # THEN PgCombineBackup is instantiated with the appropriate combine mode
+        remote_status = mock_fetch_remote_status.return_value
+        backups_chain = mock_get_backup_chain_paths.return_value
+        mock_pg_combine_backup.assert_called_once_with(
+            destination=destination,
+            copy_mode=expected_copy_mode,
+            command=remote_status["pg_combinebackup_path"],
+            version=remote_status["pg_combinebackup_version"],
+            app_name=None,
+            tbs_mapping=None,
+            out_handler=mock.ANY,
+            args=backups_chain,
+            skip_path_check=True,
+        )
+
     @pytest.mark.parametrize("staging_location", ["local", "remote"])
     @mock.patch(
         "barman.recovery_executor.CombineOperation._fetch_remote_status",
