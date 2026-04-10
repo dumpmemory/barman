@@ -1599,6 +1599,8 @@ class TestLocalWalStorageStrategy:
                 call("/path/to/tempfile3"),
             ]
         )
+        # AND the list is cleared at the end
+        assert wal_storage.files_to_remove == []
 
     @patch("barman.wal_archiver.mkpath")
     @patch("barman.wal_archiver.LocalWalStorageStrategy._run_pre_archive_scripts")

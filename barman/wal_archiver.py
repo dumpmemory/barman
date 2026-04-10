@@ -380,6 +380,7 @@ class LocalWalStorageStrategy(WalStorageStrategy):
                 os.unlink(file)
             except OSError as e:
                 _logger.warning("Could not remove intermediary file %s: %s", file, e)
+        self.files_to_remove.clear()
 
     def _fsync_contents(self, src_dir, dst_dir, dst_file):
         """
