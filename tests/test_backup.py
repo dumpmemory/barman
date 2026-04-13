@@ -17,6 +17,7 @@
 # along with Barman.  If not, see <http://www.gnu.org/licenses/>.
 
 import errno
+import io
 import json
 import os
 import shutil
@@ -46,6 +47,7 @@ from barman.exceptions import (
     CommandFailedException,
     CompressionIncompatibility,
     DuplicateWalFile,
+    ExportBackupException,
     MatchingDuplicateWalFile,
     RecoveryInvalidTargetException,
 )
@@ -3302,9 +3304,75 @@ class TestSnapshotBackup(object):
 
 
 class TestExportBackup(object):
-    """Test class for BackupManager.export_backup."""
+    """Test class for BackupManager.export_backup and related helper methods."""
 
-    def test_export_backup_success(self, tmpdir):
+    @pytest.fixture
+    def wal_env(self, tmpdir):
+        """
+        Set up a backup manager with WAL files on disk and a matching xlog.db.
+
+        Returns a dict with ``backup_manager``, ``wals_dir``, ``hash_dir``,
+        and helpers to populate WAL files and build a mock backup_info.
+        """
+        backup_manager = build_backup_manager(
+            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
+        )
+        wals_dir = tmpdir.mkdir("wals")
+        hash_dir = wals_dir.mkdir("0000000100000000")
+        backup_manager.server.config.wals_directory = wals_dir.strpath
+
+        def populate(wal_configs):
+            """
+            Create WAL files and xlog.db entries.
+
+            :param list wal_configs: list of (wal_name, compression) tuples.
+                Use ``None`` for no compression.
+            """
+            xlog_db_content = ""
+            for wal_name, compression in wal_configs:
+                hash_dir.join(wal_name).write_binary(os.urandom(16))
+                comp_str = compression if compression else "None"
+                xlog_db_content += f"{wal_name}\t16\t1712994000.0\t{comp_str}\tNone\n"
+            wals_dir.join("xlog.db").write(xlog_db_content)
+
+        def populate_xlogdb_only(wal_configs):
+            """
+            Create xlog.db entries without creating WAL files on disk.
+
+            :param list wal_configs: list of (wal_name, compression) tuples.
+            """
+            xlog_db_content = ""
+            for wal_name, compression in wal_configs:
+                comp_str = compression if compression else "None"
+                xlog_db_content += f"{wal_name}\t16\t1712994000.0\t{comp_str}\tNone\n"
+            wals_dir.join("xlog.db").write(xlog_db_content)
+
+        def make_backup_info(required_wals, backup_id="20260413T100000"):
+            """Build a mock backup_info with the given required WAL segments."""
+            backup_info = Mock()
+            backup_info.backup_id = backup_id
+            backup_info.get_required_wal_segments.return_value = iter(required_wals)
+            return backup_info
+
+        def setup_xlogdb_mock():
+            """Wire up the xlogdb context manager mock."""
+            backup_manager.server.xlogdb = Mock(
+                side_effect=lambda mode: open(wals_dir.join("xlog.db").strpath, mode)
+            )
+
+        return {
+            "backup_manager": backup_manager,
+            "tmpdir": tmpdir,
+            "wals_dir": wals_dir,
+            "hash_dir": hash_dir,
+            "populate": populate,
+            "populate_xlogdb_only": populate_xlogdb_only,
+            "make_backup_info": make_backup_info,
+            "setup_xlogdb_mock": setup_xlogdb_mock,
+        }
+
+    @patch.object(BackupManager, "_add_wal_data_to_tar")
+    def test_export_backup_success(self, mock_add_wal, tmpdir):
         """
         Test that export_backup creates a tarball with the expected contents.
         """
@@ -3340,6 +3408,9 @@ class TestExportBackup(object):
         # THEN the tarball is created
         assert os.path.exists(export_path)
 
+        # AND _add_wal_data_to_tar was called
+        mock_add_wal.assert_called_once()
+
         # AND the tarball contains the expected files with correct content
         with tarfile.open(export_path, "r") as tar:
             tar_members = tar.getnames()
@@ -3362,3 +3433,313 @@ class TestExportBackup(object):
             barman_content = json.loads(barman_file.read().decode("utf-8"))
             assert barman_content["barman_ver"] == "3.10.0"
             assert barman_content["timestamp"] == "2024-01-01T12:00:00"
+
+    def test_export_backup_integration(self, tmpdir):
+        """
+        Test end-to-end export_backup without mocking _add_wal_data_to_tar.
+        """
+        # GIVEN a backup manager with a valid backup
+        backup_manager = build_backup_manager(
+            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
+        )
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=backup_manager.server,
+        )
+
+        # AND the backup directory exists with some data
+        build_backup_directories(backup_info)
+        data_dir = backup_info.get_data_directory()
+        test_file = os.path.join(data_dir, "test_file.txt")
+        with open(test_file, "w") as f:
+            f.write("test content")
+        backup_info.save()
+
+        # AND WAL files and xlog.db exist
+        wals_dir = tmpdir.mkdir("wals")
+        hash_dir = wals_dir.mkdir("0000000100000000")
+        wal_files = [
+            "000000010000000000000001",
+            "000000010000000000000002",
+        ]
+        xlog_db_content = ""
+        for wal in wal_files:
+            hash_dir.join(wal).write_binary(os.urandom(16))
+            xlog_db_content += f"{wal}\t16\t1712994000.0\tNone\tNone\n"
+        wals_dir.join("xlog.db").write(xlog_db_content)
+
+        backup_manager.server.config.wals_directory = wals_dir.strpath
+        backup_manager.server.xlogdb = Mock(
+            side_effect=lambda mode: open(wals_dir.join("xlog.db").strpath, mode)
+        )
+
+        # AND identity and barman data are provided
+        identity_data = {"systemid": "1234567890"}
+        barman_data = {"barman_ver": "3.10.0", "timestamp": "2024-01-01T12:00:00"}
+
+        # AND an export path is defined
+        export_path = os.path.join(tmpdir.strpath, "export.tar")
+
+        # WHEN export_backup is called with patched required WAL segments
+        with patch.object(
+            type(backup_info),
+            "get_required_wal_segments",
+            return_value=iter(wal_files),
+        ):
+            backup_manager.export_backup(
+                backup_info, export_path, identity_data, barman_data
+            )
+
+        # THEN the tarball contains backup data, WAL files, xlog.db, and metadata
+        with tarfile.open(export_path, "r") as tar:
+            members = tar.getnames()
+
+            assert any(name.startswith("backup/") for name in members)
+            for wal in wal_files:
+                assert f"wals/0000000100000000/{wal}" in members
+            assert "xlog.db" in members
+            assert "identity.json" in members
+            assert "backup.info" in members
+            assert "barman.json" in members
+
+    def test_add_wal_data_to_tar(self, wal_env):
+        """
+        Test that _add_wal_data_to_tar adds WAL files and xlog.db to the tarball,
+        preserving hash directory structure and xlog.db entry order.
+        """
+        # GIVEN WAL files on disk with matching xlog.db entries
+        wal_files = [
+            "000000010000000000000001",
+            "000000010000000000000002",
+            "000000010000000000000003",
+        ]
+        wal_env["populate"]([(w, None) for w in wal_files])
+        wal_env["setup_xlogdb_mock"]()
+        backup_info = wal_env["make_backup_info"](wal_files)
+
+        # WHEN _add_wal_data_to_tar is called
+        tar_path = wal_env["tmpdir"].join("test.tar").strpath
+        with tarfile.open(tar_path, "w") as tar:
+            wal_env["backup_manager"]._add_wal_data_to_tar(tar, backup_info)
+
+        # THEN the tarball contains all WAL files under wals/<hash_dir>/
+        with tarfile.open(tar_path, "r") as tar:
+            members = tar.getnames()
+
+            for wal in wal_files:
+                expected_path = f"wals/0000000100000000/{wal}"
+                assert expected_path in members
+
+            # AND the tarball contains xlog.db
+            assert "xlog.db" in members
+
+            # AND xlog.db entries are in order and match the exported WALs
+            xlog_db_content = tar.extractfile("xlog.db").read().decode("utf-8")
+            lines = [line for line in xlog_db_content.strip().split("\n") if line]
+            extracted_wals = [line.split("\t")[0] for line in lines]
+            assert extracted_wals == wal_files
+
+    def test_add_wal_data_to_tar_only_includes_required_wals(self, wal_env):
+        """
+        Test that only required WALs (and their xlog.db entries) are exported,
+        even when xlog.db contains additional entries.
+        """
+        # GIVEN xlog.db and disk contain more WALs than are required
+        all_wals = [
+            "000000010000000000000001",
+            "000000010000000000000002",
+            "000000010000000000000003",
+            "000000010000000000000004",
+            "000000010000000000000005",
+        ]
+        wal_env["populate"]([(w, None) for w in all_wals])
+        wal_env["setup_xlogdb_mock"]()
+
+        # AND only a subset of WALs are required
+        required_wals = ["000000010000000000000002", "000000010000000000000003"]
+        backup_info = wal_env["make_backup_info"](required_wals)
+
+        # WHEN _add_wal_data_to_tar is called
+        tar_path = wal_env["tmpdir"].join("test.tar").strpath
+        with tarfile.open(tar_path, "w") as tar:
+            wal_env["backup_manager"]._add_wal_data_to_tar(tar, backup_info)
+
+        # THEN xlog.db only contains required WAL entries
+        with tarfile.open(tar_path, "r") as tar:
+            xlog_db_content = tar.extractfile("xlog.db").read().decode("utf-8")
+            lines = [line for line in xlog_db_content.strip().split("\n") if line]
+
+            assert len(lines) == len(required_wals)
+            for wal in required_wals:
+                assert wal in xlog_db_content
+
+            # AND unrequired WALs are not in xlog.db
+            for wal in (
+                "000000010000000000000001",
+                "000000010000000000000004",
+                "000000010000000000000005",
+            ):
+                assert wal not in xlog_db_content
+
+    def test_add_wal_data_to_tar_preserves_compression_metadata(self, wal_env):
+        """
+        Test that xlog.db compression metadata is preserved in the export.
+
+        Barman stores WAL files without compression extensions in the filename.
+        The compression type is recorded in xlog.db metadata only.
+        """
+        # GIVEN a mix of compressed and uncompressed WAL files
+        wal_configs = [
+            ("000000010000000000000001", None),
+            ("000000010000000000000002", "gzip"),
+            ("000000010000000000000003", None),
+        ]
+        wal_env["populate"](wal_configs)
+        wal_env["setup_xlogdb_mock"]()
+        backup_info = wal_env["make_backup_info"]([w for w, _ in wal_configs])
+
+        # WHEN _add_wal_data_to_tar is called
+        tar_path = wal_env["tmpdir"].join("test.tar").strpath
+        with tarfile.open(tar_path, "w") as tar:
+            wal_env["backup_manager"]._add_wal_data_to_tar(tar, backup_info)
+
+        # THEN all WAL files are in the tarball
+        with tarfile.open(tar_path, "r") as tar:
+            members = tar.getnames()
+            for wal, _ in wal_configs:
+                assert f"wals/0000000100000000/{wal}" in members
+
+            # AND xlog.db preserves per-WAL compression metadata
+            xlog_db_content = tar.extractfile("xlog.db").read().decode("utf-8")
+            for line in xlog_db_content.strip().split("\n"):
+                parts = line.split("\t")
+                wal_name, compression = parts[0], parts[3]
+                if wal_name == "000000010000000000000002":
+                    assert compression == "gzip"
+                else:
+                    assert compression == "None"
+
+    def test_add_wal_data_to_tar_missing_wal_file_raises(self, wal_env):
+        """
+        Test that a WAL file present in xlog.db but missing from disk raises
+        ExportBackupException.
+        """
+        # GIVEN some WAL files exist on disk
+        existing_wals = [
+            ("000000010000000000000001", None),
+            ("000000010000000000000002", None),
+        ]
+        wal_env["populate"](existing_wals)
+
+        # AND xlog.db also has an entry for a WAL file that doesn't exist on disk
+        all_wals = existing_wals + [("000000010000000000000003", None)]
+        wal_env["populate_xlogdb_only"](all_wals)
+        wal_env["setup_xlogdb_mock"]()
+
+        backup_info = wal_env["make_backup_info"]([w for w, _ in all_wals])
+
+        # WHEN _add_wal_data_to_tar is called
+        # THEN an ExportBackupException is raised mentioning the missing WAL
+        tar_path = wal_env["tmpdir"].join("test.tar").strpath
+        with tarfile.open(tar_path, "w") as tar:
+            with pytest.raises(ExportBackupException) as exc_info:
+                wal_env["backup_manager"]._add_wal_data_to_tar(tar, backup_info)
+
+            assert "not found for backup" in str(exc_info.value)
+            assert "000000010000000000000003" in str(exc_info.value)
+
+    def test_add_wal_data_to_tar_wal_not_in_xlogdb_raises(self, wal_env):
+        """
+        Test that a required WAL segment missing from xlog.db raises
+        ExportBackupException.
+        """
+        # GIVEN WAL files exist on disk
+        wal_files = ["000000010000000000000001", "000000010000000000000002"]
+        wal_env["populate"]([(w, None) for w in wal_files])
+
+        # AND xlog.db only contains the first WAL
+        wal_env["populate_xlogdb_only"]([("000000010000000000000001", None)])
+        wal_env["setup_xlogdb_mock"]()
+
+        backup_info = wal_env["make_backup_info"](wal_files)
+
+        # WHEN _add_wal_data_to_tar is called
+        # THEN an ExportBackupException is raised mentioning the missing WAL
+        tar_path = wal_env["tmpdir"].join("test.tar").strpath
+        with tarfile.open(tar_path, "w") as tar:
+            with pytest.raises(ExportBackupException) as exc_info:
+                wal_env["backup_manager"]._add_wal_data_to_tar(tar, backup_info)
+
+            assert "not found in xlog.db" in str(exc_info.value)
+            assert "000000010000000000000002" in str(exc_info.value)
+
+    def test_add_json_to_tar(self, tmpdir):
+        """
+        Test that _add_json_to_tar creates a valid JSON file in the tarball.
+        """
+        # GIVEN a backup manager
+        backup_manager = build_backup_manager(
+            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
+        )
+
+        # AND a JSON string
+        json_data = '{"key": "value", "number": 42}'
+
+        # WHEN _add_json_to_tar is called
+        tar_buffer = io.BytesIO()
+        with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
+            backup_manager._add_json_to_tar(tar, "data.json", json_data)
+
+        # THEN the file is in the tarball with correct JSON content
+        tar_buffer.seek(0)
+        with tarfile.open(fileobj=tar_buffer, mode="r") as tar:
+            assert "data.json" in tar.getnames()
+            content = tar.extractfile("data.json").read().decode("utf-8")
+            parsed = json.loads(content)
+            assert parsed == {"key": "value", "number": 42}
+
+    def test_add_metadata_to_tar(self, tmpdir):
+        """
+        Test that _add_metadata_to_tar adds all metadata files correctly.
+        """
+        # GIVEN a backup manager
+        backup_manager = build_backup_manager(
+            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
+        )
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=backup_manager.server,
+        )
+        build_backup_directories(backup_info)
+        backup_info.save()
+
+        identity_data = {"systemid": "1234567890", "version": "15"}
+        barman_data = {"barman_ver": "3.10.0"}
+
+        # WHEN _add_metadata_to_tar is called
+        tar_buffer = io.BytesIO()
+        with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
+            backup_manager._add_metadata_to_tar(
+                tar, identity_data, backup_info, barman_data
+            )
+
+        # THEN the tarball contains all metadata files
+        tar_buffer.seek(0)
+        with tarfile.open(fileobj=tar_buffer, mode="r") as tar:
+            members = tar.getnames()
+            assert "identity.json" in members
+            assert "backup.info" in members
+            assert "barman.json" in members
+
+            # AND identity.json has correct content
+            identity_content = json.loads(
+                tar.extractfile("identity.json").read().decode("utf-8")
+            )
+            assert identity_content["systemid"] == "1234567890"
+            assert identity_content["version"] == "15"
+
+            # AND barman.json has correct content
+            barman_content = json.loads(
+                tar.extractfile("barman.json").read().decode("utf-8")
+            )
+            assert barman_content["barman_ver"] == "3.10.0"
