@@ -19,6 +19,7 @@
 import json
 import os
 import sys
+import tarfile
 from argparse import ArgumentTypeError
 
 import pytest
@@ -51,6 +52,7 @@ from barman.cli import (
     get_models_list,
     get_server,
     get_server_list,
+    import_backup,
     keep,
     list_backups,
     list_files,
@@ -3277,6 +3279,189 @@ class TestExportBackup(object):
         # THEN server.export_backup is called with the correct arguments
         mock_server.export_backup.assert_called_once_with(
             mock_backup_info, args.export_path
+        )
+        # AND close_and_exit is called
+        mock_close_and_exit.assert_called_once_with()
+
+
+class TestImportBackup(object):
+    """Test class for import_backup command."""
+
+    @pytest.fixture
+    def args(self):
+        """Build a mock argparse Namespace for import_backup tests."""
+        args = Mock()
+        args.server_name = "test_server"
+        return args
+
+    @pytest.fixture
+    def mock_server(self):
+        """Build a mock server for import_backup tests."""
+        mock_server = Mock()
+        mock_server.config.name = "test_server"
+        return mock_server
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.error")
+    @patch("barman.cli.get_server")
+    def test_import_backup_tarball_unexisting(
+        self,
+        mock_get_server,
+        mock_output_error,
+        mock_close_and_exit,
+        args,
+        mock_server,
+        tmpdir,
+    ):
+        """
+        Test that import_backup fails when tarball file doesn't exist.
+        """
+        # GIVEN a valid server and a path to a file that doesn't exist
+        mock_get_server.return_value = mock_server
+        args.input_tarball = tmpdir.join("nonexistent.tar").strpath
+        mock_close_and_exit.side_effect = SystemExit(1)
+
+        # WHEN import_backup is called
+        # THEN the command exits with an error about the missing file
+        with pytest.raises(SystemExit):
+            import_backup(args)
+
+        mock_output_error.assert_called_once_with(
+            "Tarball file '%s' does not exist",
+            args.input_tarball,
+        )
+        mock_close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.error")
+    @patch("barman.cli.get_server")
+    def test_import_backup_tarball_not_a_file(
+        self,
+        mock_get_server,
+        mock_output_error,
+        mock_close_and_exit,
+        args,
+        mock_server,
+        tmpdir,
+    ):
+        """
+        Test that import_backup fails when tarball path is not a file.
+        """
+        # GIVEN a path that points to a directory instead of a file
+        mock_get_server.return_value = mock_server
+        args.input_tarball = tmpdir.mkdir("some_directory").strpath
+        mock_close_and_exit.side_effect = SystemExit(1)
+
+        # WHEN import_backup is called
+        # THEN the command exits with an error about the path not being a file
+        with pytest.raises(SystemExit):
+            import_backup(args)
+
+        mock_output_error.assert_called_once_with(
+            "Tarball path '%s' is not a file",
+            args.input_tarball,
+        )
+        mock_close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.error")
+    @patch("barman.cli.os.access", return_value=False)
+    @patch("barman.cli.get_server")
+    def test_import_backup_tarball_not_readable(
+        self,
+        mock_get_server,
+        mock_access,
+        mock_output_error,
+        mock_close_and_exit,
+        args,
+        mock_server,
+        tmpdir,
+    ):
+        """
+        Test that import_backup fails when tarball file is not readable.
+        """
+        # GIVEN a real file that is reported as not readable by os.access
+        mock_get_server.return_value = mock_server
+        tar_path = tmpdir.join("unreadable.tar")
+        tar_path.write_binary(b"")
+        args.input_tarball = tar_path.strpath
+        mock_close_and_exit.side_effect = SystemExit(1)
+
+        # WHEN import_backup is called
+        # THEN the command exits with an error about readability
+        with pytest.raises(SystemExit):
+            import_backup(args)
+
+        mock_output_error.assert_called_once_with(
+            "Tarball file '%s' is not readable",
+            args.input_tarball,
+        )
+        mock_close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.error")
+    @patch("barman.cli.get_server")
+    def test_import_backup_invalid_tarfile(
+        self,
+        mock_get_server,
+        mock_output_error,
+        mock_close_and_exit,
+        args,
+        mock_server,
+        tmpdir,
+    ):
+        """
+        Test that import_backup fails when file is not a valid tar file.
+        """
+        # GIVEN a real file that is not a valid tarball
+        mock_get_server.return_value = mock_server
+        tar_path = tmpdir.join("invalid.txt")
+        tar_path.write("not a tar file")
+        args.input_tarball = tar_path.strpath
+        mock_close_and_exit.side_effect = SystemExit(1)
+
+        # WHEN import_backup is called
+        # THEN the command exits with an error about the tar file being invalid
+        with pytest.raises(SystemExit):
+            import_backup(args)
+
+        mock_output_error.assert_called_once_with(
+            "File '%s' is not a valid tar file",
+            args.input_tarball,
+        )
+        mock_close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.info")
+    @patch("barman.cli.get_server")
+    def test_import_backup_success(
+        self,
+        mock_get_server,
+        mock_output_info,
+        mock_close_and_exit,
+        args,
+        mock_server,
+        tmpdir,
+    ):
+        """
+        Test that import_backup logs info message and exits when all
+        validations pass.
+        """
+        # GIVEN a valid (empty) tarball file
+        mock_get_server.return_value = mock_server
+        tar_path = tmpdir.join("backup.tar").strpath
+        with tarfile.open(tar_path, "w"):
+            pass
+        args.input_tarball = tar_path
+
+        # WHEN import_backup is called
+        import_backup(args)
+
+        # THEN an info message is logged with tarball path and server name
+        mock_output_info.assert_called_once_with(
+            "Importing backup from '%s' to server '%s'",
+            args.input_tarball,
+            mock_server.config.name,
         )
         # AND close_and_exit is called
         mock_close_and_exit.assert_called_once_with()
