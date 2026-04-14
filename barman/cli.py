@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import sys
+import tarfile
 from argparse import SUPPRESS, ArgumentParser, ArgumentTypeError, HelpFormatter
 from collections import OrderedDict
 from contextlib import closing
@@ -2244,6 +2245,77 @@ def export_backup(args):
     # Delegate to server for orchestration
     with closing(server):
         server.export_backup(backup_info, export_path)
+
+    output.close_and_exit()
+
+
+@command(
+    [
+        argument(
+            "server_name",
+            completer=server_completer,
+            help="specifies the server name for the command",
+        ),
+        argument(
+            "input_tarball",
+            help="path to the exported backup tarball to import",
+        ),
+    ],
+)
+def import_backup(args):
+    """
+    Import a previously exported backup tarball into the Barman catalog.
+    """
+    # Get server
+    server = get_server(
+        args,
+        skip_inactive=False,
+        skip_disabled=False,
+        inactive_is_error=False,
+        disabled_is_error=True,
+    )
+
+    # Get tarball path from CLI
+    input_tarball = args.input_tarball
+
+    # Validate tarball file exists
+    if not os.path.exists(input_tarball):
+        output.error(
+            "Tarball file '%s' does not exist",
+            input_tarball,
+        )
+        output.close_and_exit()
+
+    # Validate tarball is a file (not a directory)
+    if not os.path.isfile(input_tarball):
+        output.error(
+            "Tarball path '%s' is not a file",
+            input_tarball,
+        )
+        output.close_and_exit()
+
+    # Validate tarball is readable
+    if not os.access(input_tarball, os.R_OK):
+        output.error(
+            "Tarball file '%s' is not readable",
+            input_tarball,
+        )
+        output.close_and_exit()
+
+    # Validate tarball is a valid tar file
+    if not tarfile.is_tarfile(input_tarball):
+        output.error(
+            "File '%s' is not a valid tar file",
+            input_tarball,
+        )
+        output.close_and_exit()
+
+    # Log the import operation
+    output.info(
+        "Importing backup from '%s' to server '%s'",
+        input_tarball,
+        server.config.name,
+    )
 
     output.close_and_exit()
 
