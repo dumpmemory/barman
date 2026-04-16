@@ -1,0 +1,22 @@
+---
+- summary: Add --partial-wal flag to barman restore for opt-in .partial WAL file copying
+  description: |
+    A new ``--partial-wal`` flag has been added to ``barman restore
+    --no-get-wal``. When set, Barman includes ``.partial`` WAL files in
+    the recovery, stripping the ``.partial`` suffix so that PostgreSQL can
+    find them during replay. Two sources are supported:
+
+    - The streaming WALs directory: the in-progress segment being written
+      by ``pg_receivewal`` at the time of the restore. Including it reduces
+      RPO by making any transactions written since the last completed WAL
+      segment available during recovery.
+    - The WAL archive (``wals/``): segments archived with the ``.partial``
+      suffix, e.g. when a standby is promoted and PostgreSQL calls
+      ``archive_command`` with an in-progress segment. Compressed and
+      encrypted files are handled transparently.
+
+    The flag has no effect when ``--get-wal`` is used, as ``.partial``
+    files are already handled transparently in that case.
+  type: minor_change
+  jira_tickets:
+    - BAR-695
