@@ -3798,9 +3798,10 @@ class Server(RemoteStatusMixin):
                 pass
 
         if self.use_wal_cloud_storage:
-            output.error(
-                "Rebuilding xlogdb is not supported for servers using cloud storage"
-            )
+            if not silent:
+                output.error(
+                    "Rebuilding xlogdb is not supported for servers using cloud storage"
+                )
             return
 
         root = self.config.wals_directory
