@@ -55,6 +55,9 @@ _xlog_re = re.compile(
     re.VERBOSE,
 )
 
+# Extension used by pg_receivewal for partial WAL files
+PARTIAL_EXTENSION = ".partial"
+
 # xlog prefix parser (regular expression)
 _xlog_prefix_re = re.compile(r"^([\dA-Fa-f]{8})([\dA-Fa-f]{8})$")
 
@@ -320,6 +323,26 @@ def previous_segment_name(segment, xlog_segment_size):
     else:
         prev_seg -= 1
     return encode_segment_name(tli, prev_log, prev_seg)
+
+
+def next_segment_name(segment, xlog_segment_size):
+    """
+    Get the next XLOG segment name
+
+    :param str segment: segment name
+    :param int xlog_segment_size: the size of a XLOG segment
+    :rtype: str
+    :raise: BadXlogSegmentName
+    """
+    tli, log, seg = decode_segment_name(segment)
+    xlog_seg_per_file = xlog_segments_per_file(xlog_segment_size)
+    if seg == xlog_seg_per_file:
+        next_seg = 0
+        next_log = log + 1
+    else:
+        next_seg = seg + 1
+        next_log = log
+    return encode_segment_name(tli, next_log, next_seg)
 
 
 def hash_dir(path):

@@ -80,6 +80,7 @@ from barman.utils import (
     parse_target_tli,
     total_seconds,
 )
+from barman.xlog import PARTIAL_EXTENSION
 
 # generic logger for this module
 _logger = logging.getLogger(__name__)
@@ -129,6 +130,7 @@ class RecoveryExecutor(object):
         recovery_conf_filename=None,
         recovery_option_port=None,
         custom_restore_command=None,
+        copy_partial=False,
     ):
         """
         Performs a recovery of a backup
@@ -161,6 +163,9 @@ class RecoveryExecutor(object):
             when invoking ``barman-wal-restore``
         :param str|None custom_restore_command: Custom restore command
             to override Barman's default (only used with get-wal mode)
+        :param bool copy_partial: when ``True``, ``.partial`` WAL files are copied to
+            the recovery destination with the ``.partial`` suffix stripped. Defaults
+            to ``False``.
         """
 
         # Run the cron to be sure the wal catalog is up to date
@@ -192,6 +197,19 @@ class RecoveryExecutor(object):
                     "IMPORTANT: You have requested a recovery operation for "
                     "a backup that does not have yet all the WAL files that "
                     "are required for consistency."
+                )
+
+        # Warn if --partial-wal was specified alongside an incompatible option.
+        if copy_partial:
+            if recovery_info["get_wal"]:
+                output.warning(
+                    "The --partial-wal option was ignored as it only works "
+                    "with --no-get-wal."
+                )
+            elif target_immediate:
+                output.warning(
+                    "The --partial-wal option was ignored as it has no effect "
+                    "with --target-immediate."
                 )
 
         # Set targets for PITR
@@ -300,12 +318,15 @@ class RecoveryExecutor(object):
                         None,
                         target_lsn,
                         target_immediate,
+                        include_partial=copy_partial,
                     )
                 )
 
                 # Restore WAL segments into the wal_dest directory
                 self._xlog_copy(
-                    required_xlog_files, recovery_info["wal_dest"], remote_command
+                    required_xlog_files,
+                    recovery_info["wal_dest"],
+                    remote_command,
                 )
             except DataTransferFailure as e:
                 output.error("Failure copying WAL files: %s", e)
@@ -816,15 +837,35 @@ class RecoveryExecutor(object):
 
     def _xlog_copy(self, required_xlog_files, wal_dest, remote_command):
         """
-        Restore WAL segments
+        Restore WAL segments.
 
-        :param required_xlog_files: list of all required WAL files
-        :param wal_dest: the destination directory for xlog recover
-        :param remote_command: default None. The remote command to recover
-               the xlog, in case of remote backup.
+        Regular WAL files are grouped by their containing directory and transferred
+        via Rsync.  ``.partial`` WAL files (from either the streaming directory or
+        the main WAL archive) are handled in a separate staging step: each one is
+        processed (decompressed and/or decrypted if needed) into a temporary
+        directory with its ``.partial`` suffix stripped, then transferred to
+        *wal_dest* under the plain segment name so that PostgreSQL can find it
+        during recovery.
+
+        .. note::
+            ``.partial`` files from the streaming directory are always plain because
+            ``pg_receivewal`` never compresses or encrypts them.  ``.partial`` files
+            from the main WAL archive may have been compressed and/or encrypted by
+            ``barman cron`` and are handled accordingly.
+
+        :param required_xlog_files: iterable of :class:`WalFileInfo` objects
+            describing the WAL files to restore.  The caller is responsible for
+            filtering out ``.partial`` files when they are not wanted — any
+            ``.partial`` entries present in this iterable will be processed.
+        :param str wal_dest: destination directory for the restored WAL files.
+        :param remote_command: SSH command string for remote recovery, or ``None``
+            for a local recovery.
         """
         # List of required WAL files partitioned by containing directory
         xlogs = collections.defaultdict(list)
+        # .partial files require dedicated handling (suffix stripping + staging)
+        # and are kept in a separate list regardless of their origin.
+        partial_xlogs = []
         # add '/' suffix to ensure it is a directory
         wal_dest = "%s/" % wal_dest
         # Map of every compressor used with any WAL file in the archive,
@@ -835,30 +876,66 @@ class RecoveryExecutor(object):
         # to be used during this recovery.
         encryptions = {}
         encryption_manager = self.backup_manager.encryption_manager
-        # Fill xlogs and compressors and encryptions maps from
-        # required_xlog_files
+        # Partition required_xlog_files into xlogs (regular WALs, keyed by hashdir)
+        # and partial_xlogs (.partial files). Also populate the compressors and
+        # encryptions caches for any file that may need processing during transfer.
         for wal_info in required_xlog_files:
-            hashdir = xlog.hash_dir(wal_info.name)
-            xlogs[hashdir].append(wal_info)
-            # If an encryption is required, make sure it exists in the cache
-            if (
-                wal_info.encryption is not None
-                and wal_info.encryption not in encryptions
-            ):
-                # e.g. GPGEncryption
-                encryptions[wal_info.encryption] = encryption_manager.get_encryption(
-                    encryption=wal_info.encryption
-                )
-            # If a compressor is required, make sure it exists in the cache
-            if (
-                wal_info.compression is not None
-                and wal_info.compression not in compressors
-            ):
-                compressors[wal_info.compression] = compression_manager.get_compressor(
-                    compression=wal_info.compression
-                )
+            if xlog.is_partial_file(wal_info.name):
+                # All .partial files are kept in a separate list regardless of their
+                # origin (streaming directory or main WAL archive). They are handled
+                # in a dedicated staging step at the end of this method, where the
+                # .partial suffix is stripped before copying to the destination.
+                partial_xlogs.append(wal_info)
+                # .partial files from streaming/ are always plain because pg_receivewal
+                # never compresses or encrypts them. .partial files from wals/ may have
+                # been compressed and/or encrypted by barman cron, so we build the
+                # caches for them just as we do for regular WAL files.
+                if not self._is_streaming_wal(wal_info):
+                    if (
+                        wal_info.encryption is not None
+                        and wal_info.encryption not in encryptions
+                    ):
+                        # e.g. GPGEncryption
+                        encryptions[wal_info.encryption] = (
+                            encryption_manager.get_encryption(
+                                encryption=wal_info.encryption
+                            )
+                        )
+                    if (
+                        wal_info.compression is not None
+                        and wal_info.compression not in compressors
+                    ):
+                        compressors[wal_info.compression] = (
+                            compression_manager.get_compressor(
+                                compression=wal_info.compression
+                            )
+                        )
+            else:
+                hashdir = xlog.hash_dir(wal_info.name)
+                xlogs[hashdir].append(wal_info)
+                # If an encryption is required, make sure it exists in the cache
+                if (
+                    wal_info.encryption is not None
+                    and wal_info.encryption not in encryptions
+                ):
+                    # e.g. GPGEncryption
+                    encryptions[wal_info.encryption] = (
+                        encryption_manager.get_encryption(
+                            encryption=wal_info.encryption
+                        )
+                    )
+                # If a compressor is required, make sure it exists in the cache
+                if (
+                    wal_info.compression is not None
+                    and wal_info.compression not in compressors
+                ):
+                    compressors[wal_info.compression] = (
+                        compression_manager.get_compressor(
+                            compression=wal_info.compression
+                        )
+                    )
+        passphrase = None
         if encryptions:
-            passphrase = None
             if self.config.encryption_passphrase_command:
                 passphrase = get_passphrase_from_command(
                     self.config.encryption_passphrase_command
@@ -923,100 +1000,26 @@ class RecoveryExecutor(object):
             # If neither: simply copy from source to 'wal_staging_dest'.
             if requires_decryption_or_decompression:
                 for segment in xlogs[prefix]:
-                    segment_compression = segment.compression
                     src_file = os.path.join(source_dir, segment.name)
                     dst_file = os.path.join(wal_staging_dest, segment.name)
-                    if segment.encryption is not None:
-                        filename = encryptions[segment.encryption].decrypt(
-                            file=src_file,
-                            dest=wal_staging_dest,
-                            passphrase=passphrase,
-                        )
-                        # If for some reason xlog.db had no informatiom about, then
-                        # after decrypting, check if the file is compressed. This is a
-                        # corner case which may occur if the user ran `rebuild-xlogdb`,
-                        # for example, and the WALs were both encrypted and compressed.
-                        # In that case, the rebuild would fill only the encryption info.
-                        # Edge case consideration: If the compression is a custom
-                        # implementation of a known algorithm (e.g., lz4), Barman may
-                        # recognize it and default to its own decompression classes
-                        # (which rely on external libraries), instead of using the
-                        # custom decompression filter. If the compression is entirely
-                        # custom and unidentifiable, we fallback to the 'custom'
-                        # compression.
-                        if segment_compression is None:
-                            segment_compression = (
-                                compression_manager.identify_compression(filename)
-                                or compression_manager.unidentified_compression
-                            )
-                        if segment_compression is not None:
-                            # If by chance the compressor is not available in the cache,
-                            # then create an instance and add to the cache. Similar to
-                            # the previous comment, this is only expected to occur when
-                            # the user runs `rebuild-xlogdb` and the WALs were both
-                            # encrypted and compressed, and the compression info is thus
-                            # missing in xlog.db.
-                            if segment_compression not in compressors:
-                                compressor = compression_manager.get_compressor(
-                                    segment_compression
-                                )
-                                compressors[segment_compression] = compressor
-
-                            # At this point we are sure the cache contains the required
-                            # compressor.
-                            compressor = compressors.get(segment_compression)
-                            # We have no control over the name of the file generated by
-                            # the decrypt() method -- it writes a file with the name
-                            # that we are expecting by the end of the process. So, we
-                            # perform these steps:
-                            # 1. Decrypt the file with the final file name.
-                            # 2. Decompress the decrypted file as a temporary filel with
-                            #    suffix ".decompressed".
-                            # 3. Rename the decompressed file to the final file name,
-                            #    effectively replacing the decrypted file with the
-                            #    decompressed file.
-                            decompressed_file = filename + ".decompressed"
-                            compressor.decompress(filename, decompressed_file)
-
-                            try:
-                                shutil.move(decompressed_file, filename)
-                            except OSError as e:
-                                output.warning(
-                                    "Error renaming decompressed file '%s' to '%s': %s (%s)",
-                                    decompressed_file,
-                                    filename,
-                                    e,
-                                    type(e).__name__,
-                                )
-                    elif segment_compression is not None:
-                        compressors[segment_compression].decompress(src_file, dst_file)
-                    else:
-                        shutil.copy2(src_file, dst_file)
+                    self._decrypt_decompress_wal(
+                        src_file,
+                        dst_file,
+                        wal_staging_dest,
+                        segment,
+                        encryptions,
+                        compressors,
+                        compression_manager,
+                        passphrase,
+                    )
 
                 if remote_command:
-                    try:
-                        # Transfer the WAL files
-                        rsync.from_file_list(
-                            list(segment.name for segment in xlogs[prefix]),
-                            wal_staging_dest,
-                            wal_dest,
-                        )
-                    except CommandFailedException as e:
-                        msg = (
-                            "data transfer failure while copying WAL files "
-                            "to directory '%s'"
-                        ) % (wal_dest[1:],)
-                        raise DataTransferFailure.from_command_error("rsync", e, msg)
-
-                    # Cleanup files after the transfer
-                    for segment in xlogs[prefix]:
-                        file_name = os.path.join(wal_staging_dest, segment.name)
-                        try:
-                            os.unlink(file_name)
-                        except OSError as e:
-                            output.warning(
-                                "Error removing temporary file '%s': %s", file_name, e
-                            )
+                    self._rsync_move_files(
+                        rsync,
+                        [segment.name for segment in xlogs[prefix]],
+                        wal_staging_dest,
+                        wal_dest,
+                    )
             else:
                 try:
                     rsync.from_file_list(
@@ -1031,6 +1034,61 @@ class RecoveryExecutor(object):
                     )
                     raise DataTransferFailure.from_command_error("rsync", e, msg)
 
+        # Now process any .partial files we need to care about.
+        # .partial files may originate from two sources:
+        #   - The streaming WALs directory: written by pg_receivewal while it is
+        #     actively receiving a segment. Always plain — no compression or encryption.
+        #   - The main WAL archive (wals/): archived with the .partial suffix, e.g.
+        #     when a standby is promoted and PostgreSQL calls archive_command with the
+        #     in-progress segment. May have been compressed and/or encrypted by
+        #     barman cron.
+        # In all cases the suffix must be stripped so PostgreSQL can find the file
+        # by its plain segment name during recovery.
+        if partial_xlogs:
+            output.info("Copying .partial WAL files.")
+            partial_staging_dir = tempfile.mkdtemp(prefix="barman_wal-partial-")
+            # Process each .partial file (decompress/decrypt if needed) and stage it
+            # under its final name (suffix stripped) so that Rsync can transfer it.
+            for segment in partial_xlogs:
+                is_streaming = self._is_streaming_wal(segment)
+                if is_streaming:
+                    # Segment comes from the streaming directory. pg_receivewal always
+                    # writes plain files, so a direct copy is sufficient.
+                    src_file = os.path.join(
+                        self.config.streaming_wals_directory, segment.name
+                    )
+                else:
+                    # Segment comes from the main WAL archive. barman cron may have
+                    # compressed and/or encrypted it, so we handle those cases below.
+                    src_file = os.path.join(
+                        self.config.wals_directory,
+                        xlog.hash_dir(segment.name),
+                        segment.name,
+                    )
+                dst_file = os.path.join(
+                    partial_staging_dir,
+                    segment.name[: -len(PARTIAL_EXTENSION)],
+                )
+                self._decrypt_decompress_wal(
+                    src_file,
+                    dst_file,
+                    partial_staging_dir,
+                    segment,
+                    encryptions,
+                    compressors,
+                    compression_manager,
+                    passphrase,
+                )
+            # Move the renamed files to the final destination
+            self._rsync_move_files(
+                rsync,
+                [segment.name[: -len(PARTIAL_EXTENSION)] for segment in partial_xlogs],
+                partial_staging_dir,
+                wal_dest,
+            )
+            # Cleanup staging dir
+            shutil.rmtree(partial_staging_dir)
+
         _logger.info("Finished copying %s WAL files.", total_wals)
 
         # Remove local decompression target directory if different from the
@@ -1038,6 +1096,142 @@ class RecoveryExecutor(object):
         # remote recovery
         if wal_staging_dest and wal_staging_dest != wal_dest:
             shutil.rmtree(wal_staging_dest)
+
+    def _decrypt_decompress_wal(
+        self,
+        src_file,
+        dst_file,
+        staging_dir,
+        segment,
+        encryptions,
+        compressors,
+        compression_manager,
+        passphrase,
+    ):
+        """
+        Decrypt and/or decompress a single WAL file into *dst_file*.
+
+        Handles four cases depending on whether the segment's metadata indicates
+        encryption and/or compression:
+
+        - **Encrypted + compressed**: decrypt into *staging_dir*, probe for
+          compression if the metadata is missing (e.g. after ``rebuild-xlogdb``),
+          decompress, and move the result to *dst_file*.
+        - **Encrypted only**: decrypt into *staging_dir* and, if the decrypted
+          output path differs from *dst_file*, rename it.
+        - **Compressed only**: decompress directly from *src_file* to *dst_file*.
+        - **Plain**: copy *src_file* to *dst_file*.
+
+        :param str src_file: path to the (possibly encrypted/compressed) WAL file.
+        :param str dst_file: final path where the processed WAL must be written.
+        :param str staging_dir: directory used as the ``dest`` argument for the
+            decryption method.
+        :param WalFileInfo segment: WAL file metadata (provides ``.encryption``
+            and ``.compression``).
+        :param dict encryptions: cache of encryption backends, keyed by name.
+        :param dict compressors: cache of compressor instances, keyed by name.
+            May be mutated if a compressor is discovered after decryption.
+        :param compression_manager: the server's
+            :class:`~barman.backup.CompressionManager`.
+        :param passphrase: passphrase bytes for decryption, or ``None``.
+        """
+        if segment.encryption is not None:
+            filename = encryptions[segment.encryption].decrypt(
+                file=src_file,
+                dest=staging_dir,
+                passphrase=passphrase,
+            )
+            # If xlog.db had no compression info (e.g. after rebuild-xlogdb on
+            # WALs that were both encrypted and compressed), probe the decrypted
+            # file to discover the compression algorithm.
+            segment_compression = segment.compression
+            if segment_compression is None:
+                segment_compression = (
+                    compression_manager.identify_compression(filename)
+                    or compression_manager.unidentified_compression
+                )
+            if segment_compression is not None:
+                if segment_compression not in compressors:
+                    compressors[segment_compression] = (
+                        compression_manager.get_compressor(segment_compression)
+                    )
+                # Decompress to a temporary path and then move to the final
+                # destination.  We cannot decompress directly to dst_file because
+                # the decrypt output occupies a path chosen by the decrypt()
+                # method — so we use a ".decompressed" suffix and rename.
+                decompressed_file = filename + ".decompressed"
+                compressors[segment_compression].decompress(filename, decompressed_file)
+                try:
+                    shutil.move(decompressed_file, dst_file)
+                except OSError as e:
+                    output.warning(
+                        "Error renaming decompressed file '%s' to '%s': %s (%s)",
+                        decompressed_file,
+                        dst_file,
+                        e,
+                        type(e).__name__,
+                    )
+            elif filename != dst_file:
+                # For .partial WALs the decrypt output (filename) still carries
+                # the .partial suffix, while dst_file has it stripped. Rename
+                # so that the staged file has the final name PostgreSQL expects.
+                # For regular WALs the two paths are identical and this is a no-op.
+                shutil.move(filename, dst_file)
+        elif segment.compression is not None:
+            compressors[segment.compression].decompress(src_file, dst_file)
+        else:
+            shutil.copy2(src_file, dst_file)
+
+    def _is_streaming_wal(self, wal_info):
+        """
+        Determine whether a :class:`WalFileInfo` originates from the streaming
+        WALs directory rather than the main WAL archive.
+
+        :class:`WalFileInfo` objects created via :meth:`WalFileInfo.from_file`
+        (used when reading files from the streaming directory) have an
+        ``orig_filename`` attribute set to the on-disk path.
+        :class:`WalFileInfo` objects created via :meth:`WalFileInfo.from_xlogdb_line`
+        (used for archived WALs) do not — the attribute is declared in
+        ``__slots__`` but never assigned, so ``hasattr()`` returns ``False``.
+
+        This distinction matters because streaming ``.partial`` files are always
+        plain (``pg_receivewal`` never compresses or encrypts), while archived
+        ``.partial`` files may need decompression and/or decryption.
+
+        :param WalFileInfo wal_info: the WAL file info to check.
+        :rtype: bool
+        """
+        return (
+            hasattr(wal_info, "orig_filename")
+            and os.path.dirname(wal_info.orig_filename)
+            == self.config.streaming_wals_directory
+        )
+
+    def _rsync_move_files(self, rsync, file_list, src_dir, dst_dir):
+        """
+        Helper function which copies the given file list to dst_dir and removes them
+        from the src_dir.
+        """
+        try:
+            # Transfer the WAL files
+            rsync.from_file_list(
+                file_list,
+                src_dir,
+                dst_dir,
+            )
+        except CommandFailedException as e:
+            msg = (
+                "data transfer failure while copying WAL files "
+                "to directory '%s'" % (dst_dir,)
+            )
+            raise DataTransferFailure.from_command_error("rsync", e, msg)
+        # Cleanup files after the transfer
+        for basename in file_list:
+            file_name = os.path.join(src_dir, basename)
+            try:
+                os.unlink(file_name)
+            except OSError as e:
+                output.warning("Error removing temporary file '%s': %s", file_name, e)
 
     def _generate_archive_status(
         self, recovery_info, remote_command, required_xlog_files

@@ -122,8 +122,8 @@ from barman.wal_archiver import (
     StreamingWalArchiver,
     WalArchiver,
 )
+from barman.xlog import PARTIAL_EXTENSION
 
-PARTIAL_EXTENSION = ".partial"
 PRIMARY_INFO_FILE = "primary.info"
 SYNC_WALS_INFO_FILE = "sync-wals.info"
 
@@ -2314,6 +2314,7 @@ class Server(RemoteStatusMixin):
         target_xid=None,
         target_lsn=None,
         target_immediate=False,
+        include_partial=False,
     ):
         """
         Get the xlog files required for a recovery.
@@ -2329,6 +2330,32 @@ class Server(RemoteStatusMixin):
             easier to handle, so we only copy the WALs required to reach the requested
             targets.
 
+        .. note::
+            ``.partial`` WAL files may appear in two places:
+
+            1. The main WAL archive (``wals/``): archived with the ``.partial`` suffix
+               when a standby is promoted and PostgreSQL calls ``archive_command`` with
+               the in-progress segment.  These entries appear in ``xlog.db`` and are
+               yielded as part of the normal iteration when *include_partial* is
+               ``True``.
+
+            2. The streaming WALs directory (``streaming/``): written by
+               ``pg_receivewal`` while actively receiving a segment.  When
+               *include_partial* is ``True``, this method also checks that directory for
+               the ``.partial`` file of the WAL segment immediately following the last
+               archived WAL.  The following rules apply to this additional check:
+
+               - The check is skipped when *target_immediate* is ``True``, since
+                 recovery stops at the first consistent state.
+               - The expected segment must be on the *calculated_target_tli* timeline;
+                 if *end* is on a different timeline (e.g. right after a failover with
+                 no archived WALs on the new timeline yet), the check is skipped.
+               - For *target_lsn*: the expected segment must be ``<=`` the WAL
+                 segment containing the target LSN; otherwise it is skipped.
+
+            When *include_partial* is ``False`` (the default), ``.partial`` files
+            from both sources are skipped entirely.
+
         :param BackupInfo backup: a backup object
         :param target_tli: target timeline, either a timeline ID or one of the keywords
             supported by Postgres
@@ -2337,6 +2364,10 @@ class Server(RemoteStatusMixin):
         :param target_lsn: target LSN
         :param target_immediate: target that ends recovery as soon as consistency is
             reached. Defaults to ``False``.
+        :param bool include_partial: when ``True``, yield ``.partial`` WAL files
+            from both the main WAL archive and the streaming WALs directory.
+            When ``False`` (the default), ``.partial`` files are skipped
+            entirely.
         """
         begin = backup.begin_wal
         end = backup.end_wal
@@ -2380,12 +2411,59 @@ class Server(RemoteStatusMixin):
                     if target_lsn and wal_info.name > target_wal:
                         break
                     end = wal_info.name
+                # .partial files from the archive are only useful when the
+                # caller explicitly opts in via include_partial.  Skipping
+                # them here avoids yielding WAL entries that _xlog_copy
+                # would silently discard anyway.
+                if not include_partial and xlog.is_partial_file(wal_info.name):
+                    continue
                 yield wal_info
             # return all the remaining history files
             for line in fxlogdb:
                 wal_info = WalFileInfo.from_xlogdb_line(line)
                 if xlog.is_history_file(wal_info.name):
                     yield wal_info
+
+        # Finally, check the `streaming` directory to see if the next expected
+        # WAL segment is being received as a .partial file. We skip this entirely
+        # for --target-immediate since in that case we only need WALs up to the
+        # first consistent point.
+        #
+        # pg_receivewal guarantees at most one .partial file exists at any time,
+        # so we compute the name of the segment that *follows* the last WAL we
+        # yielded (``end``) and check whether that exact .partial file is present.
+        # This approach is precise: it ensures no gap between the last archived
+        # WAL and the partial file, and it avoids any ambiguity when stale
+        # .partial files from a previous pg_receivewal run are still present.
+        #
+        # For --target-lsn we additionally skip the partial file if its segment
+        # is beyond the target WAL, since recovery does not need WALs past the
+        # target LSN segment.
+        if include_partial and not target_immediate:
+            next_expected = xlog.next_segment_name(end, backup.xlog_segment_size)
+            tli_next, _, _ = xlog.decode_segment_name(next_expected)
+            if tli_next == calculated_target_tli and (
+                not target_lsn or next_expected <= target_wal
+            ):
+                partial_path = os.path.join(
+                    self.config.streaming_wals_directory,
+                    next_expected + PARTIAL_EXTENSION,
+                )
+                if os.path.exists(partial_path):
+                    output.debug(
+                        "Found .partial WAL file for server %s: %s",
+                        self.config.name,
+                        partial_path,
+                    )
+                    yield WalFileInfo.from_file(
+                        partial_path, compression=None, encryption=None
+                    )
+                else:
+                    output.debug(
+                        "No .partial WAL file found for server %s at expected path: %s",
+                        self.config.name,
+                        partial_path,
+                    )
 
     # TODO: merge with the previous
     def get_wal_until_next_backup(self, backup, include_history=False):

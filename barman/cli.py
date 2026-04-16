@@ -909,6 +909,14 @@ def rebuild_xlogdb(args):
             default=SUPPRESS,
         ),
         argument(
+            "--partial-wal",
+            help="Copy .partial WAL files, if any, to the recovery destination. Only "
+            "applicable when --no-get-wal is used.",
+            dest="partial_wal",
+            action="store_true",
+            default=False,
+        ),
+        argument(
             "--network-compression",
             help="Enable network compression during remote recovery.",
             dest="network_compression",
@@ -1444,6 +1452,7 @@ def restore(args):
                 recovery_conf_filename=args.recovery_conf_filename,
                 recovery_option_port=args.recovery_option_port,
                 custom_restore_command=args.restore_command,
+                copy_partial=args.partial_wal,
                 **snapshot_kwargs,
             )
         except RecoveryException as exc:
