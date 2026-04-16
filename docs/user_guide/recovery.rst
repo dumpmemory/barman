@@ -185,6 +185,57 @@ command.
   When using ``--no-get-wal`` with targets like ``--target-xid``, ``--target-name``, or 
   ``--target-time``, Barman will copy the entire WAL archive to ensure availability.
 
+.. _recovery-partial-wal-files:
+
+Partial WAL files during recovery
+""""""""""""""""""""""""""""""""""
+
+When using ``--no-get-wal``, Barman can optionally copy ``.partial`` WAL files to the
+recovery destination by specifying the ``--partial-wal`` flag. A ``.partial`` WAL file
+is a WAL segment that has been partially written by Postgres but not yet completed and
+archived.
+
+.. code-block:: text
+
+  barman restore SERVER_NAME BACKUP_ID DESTINATION_PATH --no-get-wal --partial-wal
+
+Including ``.partial`` files in the recovery reduces the RPO (Recovery Point Objective)
+by ensuring that any transactions written since the last completed WAL segment are
+available during recovery.
+
+.. note::
+  When using ``--get-wal``, ``.partial`` files are already handled transparently
+  during recovery — ``barman-wal-restore`` (remote) and ``barman get-wal`` (local)
+  both support ``.partial`` files natively and do not require the ``--partial-wal``
+  flag.
+
+Barman considers ``.partial`` files from two sources:
+
+* **Streaming WALs directory** (``streaming_wals_directory``): the file being
+  actively written by ``pg_receivewal``. Only the segment immediately following the
+  last archived WAL is considered; any other ``.partial`` files in the directory are
+  ignored. This guarantees continuity between the archived WALs and the partial
+  segment. Files from this source are always plain and require no decompression or
+  decryption.
+* **Main WAL archive** (``wals/``): ``.partial`` files archived with the suffix
+  intact — typically when a standby is promoted and PostgreSQL calls
+  ``archive_command`` with the in-progress segment. These files are yielded as part
+  of the normal WAL range required for recovery. If ``barman cron`` has compressed or
+  encrypted them, they are decompressed and/or decrypted before being written to the
+  destination.
+
+The following additional rules apply to both sources:
+
+* ``.partial`` files on a different timeline are automatically excluded because the
+  expected segment name encodes the target timeline.
+* When ``--target-lsn`` is used, only a ``.partial`` file whose segment name is less
+  than or equal to the WAL segment containing the target LSN is included; any segment
+  beyond that point is skipped.
+* When ``--target-immediate`` is used, ``.partial`` files are skipped entirely since
+  recovery stops at the first consistent state.
+* The ``.partial`` suffix is stripped from all filenames in the recovery destination
+  so that PostgreSQL can locate them by their plain segment name.
+
 Another option is to include ``get-wal`` inside the ``recovery_options`` configuration
 at the global/server level prior to a recovery operation to retrieve WAL files during
 the recovery process without the need to specifying the ``--get-wal``, effectively
@@ -536,14 +587,9 @@ handle the ``.partial`` file.
 Moreover, ``get-wal`` will check the ``incoming`` directory for any WAL files that have
 been sent to Barman but not yet archived.
 
-If recovering with ``no-get-wal``, Barman will copy all archived WALs to the destination
-node. In this case, the partial WAL file will not be copied, with the eventual lost data
-from transactions recorded in the partial file.
-
-To avoid such limitation, you can copy the partial WAL file located in the
-``streaming_wals_directory`` to the
-:ref:`staging wal directory <commands-barman-restore-staging-wal-directory>` on the
-destination node, renaming it without the `.partial` suffix.
+If recovering with ``--no-get-wal``, Barman will copy all archived WALs to the
+destination node. To also recover transactions recorded in a ``.partial`` WAL segment,
+use the ``--partial-wal`` flag. See :ref:`recovery-partial-wal-files` for details.
 
 
 .. _recovery-managing-external-configuration-files:
