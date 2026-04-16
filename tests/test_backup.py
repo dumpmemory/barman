@@ -109,6 +109,53 @@ class TestBackup(object):
         )
         assert (r[0], r[1]) == (True, msg)
 
+    @patch("barman.backup.BackupManager.get_backup")
+    @patch("barman.backup.BackupManager.get_last_backup_id")
+    def test_validate_last_backup_min_size(self, backup_id_mock, get_backup_mock):
+        # GIVEN a backup manager with a configured minimum size requirement
+        backup_manager = build_backup_manager()
+        # Set minimum size to 1 MiB (1048576 bytes)
+        backup_manager.config.last_backup_minimum_size = 1048576
+
+        # WHEN no backups are available
+        backup_id_mock.return_value = None
+        # THEN validate_last_backup_min_size returns False with size 0
+        r = backup_manager.validate_last_backup_min_size(
+            backup_manager.config.last_backup_minimum_size
+        )
+        assert r == (False, 0)
+
+        # WHEN a backup exists but is smaller than the minimum size
+        backup_id_mock.return_value = "Mock_backup"
+        mock_backup = Mock()
+        mock_backup.size = 524288  # 512 KiB (smaller than 1 MiB)
+        get_backup_mock.return_value = mock_backup
+        # THEN validate_last_backup_min_size returns False with the actual size
+        r = backup_manager.validate_last_backup_min_size(
+            backup_manager.config.last_backup_minimum_size
+        )
+        assert r == (False, 524288)
+
+        # WHEN a backup exists and meets the minimum size requirement
+        backup_id_mock.return_value = "Mock_backup"
+        mock_backup.size = 2097152  # 2 MiB (larger than 1 MiB)
+        get_backup_mock.return_value = mock_backup
+        # THEN validate_last_backup_min_size returns True with the actual size
+        r = backup_manager.validate_last_backup_min_size(
+            backup_manager.config.last_backup_minimum_size
+        )
+        assert r == (True, 2097152)
+
+        # WHEN a backup exists and exactly matches the minimum size requirement
+        backup_id_mock.return_value = "Mock_backup"
+        mock_backup.size = 1048576  # Exactly 1 MiB
+        get_backup_mock.return_value = mock_backup
+        # THEN validate_last_backup_min_size returns True with the actual size
+        r = backup_manager.validate_last_backup_min_size(
+            backup_manager.config.last_backup_minimum_size
+        )
+        assert r == (True, 1048576)
+
     @patch("barman.backup.BackupInfoFactory.build_backup_info")
     def test_keyboard_interrupt(self, mock_build_infofile):
         """
