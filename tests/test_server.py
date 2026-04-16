@@ -740,6 +740,430 @@ class TestServer(object):
             assert expected_wals == wals
 
     @pytest.mark.parametrize(
+        "partial_files,expected_partial",
+        [
+            (
+                # GIVEN a .partial file for the next expected segment (5),
+                # with end_wal=4 so next expected is 5
+                ["000000020000000000000005.partial"],
+                # THEN the .partial file is returned
+                "000000020000000000000005.partial",
+            ),
+            (
+                # GIVEN a .partial file for the next expected segment name but
+                # on a different timeline (tli=1 vs backup/target tli=2)
+                ["000000010000000000000005.partial"],
+                # THEN no .partial file is returned because the next expected
+                # name includes the timeline (000000020000000000000005), and
+                # the file on tli=1 does not match
+                None,
+            ),
+            (
+                # GIVEN multiple .partial files in the streaming directory
+                [
+                    "000000020000000000000005.partial",
+                    "000000020000000000000007.partial",
+                ],
+                # THEN only the next expected .partial file (segment 5) is
+                # returned — the more recent segment 7 is irrelevant because
+                # we check only for the segment immediately following end_wal
+                "000000020000000000000005.partial",
+            ),
+            (
+                # GIVEN a .partial file for a segment that is NOT the next
+                # expected one (segment 0, while next expected is segment 5)
+                ["000000020000000000000000.partial"],
+                # THEN no .partial file is returned because only the next
+                # expected segment (5) is checked
+                None,
+            ),
+        ],
+    )
+    def test_get_required_xlog_files_partial(
+        self,
+        partial_files,
+        expected_partial,
+        tmpdir,
+    ):
+        """
+        Test that get_required_xlog_files correctly handles .partial WAL files
+        in the streaming directory.
+
+        The implementation computes the name of the segment immediately
+        following the last yielded WAL (``end``) and checks whether that
+        exact .partial file exists.  Only that one file can ever be returned;
+        any other .partial files in the streaming directory are ignored.
+        """
+        wals_dir = tmpdir.mkdir("wals")
+        streaming_dir = tmpdir.mkdir("streaming")
+
+        # GIVEN a backup on timeline 2
+        backup = build_test_backup_info(
+            begin_wal="000000020000000000000001",
+            end_wal="000000020000000000000004",
+            timeline=2,
+        )
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "wals_directory": wals_dir.strpath,
+                "streaming_wals_directory": streaming_dir.strpath,
+            },
+        )
+        # AND an empty xlogdb (so end stays at backup.end_wal = segment 4,
+        # making the next expected segment 5)
+        wals_dir.join(server.xlogdb_file_name).write("")
+        # AND .partial files in the streaming directory
+        for partial_file in partial_files:
+            streaming_dir.join(partial_file).write("dummy")
+
+        # WHEN get_required_xlog_files runs targeting timeline 2 (same as backup)
+        wals = list(
+            server.get_required_xlog_files(backup, target_tli=2, include_partial=True)
+        )
+        partial_wals = [w.name for w in wals if w.name.endswith(".partial")]
+
+        # THEN verify expected .partial file
+        if expected_partial:
+            assert partial_wals == [expected_partial]
+        else:
+            assert partial_wals == []
+
+    def test_get_required_xlog_files_partial_included_for_target_time(
+        self,
+        tmpdir,
+    ):
+        """
+        Test that .partial WAL files ARE returned when target_time is specified.
+
+        Barman copies all available WALs for --target-time restores.
+        Partial files follow the same rule: they are included as long as they fall
+        within the WAL range and match the target timeline, regardless of any
+        archive WAL timestamps.
+        """
+        wals_dir = tmpdir.mkdir("wals")
+        streaming_dir = tmpdir.mkdir("streaming")
+
+        # GIVEN a backup on timeline 2
+        backup = build_test_backup_info(
+            begin_wal="000000020000000000000001",
+            end_wal="000000020000000000000004",
+            timeline=2,
+        )
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "wals_directory": wals_dir.strpath,
+                "streaming_wals_directory": streaming_dir.strpath,
+            },
+        )
+        # AND a WAL in the archive after end_wal with a timestamp beyond target_time
+        wal_after_target = create_fake_info_file("000000020000000000000005", 42, 50)
+        walstring = get_wal_lines_from_wal_list([wal_after_target])
+        xlogdb = wals_dir.join(server.xlogdb_file_name)
+        xlogdb.write(walstring)
+        wals_dir.mkdir("0000000200000000").join("000000020000000000000005").write(
+            "dummy"
+        )
+        # AND a .partial file in the streaming directory
+        streaming_dir.join("000000020000000000000006.partial").write("dummy")
+
+        # WHEN get_required_xlog_files runs with target_time=44
+        wals = list(
+            server.get_required_xlog_files(
+                backup, 2, target_time=44, include_partial=True
+            )
+        )
+        partial_wals = [w.name for w in wals if w.name.endswith(".partial")]
+
+        # THEN the .partial file IS returned because filesystem timestamps are not
+        # used to gate partial file inclusion for --target-time restores
+        assert partial_wals == ["000000020000000000000006.partial"]
+
+    @pytest.mark.parametrize(
+        "xlogdb_wal,partial_file,target_lsn,expected_partial",
+        [
+            (
+                # GIVEN the last archived WAL is segment 6 (so next expected
+                # is segment 7, which is beyond target_wal 6)
+                "000000020000000000000006",
+                # AND the next expected .partial file exists in streaming dir
+                "000000020000000000000007.partial",
+                # AND a target_lsn that maps to segment 000000020000000000000006
+                "0/6000000",
+                # THEN the .partial file is NOT returned because the next
+                # expected segment (7) is beyond the target WAL (6)
+                None,
+            ),
+            (
+                # GIVEN the last archived WAL is segment 5 (so next expected
+                # is segment 6, which equals target_wal 6)
+                "000000020000000000000005",
+                # AND the next expected .partial file exists in streaming dir
+                "000000020000000000000006.partial",
+                # AND a target_lsn that maps to segment 000000020000000000000006
+                "0/6000000",
+                # THEN the .partial file IS returned because segment 6 ==
+                # target_wal (boundary is inclusive)
+                "000000020000000000000006.partial",
+            ),
+            (
+                # GIVEN no additional archived WALs beyond backup.end_wal=4
+                # (so next expected is segment 5, which is before target_wal 6)
+                None,
+                # AND the next expected .partial file exists in streaming dir
+                "000000020000000000000005.partial",
+                # AND a target_lsn that maps to segment 000000020000000000000006
+                "0/6000000",
+                # THEN the .partial file IS returned because segment 5 <
+                # target_wal
+                "000000020000000000000005.partial",
+            ),
+        ],
+    )
+    def test_get_required_xlog_files_partial_target_lsn_boundary(
+        self,
+        xlogdb_wal,
+        partial_file,
+        target_lsn,
+        expected_partial,
+        tmpdir,
+    ):
+        """
+        Test that .partial WAL file inclusion respects the --target-lsn boundary.
+
+        For --target-lsn restores, barman stops copying WALs at the segment that
+        contains the target LSN. The next expected .partial file is excluded if
+        its segment is beyond the target WAL, and included if it is at or before
+        it.
+        """
+        wals_dir = tmpdir.mkdir("wals")
+        streaming_dir = tmpdir.mkdir("streaming")
+
+        # GIVEN a backup on timeline 2
+        backup = build_test_backup_info(
+            begin_wal="000000020000000000000001",
+            end_wal="000000020000000000000004",
+            timeline=2,
+        )
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "wals_directory": wals_dir.strpath,
+                "streaming_wals_directory": streaming_dir.strpath,
+            },
+        )
+        # AND an xlogdb with an optional WAL entry to advance ``end``
+        xlogdb = wals_dir.join(server.xlogdb_file_name)
+        if xlogdb_wal:
+            wal_entry = create_fake_info_file(xlogdb_wal, 42, 50)
+            xlogdb.write(get_wal_lines_from_wal_list([wal_entry]))
+            wals_dir.mkdir("0000000200000000").join(xlogdb_wal).write("dummy")
+        else:
+            xlogdb.write("")
+        # AND a .partial file in the streaming directory
+        streaming_dir.join(partial_file).write("dummy")
+
+        # WHEN get_required_xlog_files runs with the given target_lsn
+        wals = list(
+            server.get_required_xlog_files(
+                backup, 2, target_lsn=target_lsn, include_partial=True
+            )
+        )
+        partial_wals = [w.name for w in wals if w.name.endswith(".partial")]
+
+        # THEN verify whether the .partial file is included
+        if expected_partial:
+            assert partial_wals == [expected_partial]
+        else:
+            assert partial_wals == []
+
+    def test_get_required_xlog_files_partial_not_included_for_target_immediate(
+        self,
+        tmpdir,
+    ):
+        """
+        Test that .partial WAL files are NOT returned when target_immediate is
+        set, regardless of any other parameters.
+
+        With --target-immediate, recovery stops as soon as the first consistent
+        state is reached, so partial files in the streaming directory are never
+        needed.
+        """
+        wals_dir = tmpdir.mkdir("wals")
+        streaming_dir = tmpdir.mkdir("streaming")
+
+        # GIVEN a backup on timeline 2
+        backup = build_test_backup_info(
+            begin_wal="000000020000000000000001",
+            end_wal="000000020000000000000004",
+            timeline=2,
+        )
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "wals_directory": wals_dir.strpath,
+                "streaming_wals_directory": streaming_dir.strpath,
+            },
+        )
+        # AND an empty xlogdb
+        wals_dir.join(server.xlogdb_file_name).write("")
+        # AND a .partial file in the streaming directory on the correct timeline
+        streaming_dir.join("000000020000000000000005.partial").write("dummy")
+
+        # WHEN get_required_xlog_files runs with target_immediate=True
+        wals = list(
+            server.get_required_xlog_files(
+                backup, 2, target_immediate=True, include_partial=True
+            )
+        )
+        partial_wals = [w.name for w in wals if w.name.endswith(".partial")]
+
+        # THEN the .partial file is NOT returned
+        assert partial_wals == []
+
+    def test_get_required_xlog_files_partial_not_included_for_wrong_timeline(
+        self,
+        tmpdir,
+    ):
+        """
+        Test that a .partial file is NOT returned when ``end`` (the last
+        yielded WAL) is on a different timeline than the recovery target.
+
+        This can happen after a timeline switch when no WALs from the new
+        timeline have been archived yet, so ``end`` stays at
+        ``backup.end_wal`` which is on the old timeline.  In that case we
+        cannot determine the correct next expected segment on the new
+        timeline, so we conservatively skip the partial check entirely.
+        """
+        wals_dir = tmpdir.mkdir("wals")
+        streaming_dir = tmpdir.mkdir("streaming")
+
+        # GIVEN a backup on timeline 1
+        backup = build_test_backup_info(
+            begin_wal="000000010000000000000001",
+            end_wal="000000010000000000000004",
+            timeline=1,
+        )
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "wals_directory": wals_dir.strpath,
+                "streaming_wals_directory": streaming_dir.strpath,
+            },
+        )
+        # AND an empty xlogdb (so end stays at backup.end_wal = tli=1 segment 4)
+        wals_dir.join(server.xlogdb_file_name).write("")
+        # AND a .partial file on the OLD timeline (tli=1) in the streaming dir
+        streaming_dir.join("000000010000000000000005.partial").write("dummy")
+
+        # WHEN get_required_xlog_files runs targeting timeline 2
+        wals = list(
+            server.get_required_xlog_files(backup, target_tli=2, include_partial=True)
+        )
+        partial_wals = [w.name for w in wals if w.name.endswith(".partial")]
+
+        # THEN the .partial file is NOT returned because end is on tli=1
+        # while calculated_target_tli=2, so next_expected is also on tli=1
+        # and the timeline guard rejects it
+        assert partial_wals == []
+
+    def test_get_required_xlog_files_skips_archive_partial_by_default(
+        self,
+        tmpdir,
+    ):
+        """
+        Test that .partial WAL files present in the main WAL archive (xlogdb)
+        are NOT yielded when include_partial is False (the default).
+
+        Before this fix, .partial files from the archive were always yielded
+        unconditionally, meaning _xlog_copy had to silently discard them.
+        Now the filtering happens at the source.
+        """
+        wals_dir = tmpdir.mkdir("wals")
+        streaming_dir = tmpdir.mkdir("streaming")
+
+        # GIVEN a backup on timeline 2
+        backup = build_test_backup_info(
+            begin_wal="000000020000000000000001",
+            end_wal="000000020000000000000004",
+            timeline=2,
+        )
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "wals_directory": wals_dir.strpath,
+                "streaming_wals_directory": streaming_dir.strpath,
+            },
+        )
+        # AND xlogdb contains both a regular WAL and a .partial WAL
+        regular_wal = create_fake_info_file("000000020000000000000005", 42, 50)
+        partial_wal = create_fake_info_file("000000020000000000000006.partial", 42, 51)
+        walstring = get_wal_lines_from_wal_list([regular_wal, partial_wal])
+        wals_dir.join(server.xlogdb_file_name).write(walstring)
+        wals_dir.mkdir("0000000200000000").join("000000020000000000000005").write(
+            "dummy"
+        )
+        wals_dir.join("0000000200000000").join(
+            "000000020000000000000006.partial"
+        ).write("dummy")
+
+        # WHEN get_required_xlog_files runs WITHOUT include_partial (default)
+        wals = list(server.get_required_xlog_files(backup, target_tli=2))
+        wal_names = [w.name for w in wals]
+
+        # THEN the regular WAL is returned
+        assert "000000020000000000000005" in wal_names
+        # AND the .partial WAL from the archive is NOT returned
+        assert "000000020000000000000006.partial" not in wal_names
+
+    def test_get_required_xlog_files_includes_archive_partial_when_requested(
+        self,
+        tmpdir,
+    ):
+        """
+        Test that .partial WAL files present in the main WAL archive (xlogdb)
+        ARE yielded when include_partial is True.
+        """
+        wals_dir = tmpdir.mkdir("wals")
+        streaming_dir = tmpdir.mkdir("streaming")
+
+        # GIVEN a backup on timeline 2
+        backup = build_test_backup_info(
+            begin_wal="000000020000000000000001",
+            end_wal="000000020000000000000004",
+            timeline=2,
+        )
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "wals_directory": wals_dir.strpath,
+                "streaming_wals_directory": streaming_dir.strpath,
+            },
+        )
+        # AND xlogdb contains both a regular WAL and a .partial WAL
+        regular_wal = create_fake_info_file("000000020000000000000005", 42, 50)
+        partial_wal = create_fake_info_file("000000020000000000000006.partial", 42, 51)
+        walstring = get_wal_lines_from_wal_list([regular_wal, partial_wal])
+        wals_dir.join(server.xlogdb_file_name).write(walstring)
+        wals_dir.mkdir("0000000200000000").join("000000020000000000000005").write(
+            "dummy"
+        )
+        wals_dir.join("0000000200000000").join(
+            "000000020000000000000006.partial"
+        ).write("dummy")
+
+        # WHEN get_required_xlog_files runs WITH include_partial=True
+        wals = list(
+            server.get_required_xlog_files(backup, target_tli=2, include_partial=True)
+        )
+        wal_names = [w.name for w in wals]
+
+        # THEN both the regular WAL and the .partial WAL are returned
+        assert "000000020000000000000005" in wal_names
+        assert "000000020000000000000006.partial" in wal_names
+
+    @pytest.mark.parametrize(
         "wal_info_files,expected_indices",
         [
             (

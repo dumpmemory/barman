@@ -1352,10 +1352,15 @@ class TestRecoveryExecutor(object):
         cm_mock.return_value.identify_compression.return_value = None
         cm_mock.return_value.unidentified_compression = None
 
-        # Prepare compressors mock
+        # Prepare encryption mock — decrypt() must return the path it writes to
+        # (dest/segment_name) so that _decrypt_decompress_wal can compare it with
+        # dst_file and skip the rename when they match.
         e = {
             "gpg": mock.Mock(name="gpg"),
         }
+        e["gpg"].decrypt.side_effect = lambda file, dest, passphrase: os.path.join(
+            dest, os.path.basename(file)
+        )
         encr_mock.return_value.get_encryption = lambda encryption: e[encryption]
         mock_tmp_file.return_value = "/tmp/barman-wal-x"
         mock_copy.return_value = None
@@ -1394,8 +1399,9 @@ class TestRecoveryExecutor(object):
             dest=dest.strpath + "/",
             passphrase=b"passphrase",
         )
+        # identify_compression is called with the path returned by decrypt()
         cm_mock.return_value.identify_compression.assert_called_once_with(
-            e["gpg"].decrypt()
+            os.path.join(dest.strpath + "/", "000000000000000000000004")
         )
         mock_copy.assert_called_once_with(xlog_plain.strpath, mock.ANY)
         # Reset mock calls
@@ -1428,8 +1434,9 @@ class TestRecoveryExecutor(object):
             dest="/tmp/barman-wal-x",
             passphrase=b"passphrase",
         )
+        # identify_compression is called with the path returned by decrypt()
         cm_mock.return_value.identify_compression.assert_called_once_with(
-            e["gpg"].decrypt()
+            "/tmp/barman-wal-x/000000000000000000000004"
         )
         mock_copy.assert_called_once_with(xlog_plain.strpath, mock.ANY)
 
@@ -1601,6 +1608,503 @@ class TestRecoveryExecutor(object):
             "Encrypted WALs were found for server 'main', but "
             "'encryption_passphrase_command' is not configured correctly."
             in caplog.text
+        )
+
+    @mock.patch("barman.recovery_executor.get_passphrase_from_command")
+    @mock.patch("shutil.rmtree")
+    @mock.patch("os.unlink")
+    @mock.patch("shutil.copy2")
+    @mock.patch("tempfile.mkdtemp")
+    @mock.patch("barman.backup.EncryptionManager")
+    @mock.patch("barman.backup.CompressionManager")
+    @mock.patch("barman.recovery_executor.RsyncPgData")
+    def test_recover_xlog_with_partial_file(
+        self,
+        rsync_pg_mock,
+        cm_mock,
+        encr_mock,
+        mock_tmp_file,
+        mock_copy,
+        mock_unlink,
+        mock_rmtree,
+        mock_passphrase,
+        tmpdir,
+    ):
+        """
+        Test that .partial WAL files from the streaming directory are copied
+        during recovery with the .partial suffix stripped from the filename.
+        """
+        # Build basic folders/files structure
+        dest = tmpdir.mkdir("destination")
+        wals = tmpdir.mkdir("wals")
+        streaming = tmpdir.mkdir("streaming")
+        # Create a .partial WAL file in the streaming directory
+        partial_wal = streaming.join("000000010000000000000005.partial")
+        partial_wal.write("dummy partial content")
+        server = testing_helpers.build_real_server(
+            main_conf={
+                "wals_directory": wals.strpath,
+                "streaming_wals_directory": streaming.strpath,
+            }
+        )
+        cm_mock.return_value.get_compressor = lambda compression=None: None
+        cm_mock.return_value.identify_compression.return_value = None
+        encr_mock.return_value.get_encryption = lambda encryption: None
+        mock_tmp_file.return_value = "/tmp/barman-wal-partial-x"
+        mock_copy.return_value = None
+        # Build executor
+        executor = RecoveryExecutor(server.backup_manager)
+        # GIVEN a .partial WAL file in the streaming directory (plain — no
+        # compression, no encryption, as pg_receivewal always writes plain files)
+        required_wals = (
+            WalFileInfo.from_file(
+                partial_wal.strpath,
+                compression_manager=cm_mock.return_value,
+                unidentified_compression=None,
+                encryption_manager=encr_mock.return_value,
+                encryption=None,
+            ),
+        )
+        # WHEN _xlog_copy is called
+        executor._xlog_copy(required_wals, dest.strpath, None)
+        # THEN the .partial file is copied with its source path correct
+        mock_copy.assert_called_once_with(
+            partial_wal.strpath,
+            mock.ANY,
+        )
+        # AND the destination filename has the .partial suffix stripped
+        dst_arg = mock_copy.call_args[0][1]
+        assert not dst_arg.endswith(".partial")
+        assert dst_arg.endswith("000000010000000000000005")
+
+    @mock.patch("barman.recovery_executor.get_passphrase_from_command")
+    @mock.patch("shutil.rmtree")
+    @mock.patch("os.unlink")
+    @mock.patch("shutil.copy2")
+    @mock.patch("tempfile.mkdtemp")
+    @mock.patch("barman.backup.EncryptionManager")
+    @mock.patch("barman.backup.CompressionManager")
+    @mock.patch("barman.recovery_executor.RsyncPgData")
+    def test_recover_xlog_with_partial_file_remote(
+        self,
+        rsync_pg_mock,
+        cm_mock,
+        encr_mock,
+        mock_tmp_file,
+        mock_copy,
+        mock_unlink,
+        mock_rmtree,
+        mock_passphrase,
+        tmpdir,
+    ):
+        """
+        Test that .partial WAL files from the streaming directory are transferred
+        via rsync during a remote recovery with the .partial suffix stripped.
+        """
+        # Build basic folders/files structure
+        dest = tmpdir.mkdir("destination")
+        wals = tmpdir.mkdir("wals")
+        streaming = tmpdir.mkdir("streaming")
+        # Create a .partial WAL file in the streaming directory
+        partial_wal = streaming.join("000000010000000000000005.partial")
+        partial_wal.write("dummy partial content")
+        server = testing_helpers.build_real_server(
+            main_conf={
+                "wals_directory": wals.strpath,
+                "streaming_wals_directory": streaming.strpath,
+            }
+        )
+        cm_mock.return_value.get_compressor = lambda compression=None: None
+        cm_mock.return_value.identify_compression.return_value = None
+        encr_mock.return_value.get_encryption = lambda encryption: None
+        mock_tmp_file.return_value = "/tmp/barman-wal-partial-x"
+        mock_copy.return_value = None
+        # Build executor
+        executor = RecoveryExecutor(server.backup_manager)
+        # GIVEN a .partial WAL file in the streaming directory (plain — no
+        # compression, no encryption, as pg_receivewal always writes plain files)
+        required_wals = (
+            WalFileInfo.from_file(
+                partial_wal.strpath,
+                compression_manager=cm_mock.return_value,
+                unidentified_compression=None,
+                encryption_manager=encr_mock.return_value,
+                encryption=None,
+            ),
+        )
+        # WHEN _xlog_copy is called with a remote command
+        executor._xlog_copy(required_wals, dest.strpath, "remote_command")
+        # THEN rsync is initialized with the remote command
+        rsync_pg_mock.assert_called_once_with(
+            network_compression=False, bwlimit=None, path=mock.ANY, ssh="remote_command"
+        )
+        # AND the .partial file is copied to staging with suffix stripped
+        mock_copy.assert_called_once_with(
+            partial_wal.strpath,
+            mock.ANY,
+        )
+        # AND rsync transfers the file to the remote destination
+        rsync_pg_mock.return_value.from_file_list.assert_called_once_with(
+            ["000000010000000000000005"],
+            "/tmp/barman-wal-partial-x",
+            mock.ANY,
+        )
+        # AND staging dir is cleaned up
+        mock_rmtree.assert_called_with("/tmp/barman-wal-partial-x")
+
+    @mock.patch("barman.recovery_executor.get_passphrase_from_command")
+    @mock.patch("shutil.rmtree")
+    @mock.patch("os.unlink")
+    @mock.patch("shutil.copy2")
+    @mock.patch("tempfile.mkdtemp")
+    @mock.patch("barman.backup.EncryptionManager")
+    @mock.patch("barman.backup.CompressionManager")
+    @mock.patch("barman.recovery_executor.RsyncPgData")
+    def test_recover_xlog_with_partial_file_from_wal_archive(
+        self,
+        rsync_pg_mock,
+        cm_mock,
+        encr_mock,
+        mock_tmp_file,
+        mock_copy,
+        mock_unlink,
+        mock_rmtree,
+        mock_passphrase,
+        tmpdir,
+    ):
+        """
+        Test that a .partial WAL file from the main WAL archive is copied during
+        recovery with the .partial suffix stripped from the destination filename.
+
+        This scenario occurs when a standby is promoted and PostgreSQL calls
+        archive_command with the in-progress WAL segment, which gets archived
+        into the main WAL archive with the .partial suffix intact.
+        """
+        dest = tmpdir.mkdir("destination")
+        wals = tmpdir.mkdir("wals")
+        streaming = tmpdir.mkdir("streaming")
+        # Create the .partial WAL file in the main WAL archive under its hash dir
+        hashdir = wals.mkdir("0000000100000000")
+        partial_wal = hashdir.join("000000010000000000000005.partial")
+        partial_wal.write("dummy partial content")
+        server = testing_helpers.build_real_server(
+            main_conf={
+                "wals_directory": wals.strpath,
+                "streaming_wals_directory": streaming.strpath,
+            }
+        )
+        cm_mock.return_value.get_compressor = lambda compression=None: None
+        encr_mock.return_value.get_encryption = lambda encryption: None
+        mock_tmp_file.return_value = "/tmp/barman-wal-partial-x"
+        mock_copy.return_value = None
+        executor = RecoveryExecutor(server.backup_manager)
+        # GIVEN a .partial WAL file from xlogdb (no orig_filename pointing to
+        # the streaming directory)
+        required_wals = (
+            WalFileInfo.from_xlogdb_line(
+                "000000010000000000000005.partial\t16777216\t1776180247.8\tNone\tNone\n"
+            ),
+        )
+        # WHEN _xlog_copy is called
+        executor._xlog_copy(required_wals, dest.strpath, None)
+        # THEN the .partial file is copied from the main WAL archive
+        mock_copy.assert_called_once_with(
+            partial_wal.strpath,
+            mock.ANY,
+        )
+        # AND the destination filename has the .partial suffix stripped
+        dst_arg = mock_copy.call_args[0][1]
+        assert not dst_arg.endswith(".partial")
+        assert dst_arg.endswith("000000010000000000000005")
+
+    @mock.patch("barman.recovery_executor.get_passphrase_from_command")
+    @mock.patch("shutil.rmtree")
+    @mock.patch("os.unlink")
+    @mock.patch("shutil.copy2")
+    @mock.patch("tempfile.mkdtemp")
+    @mock.patch("barman.backup.EncryptionManager")
+    @mock.patch("barman.backup.CompressionManager")
+    @mock.patch("barman.recovery_executor.RsyncPgData")
+    def test_recover_xlog_with_compressed_partial_file_from_wal_archive(
+        self,
+        rsync_pg_mock,
+        cm_mock,
+        encr_mock,
+        mock_tmp_file,
+        mock_copy,
+        mock_unlink,
+        mock_rmtree,
+        mock_passphrase,
+        tmpdir,
+    ):
+        """
+        Test that a compressed .partial WAL file from the main WAL archive is
+        decompressed during recovery with the .partial suffix stripped.
+
+        barman cron compresses WAL files (including .partial ones archived during
+        standby promotion) when the server has compression configured. The restore
+        must decompress the file before writing it to the destination so that
+        PostgreSQL can read it.
+        """
+        dest = tmpdir.mkdir("destination")
+        wals = tmpdir.mkdir("wals")
+        streaming = tmpdir.mkdir("streaming")
+        # Create the compressed .partial WAL file in the main WAL archive
+        hashdir = wals.mkdir("0000000100000000")
+        partial_wal = hashdir.join("000000010000000000000005.partial")
+        partial_wal.write("compressed dummy content")
+        server = testing_helpers.build_real_server(
+            main_conf={
+                "wals_directory": wals.strpath,
+                "streaming_wals_directory": streaming.strpath,
+            }
+        )
+        mock_compressor = mock.MagicMock()
+        cm_mock.return_value.get_compressor = mock.MagicMock(
+            return_value=mock_compressor
+        )
+        encr_mock.return_value.get_encryption = lambda encryption: None
+        mock_tmp_file.return_value = "/tmp/barman-wal-partial-x"
+        executor = RecoveryExecutor(server.backup_manager)
+        # GIVEN a compressed .partial WAL file from xlogdb
+        required_wals = (
+            WalFileInfo.from_xlogdb_line(
+                "000000010000000000000005.partial\t16777216\t1776180247.8\tgzip\tNone\n"
+            ),
+        )
+        # WHEN _xlog_copy is called
+        executor._xlog_copy(required_wals, dest.strpath, None)
+        # THEN decompress is called (not shutil.copy2) with the correct source
+        mock_compressor.decompress.assert_called_once_with(
+            partial_wal.strpath,
+            mock.ANY,
+        )
+        mock_copy.assert_not_called()
+        # AND the destination filename has the .partial suffix stripped
+        dst_arg = mock_compressor.decompress.call_args[0][1]
+        assert not dst_arg.endswith(".partial")
+        assert dst_arg.endswith("000000010000000000000005")
+
+    @mock.patch("barman.recovery_executor.get_passphrase_from_command")
+    @mock.patch("shutil.rmtree")
+    @mock.patch("shutil.move")
+    @mock.patch("os.unlink")
+    @mock.patch("shutil.copy2")
+    @mock.patch("tempfile.mkdtemp")
+    @mock.patch("barman.backup.EncryptionManager")
+    @mock.patch("barman.backup.CompressionManager")
+    @mock.patch("barman.recovery_executor.RsyncPgData")
+    def test_recover_xlog_with_encrypted_partial_file_from_wal_archive(
+        self,
+        rsync_pg_mock,
+        cm_mock,
+        encr_mock,
+        mock_tmp_file,
+        mock_copy,
+        mock_unlink,
+        mock_move,
+        mock_rmtree,
+        mock_passphrase,
+        tmpdir,
+    ):
+        """
+        Test that an encrypted .partial WAL file from the main WAL archive is
+        decrypted during recovery with the .partial suffix stripped.
+
+        barman cron encrypts WAL files (including .partial ones archived during
+        standby promotion) when the server has encryption configured. The restore
+        must decrypt the file before writing it to the destination so that
+        PostgreSQL can read it.
+        """
+        dest = tmpdir.mkdir("destination")
+        wals = tmpdir.mkdir("wals")
+        streaming = tmpdir.mkdir("streaming")
+        # Create the encrypted .partial WAL file in the main WAL archive
+        hashdir = wals.mkdir("0000000100000000")
+        partial_wal = hashdir.join("000000010000000000000005.partial")
+        partial_wal.write("encrypted dummy content")
+        server = testing_helpers.build_real_server(
+            main_conf={
+                "wals_directory": wals.strpath,
+                "streaming_wals_directory": streaming.strpath,
+                "encryption_passphrase_command": "echo 'passphrase'",
+            }
+        )
+        partial_staging_dir = "/tmp/barman-wal-partial-x"
+        # decrypt() returns a path that still carries the .partial suffix,
+        # so the code must rename it to the suffix-stripped dst_file.
+        decrypted_path = partial_staging_dir + "/000000010000000000000005.partial"
+        mock_encryptor = mock.MagicMock()
+        mock_encryptor.decrypt.return_value = decrypted_path
+        encr_mock.return_value.get_encryption = lambda encryption: mock_encryptor
+        cm_mock.return_value.get_compressor = lambda compression=None: None
+        cm_mock.return_value.identify_compression.return_value = None
+        cm_mock.return_value.unidentified_compression = None
+        mock_tmp_file.return_value = partial_staging_dir
+        mock_passphrase.return_value = b"passphrase"
+        executor = RecoveryExecutor(server.backup_manager)
+        # GIVEN an encrypted .partial WAL file from xlogdb (encryption=gpg, no compression)
+        required_wals = (
+            WalFileInfo.from_xlogdb_line(
+                "000000010000000000000005.partial\t16777216\t1776180247.8\tNone\tgpg\n"
+            ),
+        )
+        # WHEN _xlog_copy is called
+        executor._xlog_copy(required_wals, dest.strpath, None)
+        # THEN decrypt is called with the correct source and staging dir
+        mock_encryptor.decrypt.assert_called_once_with(
+            file=partial_wal.strpath,
+            dest=partial_staging_dir,
+            passphrase=b"passphrase",
+        )
+        # AND compression is checked on the decrypted output
+        cm_mock.return_value.identify_compression.assert_called_once_with(
+            decrypted_path
+        )
+        # AND no plain copy or decompression is performed
+        mock_copy.assert_not_called()
+        # AND the decrypted file is moved to dst_file with the .partial suffix stripped
+        dst_file = partial_staging_dir + "/000000010000000000000005"
+        mock_move.assert_any_call(decrypted_path, dst_file)
+        assert not dst_file.endswith(".partial")
+        assert dst_file.endswith("000000010000000000000005")
+
+    @mock.patch("os.unlink")
+    @mock.patch("barman.recovery_executor.RsyncPgData")
+    def test_rsync_move_files_success(
+        self,
+        rsync_pg_mock,
+        mock_unlink,
+        tmpdir,
+    ):
+        """
+        Test that _rsync_move_files transfers files and cleans up after success.
+        """
+        server = testing_helpers.build_real_server()
+        executor = RecoveryExecutor(server.backup_manager)
+        rsync = rsync_pg_mock.return_value
+        # GIVEN a list of files to transfer
+        file_list = ["000000010000000000000001", "000000010000000000000002"]
+        src_dir = "/tmp/src"
+        dst_dir = "/tmp/dst"
+        # WHEN _rsync_move_files is called
+        executor._rsync_move_files(rsync, file_list, src_dir, dst_dir)
+        # THEN rsync transfers the files
+        rsync.from_file_list.assert_called_once_with(file_list, src_dir, dst_dir)
+        # AND files are cleaned up from src_dir
+        mock_unlink.assert_any_call("/tmp/src/000000010000000000000001")
+        mock_unlink.assert_any_call("/tmp/src/000000010000000000000002")
+
+    @mock.patch("os.unlink")
+    @mock.patch("barman.recovery_executor.RsyncPgData")
+    def test_rsync_move_files_transfer_failure(
+        self,
+        rsync_pg_mock,
+        mock_unlink,
+        tmpdir,
+    ):
+        """
+        Test that _rsync_move_files raises DataTransferFailure when rsync fails.
+        """
+        server = testing_helpers.build_real_server()
+        executor = RecoveryExecutor(server.backup_manager)
+        rsync = rsync_pg_mock.return_value
+        rsync.from_file_list.side_effect = CommandFailedException(
+            {"ret": 1, "out": "", "err": "error"}
+        )
+        # WHEN _rsync_move_files is called and rsync fails
+        # THEN DataTransferFailure is raised
+        with pytest.raises(DataTransferFailure):
+            executor._rsync_move_files(
+                rsync, ["000000010000000000000001"], "/tmp/src", "/tmp/dst"
+            )
+
+    @mock.patch("os.unlink", side_effect=OSError("Permission denied"))
+    @mock.patch("barman.recovery_executor.RsyncPgData")
+    def test_rsync_move_files_cleanup_failure(
+        self,
+        rsync_pg_mock,
+        mock_unlink,
+        tmpdir,
+        capsys,
+    ):
+        """
+        Test that _rsync_move_files issues a warning when cleanup fails.
+        """
+        server = testing_helpers.build_real_server()
+        executor = RecoveryExecutor(server.backup_manager)
+        rsync = rsync_pg_mock.return_value
+        # WHEN _rsync_move_files is called and cleanup fails
+        executor._rsync_move_files(
+            rsync, ["000000010000000000000001"], "/tmp/src", "/tmp/dst"
+        )
+        # THEN a warning is issued
+        _out, err = capsys.readouterr()
+        assert "Error removing temporary file" in err
+
+    @mock.patch("barman.output.warning")
+    @mock.patch.object(RecoveryExecutor, "_set_pitr_targets", side_effect=StopIteration)
+    @mock.patch.object(RecoveryExecutor, "_setup")
+    def test_recover_warns_when_partial_and_get_wal(
+        self, mock_setup, _mock_set_pitr_targets, mock_warning
+    ):
+        """
+        Test that a warning is issued when --partial-wal is used with get-wal
+        mode, since the flag has no effect in that code path.
+        """
+        # GIVEN a recovery executor
+        server = testing_helpers.build_real_server()
+        executor = RecoveryExecutor(server.backup_manager)
+        backup_info = testing_helpers.build_test_backup_info()
+        # AND _setup reports that get-wal mode is active
+        mock_setup.return_value = {
+            "get_wal": True,
+            "recovery_dest": "local",
+            "results": {"get_wal": False, "warnings": []},
+        }
+
+        # WHEN recover is called with copy_partial=True
+        with pytest.raises(StopIteration):
+            executor.recover(backup_info, "/dest", copy_partial=True)
+
+        # THEN a warning is issued explaining that --partial-wal is ignored
+        mock_warning.assert_any_call(
+            "The --partial-wal option was ignored as it only works "
+            "with --no-get-wal."
+        )
+
+    @mock.patch("barman.output.warning")
+    @mock.patch.object(RecoveryExecutor, "_set_pitr_targets", side_effect=StopIteration)
+    @mock.patch.object(RecoveryExecutor, "_setup")
+    def test_recover_warns_when_partial_and_target_immediate(
+        self, mock_setup, _mock_set_pitr_targets, mock_warning
+    ):
+        """
+        Test that a warning is issued when --partial-wal is used with
+        --target-immediate, since no partial files are ever searched for in
+        that code path.
+        """
+        # GIVEN a recovery executor
+        server = testing_helpers.build_real_server()
+        executor = RecoveryExecutor(server.backup_manager)
+        backup_info = testing_helpers.build_test_backup_info()
+        # AND _setup reports that get-wal mode is NOT active
+        mock_setup.return_value = {
+            "get_wal": False,
+            "recovery_dest": "local",
+            "results": {"get_wal": False, "warnings": []},
+        }
+
+        # WHEN recover is called with copy_partial=True and target_immediate=True
+        with pytest.raises(StopIteration):
+            executor.recover(
+                backup_info, "/dest", copy_partial=True, target_immediate=True
+            )
+
+        # THEN a warning is issued explaining that --partial-wal is ignored
+        mock_warning.assert_any_call(
+            "The --partial-wal option was ignored as it has no effect "
+            "with --target-immediate."
         )
 
     @mock.patch("barman.recovery_executor.RsyncCopyController")

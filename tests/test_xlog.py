@@ -550,6 +550,34 @@ class Test(object):
         with pytest.raises(BadXlogSegmentName):
             xlog.previous_segment_name("invalidsegment", 1 << 24)
 
+    @pytest.mark.parametrize(
+        "segment, xlog_segment_size, expected",
+        [
+            # Regular increment
+            ("000000010000000200000001", 1 << 24, "000000010000000200000002"),
+            ("000000010000000200000000", 1 << 24, "000000010000000200000001"),
+            # At last segment, should wrap to next log and segment 0
+            (
+                "0000000100000001" + "%08X" % xlog.xlog_segments_per_file(1 << 24),
+                1 << 24,
+                "000000010000000200000000",
+            ),
+            # Different segment sizes
+            (
+                "0000000100000001" + "%08X" % xlog.xlog_segments_per_file(1 << 22),
+                1 << 22,
+                "000000010000000200000000",
+            ),
+            ("000000010000000200000004", 1 << 22, "000000010000000200000005"),
+        ],
+    )
+    def test_next_segment_name(self, segment, xlog_segment_size, expected):
+        assert xlog.next_segment_name(segment, xlog_segment_size) == expected
+
+    def test_next_segment_name_invalid_segment(self):
+        with pytest.raises(BadXlogSegmentName):
+            xlog.next_segment_name("invalidsegment", 1 << 24)
+
 
 class TestCheckArchiveUsable(object):
     EXPECTED_EMPTY_MESSAGE = "Expected empty archive"
