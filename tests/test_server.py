@@ -455,12 +455,63 @@ class TestServer(object):
     def test_rebuild_xlogdb_not_supported_using_cloud(
         self, _mock_wal_cloud, mock_output, mock_exists
     ):
-        """Test rebuilding the xlogdb when compression is enabled"""
+        """Test rebuilding the xlogdb when using cloud storage"""
         server = build_real_server()
         server.rebuild_xlogdb()
         mock_output.error.assert_called_once_with(
             "Rebuilding xlogdb is not supported for servers using cloud storage"
         )
+
+    @patch("barman.server.os.path.exists", return_value=True)
+    @patch("barman.server.output")
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=lambda: True)
+    def test_rebuild_xlogdb_cloud_silent_no_error(
+        self, _mock_wal_cloud, mock_output, mock_exists
+    ):
+        """
+        Test that rebuild_xlogdb with silent=True on a cloud storage server
+        returns without emitting an error.
+
+        When xlogdb() calls rebuild_xlogdb(silent=True) to bootstrap an empty
+        xlog.db, the unsupported-cloud error must be suppressed — otherwise
+        any command (e.g. list-backups) on a new cloud server would confuse
+        users with an error about rebuild-xlogdb.
+        """
+        # GIVEN a server using cloud WAL storage
+        server = build_real_server()
+        # WHEN rebuild_xlogdb is called silently
+        server.rebuild_xlogdb(silent=True)
+        # THEN no error is emitted
+        mock_output.error.assert_not_called()
+
+    @patch("barman.server.output")
+    @patch("barman.server.Server.use_wal_cloud_storage", new_callable=lambda: True)
+    def test_xlogdb_cloud_no_error_when_xlogdb_missing(
+        self, _mock_wal_cloud, mock_output, tmpdir
+    ):
+        """
+        Test that opening xlogdb() on a cloud storage server when xlog.db does
+        not exist yet does not emit the rebuild-xlogdb error.
+
+        This is the actual user-facing scenario: running any barman command
+        (e.g. list-backups) on a newly configured cloud server triggers
+        xlogdb(), which calls rebuild_xlogdb(silent=True) to create the file.
+        """
+        # GIVEN a cloud server whose xlog.db does not exist yet
+        xlogdb_dir = tmpdir.mkdir("xlogdb_directory")
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={"xlogdb_directory": xlogdb_dir.strpath},
+        )
+        assert not os.path.exists(server.xlogdb_file_path)
+        # WHEN xlogdb() is opened
+        with server.xlogdb() as f:
+            content = f.read()
+        # THEN the xlog.db file was created (empty)
+        assert os.path.exists(server.xlogdb_file_path)
+        assert content == ""
+        # AND no error was emitted
+        mock_output.error.assert_not_called()
 
     @pytest.mark.parametrize(
         [
