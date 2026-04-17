@@ -75,6 +75,19 @@ def parse_arguments(args=None):
     """
     Parse command line arguments
 
+    .. note::
+        The ``--no-partial`` option addresses a specific Postgres behavior
+        with partial WAL segments. If a standby server is archiving and gets
+        promoted to primary, it will attempt to archive the incomplete WAL
+        segment as a .partial file, and then the WALs from the new timeline.
+        When executing a ``barman-cloud-wal-restore`` through ``restore_command``,
+        it might find the .partial file instead of the complete WAL file and
+        unintentionally apply those changes.
+        Using ``--no-partial`` allows ``barman-cloud-wal-restore`` to intentionally
+        skip partial files, forcing Postgres to continue replay on the new
+        timeline instead.
+
+    :param list[str] args: Command line arguments to parse
     :return: The options parsed
     """
 
