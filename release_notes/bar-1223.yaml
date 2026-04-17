@@ -1,0 +1,10 @@
+---
+- summary: Add the `barman import-backup` command for importing backups from tarball
+  description: |
+    Introduced a new `barman import-backup` command that imports a backup from a
+    tarball format. The command takes a server name and tarball path as arguments,
+    and provides a way to register previously exported backups back into a Barman
+    catalog.
+  type: minor_change
+  jira_tickets:
+    - BAR-1223
