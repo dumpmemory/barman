@@ -2178,7 +2178,7 @@ def verify_backup(args):
             help="specifies the backup ID to export",
         ),
         argument(
-            "export_path",
+            "output_directory",
             help="directory where the exported tarball will be saved",
         ),
     ],
@@ -2199,8 +2199,8 @@ def export_backup(args):
     # Parse backup ID and validate backup exists
     backup_info = parse_backup_id(server, args)
 
-    # Get export path from CLI
-    export_path = args.export_path
+    # Get output directory from CLI
+    output_directory = args.output_directory
 
     # Validate backup status is DONE
     if backup_info.status != BackupInfo.DONE:
@@ -2212,25 +2212,25 @@ def export_backup(args):
         )
         output.close_and_exit()
 
-    # Validate export path exists and is writable
-    if not os.path.exists(export_path):
+    # Validate output directory exists and is writable
+    if not os.path.exists(output_directory):
         output.error(
-            "Export path '%s' does not exist",
-            export_path,
+            "Output directory '%s' does not exist",
+            output_directory,
         )
         output.close_and_exit()
 
-    if not os.path.isdir(export_path):
+    if not os.path.isdir(output_directory):
         output.error(
-            "Export path '%s' is not a directory",
-            export_path,
+            "Output directory '%s' is not a directory",
+            output_directory,
         )
         output.close_and_exit()
 
-    if not os.access(export_path, os.W_OK | os.X_OK):
+    if not os.access(output_directory, os.W_OK | os.X_OK):
         output.error(
-            "Export path '%s' does not have the required write and execute permissions",
-            export_path,
+            "Output directory '%s' does not have the required write and execute permissions",
+            output_directory,
         )
         output.close_and_exit()
 
@@ -2239,12 +2239,12 @@ def export_backup(args):
         "Exporting backup '%s' from server '%s' to '%s'",
         args.backup_id,
         server.config.name,
-        export_path,
+        output_directory,
     )
 
     # Delegate to server for orchestration
     with closing(server):
-        server.export_backup(backup_info, export_path)
+        server.export_backup(backup_info, output_directory)
 
     output.close_and_exit()
 

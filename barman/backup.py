@@ -2076,7 +2076,7 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             return
         output.info(pg_verifybackup.get_output()[0].strip())
 
-    def export_backup(self, backup_info, export_path, identity_data, barman_data):
+    def export_backup(self, backup_info, output_filepath, identity_data, barman_data):
         """
         Export a completed backup to a portable tarball format.
 
@@ -2095,7 +2095,7 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         - Cleanup on failure
 
         :param BackupInfo backup_info: the backup to export
-        :param str export_path: full path to the output tarball file
+        :param str output_filepath: full path to the output tarball file
         :param dict identity_data: server identity information
         :param dict barman_data: system information for ``barman.json``
         """
@@ -2105,9 +2105,9 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         backup_dir = backup_info.get_basebackup_directory()
 
         # Create the export tarball
-        output.debug("Creating export tarball at '%s'" % export_path)
+        output.debug("Creating export tarball at '%s'" % output_filepath)
 
-        with tarfile.open(export_path, "w|") as tar:
+        with tarfile.open(output_filepath, "w|") as tar:
             # Add backup data with backup/ prefix
             output.debug("Adding backup data from '%s'" % backup_dir)
             tar.add(backup_dir, arcname="backup")

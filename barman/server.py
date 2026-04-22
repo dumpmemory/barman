@@ -1948,7 +1948,7 @@ class Server(RemoteStatusMixin):
             output.error("Permission denied, unable to access '%s'" % e)
             return False
 
-    def export_backup(self, backup_info, export_directory):
+    def export_backup(self, backup_info, output_directory):
         """
         Export a backup to a portable tarball format.
 
@@ -1960,7 +1960,7 @@ class Server(RemoteStatusMixin):
         - Cleans up on failure
 
         :param BackupInfo backup_info: the backup to export
-        :param str export_directory: directory where the export file will be created
+        :param str output_directory: directory where the export file will be created
         """
         # Cloud storage is not yet supported for backup export
         if self.use_backup_cloud_storage or self.use_wal_cloud_storage:
@@ -1989,7 +1989,7 @@ class Server(RemoteStatusMixin):
             backup_info.backup_id,
             iso_date,
         )
-        temp_filepath = os.path.join(export_directory, temp_filename)
+        temp_filepath = os.path.join(output_directory, temp_filename)
 
         try:
             # Collect system information for barman.json
@@ -2011,7 +2011,7 @@ class Server(RemoteStatusMixin):
                 iso_date,
                 checksum,
             )
-            export_filepath = os.path.join(export_directory, export_filename)
+            export_filepath = os.path.join(output_directory, export_filename)
 
             # Rename to final filename
             os.rename(temp_filepath, export_filepath)
