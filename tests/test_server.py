@@ -5173,7 +5173,7 @@ class TestExportBackup(object):
         Test that export_backup orchestrates the export process correctly.
         """
         # GIVEN a server with a valid backup
-        export_dir = tmpdir.mkdir("export")
+        output_directory = tmpdir.mkdir("export")
 
         server = build_real_server(
             global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
@@ -5191,13 +5191,13 @@ class TestExportBackup(object):
         # WHEN export_backup is called
         with patch.object(server, "read_identity_file", return_value=identity_data):
             with patch.object(server.backup_manager, "export_backup") as mock_export:
-                server.export_backup(backup_info, export_dir.strpath)
+                server.export_backup(backup_info, output_directory.strpath)
 
         # THEN backup_manager.export_backup was called with correct arguments
         mock_export.assert_called_once()
         call_args = mock_export.call_args
         assert call_args[0][0] == backup_info
-        assert call_args[0][1].startswith(export_dir.strpath)
+        assert call_args[0][1].startswith(output_directory.strpath)
         assert call_args[0][1].endswith(".tmp")
         assert call_args[0][2] == identity_data
         assert call_args[0][3] == {"barman_ver": "3.10.0"}
@@ -5219,7 +5219,7 @@ class TestExportBackup(object):
         """
         # GIVEN a server without an identity file
         backup_dir = tmpdir.mkdir("base")
-        export_dir = tmpdir.mkdir("export")
+        output_directory = tmpdir.mkdir("export")
 
         server = build_real_server(
             global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
@@ -5235,10 +5235,12 @@ class TestExportBackup(object):
 
         # WHEN export_backup is called with no identity file
         with patch.object(server, "read_identity_file", return_value={}):
-            server.export_backup(backup_info, export_dir.strpath)
+            server.export_backup(backup_info, output_directory.strpath)
 
         # THEN no tarball is created
-        export_files = [f for f in os.listdir(export_dir.strpath) if f.endswith(".tar")]
+        export_files = [
+            f for f in os.listdir(output_directory.strpath) if f.endswith(".tar")
+        ]
         assert len(export_files) == 0
 
         # AND an error message is displayed
@@ -5252,7 +5254,7 @@ class TestExportBackup(object):
         is configured.
         """
         # GIVEN a server with cloud storage configured
-        export_dir = tmpdir.mkdir("export")
+        output_directory = tmpdir.mkdir("export")
 
         server = build_real_server(
             global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
@@ -5269,10 +5271,12 @@ class TestExportBackup(object):
         ) as mock_cloud:
             mock_cloud.return_value = True
             # WHEN export_backup is called
-            server.export_backup(backup_info, export_dir.strpath)
+            server.export_backup(backup_info, output_directory.strpath)
 
         # THEN no tarball is created
-        export_files = [f for f in os.listdir(export_dir.strpath) if f.endswith(".tar")]
+        export_files = [
+            f for f in os.listdir(output_directory.strpath) if f.endswith(".tar")
+        ]
         assert len(export_files) == 0
 
         # AND an error message is displayed
@@ -5285,7 +5289,7 @@ class TestExportBackup(object):
         """
         # GIVEN a server
         backup_dir = tmpdir.mkdir("base")
-        export_dir = tmpdir.mkdir("export")
+        output_directory = tmpdir.mkdir("export")
 
         server = build_real_server(
             global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
@@ -5309,7 +5313,7 @@ class TestExportBackup(object):
                 # WHEN export_backup is called
                 # THEN an exception is raised
                 with pytest.raises(Exception, match="Test error"):
-                    server.export_backup(backup_info, export_dir.strpath)
+                    server.export_backup(backup_info, output_directory.strpath)
 
         # AND no files are left in the export directory
-        assert len(os.listdir(export_dir.strpath)) == 0
+        assert len(os.listdir(output_directory.strpath)) == 0

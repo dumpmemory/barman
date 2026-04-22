@@ -3075,7 +3075,7 @@ class TestExportBackup(object):
         args = Mock()
         args.server_name = "test_server"
         args.backup_id = "20240101T120000"
-        args.export_path = "/tmp/export"
+        args.output_directory = "/tmp/export"
 
         mock_server = Mock()
         mock_server.config.name = "test_server"
@@ -3106,7 +3106,7 @@ class TestExportBackup(object):
     @patch("barman.cli.os.path.exists", return_value=False)
     @patch("barman.cli.parse_backup_id")
     @patch("barman.cli.get_server")
-    def test_export_backup_export_path_not_exists(
+    def test_export_backup_output_directory_not_exists(
         self,
         mock_get_server,
         mock_parse_backup,
@@ -3115,13 +3115,13 @@ class TestExportBackup(object):
         mock_close_and_exit,
     ):
         """
-        Test that export_backup fails when export path doesn't exist.
+        Test that export_backup fails when output directory doesn't exist.
         """
-        # GIVEN a valid backup but non-existent export path
+        # GIVEN a valid backup but non-existent output directory
         args = Mock()
         args.server_name = "test_server"
         args.backup_id = "20240101T120000"
-        args.export_path = "/nonexistent/path"
+        args.output_directory = "/nonexistent/path"
 
         mock_server = Mock()
         mock_server.config.name = "test_server"
@@ -3140,8 +3140,8 @@ class TestExportBackup(object):
 
         # THEN error should be reported and command should exit
         mock_output_error.assert_called_once_with(
-            "Export path '%s' does not exist",
-            args.export_path,
+            "Output directory '%s' does not exist",
+            args.output_directory,
         )
         mock_close_and_exit.assert_called_once_with()
 
@@ -3151,7 +3151,7 @@ class TestExportBackup(object):
     @patch("barman.cli.os.path.exists", return_value=True)
     @patch("barman.cli.parse_backup_id")
     @patch("barman.cli.get_server")
-    def test_export_backup_export_path_not_directory(
+    def test_export_backup_output_directory_not_directory(
         self,
         mock_get_server,
         mock_parse_backup,
@@ -3161,13 +3161,13 @@ class TestExportBackup(object):
         mock_close_and_exit,
     ):
         """
-        Test that export_backup fails when export path is not a directory.
+        Test that export_backup fails when output directory is not a directory.
         """
-        # GIVEN a valid backup but export path that exists but is not a directory
+        # GIVEN a valid backup but output directory that exists but is not a directory
         args = Mock()
         args.server_name = "test_server"
         args.backup_id = "20240101T120000"
-        args.export_path = "/path/to/file.txt"
+        args.output_directory = "/path/to/file.txt"
 
         mock_server = Mock()
         mock_server.config.name = "test_server"
@@ -3186,8 +3186,8 @@ class TestExportBackup(object):
 
         # THEN error should be reported and command should exit
         mock_output_error.assert_called_once_with(
-            "Export path '%s' is not a directory",
-            args.export_path,
+            "Output directory '%s' is not a directory",
+            args.output_directory,
         )
         mock_close_and_exit.assert_called_once_with()
 
@@ -3198,7 +3198,7 @@ class TestExportBackup(object):
     @patch("barman.cli.os.path.exists", return_value=True)
     @patch("barman.cli.parse_backup_id")
     @patch("barman.cli.get_server")
-    def test_export_backup_export_path_not_writable(
+    def test_export_backup_output_directory_not_writable(
         self,
         mock_get_server,
         mock_parse_backup,
@@ -3209,14 +3209,14 @@ class TestExportBackup(object):
         mock_close_and_exit,
     ):
         """
-        Test that export_backup fails when export path doesn't have write/execute
+        Test that export_backup fails when output directory doesn't have write/execute
         permissions.
         """
-        # GIVEN a valid backup but export path without write/execute permissions
+        # GIVEN a valid backup but output directory without write/execute permissions
         args = Mock()
         args.server_name = "test_server"
         args.backup_id = "20240101T120000"
-        args.export_path = "/readonly/path"
+        args.output_directory = "/readonly/path"
 
         mock_server = Mock()
         mock_server.config.name = "test_server"
@@ -3235,8 +3235,8 @@ class TestExportBackup(object):
 
         # THEN error should be reported and command should exit
         mock_output_error.assert_called_once_with(
-            "Export path '%s' does not have the required write and execute permissions",
-            args.export_path,
+            "Output directory '%s' does not have the required write and execute permissions",
+            args.output_directory,
         )
         mock_close_and_exit.assert_called_once_with()
 
@@ -3263,7 +3263,7 @@ class TestExportBackup(object):
         args = Mock()
         args.server_name = "test_server"
         args.backup_id = "20240101T120000"
-        args.export_path = "/tmp/export"
+        args.output_directory = "/tmp/export"
 
         mock_server = Mock()
         mock_server.config.name = "test_server"
@@ -3278,7 +3278,7 @@ class TestExportBackup(object):
 
         # THEN server.export_backup is called with the correct arguments
         mock_server.export_backup.assert_called_once_with(
-            mock_backup_info, args.export_path
+            mock_backup_info, args.output_directory
         )
         # AND close_and_exit is called
         mock_close_and_exit.assert_called_once_with()

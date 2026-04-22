@@ -3397,22 +3397,22 @@ class TestExportBackup(object):
         identity_data = {"systemid": "1234567890"}
         barman_data = {"barman_ver": "3.10.0", "timestamp": "2024-01-01T12:00:00"}
 
-        # AND an export path is defined
-        export_path = os.path.join(tmpdir.strpath, "export.tar")
+        # AND an output file path is defined
+        output_filepath = os.path.join(tmpdir.strpath, "export.tar")
 
         # WHEN export_backup is called
         backup_manager.export_backup(
-            backup_info, export_path, identity_data, barman_data
+            backup_info, output_filepath, identity_data, barman_data
         )
 
         # THEN the tarball is created
-        assert os.path.exists(export_path)
+        assert os.path.exists(output_filepath)
 
         # AND _add_wal_data_to_tar was called
         mock_add_wal.assert_called_once()
 
         # AND the tarball contains the expected files with correct content
-        with tarfile.open(export_path, "r") as tar:
+        with tarfile.open(output_filepath, "r") as tar:
             tar_members = tar.getnames()
 
             # Should contain backup directory with its contents
@@ -3477,8 +3477,8 @@ class TestExportBackup(object):
         identity_data = {"systemid": "1234567890"}
         barman_data = {"barman_ver": "3.10.0", "timestamp": "2024-01-01T12:00:00"}
 
-        # AND an export path is defined
-        export_path = os.path.join(tmpdir.strpath, "export.tar")
+        # AND an output file path is defined
+        output_filepath = os.path.join(tmpdir.strpath, "export.tar")
 
         # WHEN export_backup is called with patched required WAL segments
         with patch.object(
@@ -3487,11 +3487,11 @@ class TestExportBackup(object):
             return_value=iter(wal_files),
         ):
             backup_manager.export_backup(
-                backup_info, export_path, identity_data, barman_data
+                backup_info, output_filepath, identity_data, barman_data
             )
 
         # THEN the tarball contains backup data, WAL files, xlog.db, and metadata
-        with tarfile.open(export_path, "r") as tar:
+        with tarfile.open(output_filepath, "r") as tar:
             members = tar.getnames()
 
             assert any(name.startswith("backup/") for name in members)
