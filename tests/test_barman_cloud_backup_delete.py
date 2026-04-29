@@ -26,6 +26,7 @@ from barman.annotations import KeepManager
 from barman.clients import cloud_backup_delete
 from barman.clients.cloud_cli import OperationErrorExit
 from barman.cloud import CloudBackupCatalog
+from barman.infofile import BackupInfo
 from barman.utils import is_backup_id
 
 
@@ -3122,3 +3123,155 @@ class TestCloudBackupDelete(object):
 
         # THEN check_object_lock is False
         assert args.check_object_lock is False
+
+    @mock.patch("barman.clients.cloud_backup_delete.CloudBackupCatalog")
+    @mock.patch("barman.clients.cloud_backup_delete.get_cloud_interface")
+    def test_started_backup_not_counted_by_retention_policy(
+        self,
+        get_cloud_interface_mock,
+        cloud_backup_catalog_mock,
+    ):
+        """
+        A STARTED backup must not be counted as a valid backup by the retention
+        policy.  With REDUNDANCY 1 and a catalog containing one older DONE backup,
+        one newer DONE backup and one STARTED backup, the older DONE backup must be
+        deleted: the STARTED backup does not contribute to the redundancy count.
+        """
+        # GIVEN a catalog with two DONE backups and one STARTED backup
+        older_done_id = "20250101T100000"
+        newer_done_id = "20250101T110000"
+        started_id = "20250101T120000"
+
+        backup_metadata = self._create_backup_metadata([older_done_id, newer_done_id])
+
+        # Add a STARTED backup manually with no file objects (not yet uploaded)
+        started_info = self._create_backup_info(started_id)
+        started_info.status = BackupInfo.STARTED
+        started_info.end_time = None
+        backup_metadata[started_id] = {"files": {}, "info": started_info}
+
+        cloud_backup_catalog_mock.return_value = self._create_catalog(backup_metadata)
+
+        # WHEN barman-cloud-backup-delete runs with a REDUNDANCY 1 policy
+        cloud_backup_delete.main(
+            [
+                "cloud_storage_url",
+                "test_server",
+                "--retention-policy",
+                "REDUNDANCY 1",
+            ]
+        )
+
+        # THEN the older DONE backup is deleted (only 1 DONE backup needed)
+        self._verify_only_these_backups_deleted(
+            get_cloud_interface_mock, backup_metadata, [older_done_id]
+        )
+
+    @mock.patch("barman.clients.cloud_backup_delete.CloudBackupCatalog")
+    @mock.patch("barman.clients.cloud_backup_delete.get_cloud_interface")
+    def test_started_backup_not_counted_toward_redundancy(
+        self,
+        get_cloud_interface_mock,
+        cloud_backup_catalog_mock,
+        caplog,
+    ):
+        """
+        A STARTED backup must not count toward minimum redundancy.  If the only
+        completed backup would be deleted, the operation must be skipped.
+        """
+        # GIVEN a catalog with one DONE backup and one STARTED backup
+        done_id = "20250101T100000"
+        started_id = "20250101T110000"
+
+        done_info = mock.MagicMock()
+        done_info.backup_id = done_id
+        done_info.status = BackupInfo.DONE
+
+        started_info = mock.MagicMock()
+        started_info.backup_id = started_id
+        started_info.status = BackupInfo.STARTED
+
+        catalog = mock.Mock()
+        catalog.unreadable_backups = []
+        catalog.get_backup_list.return_value = {
+            done_id: done_info,
+            started_id: started_info,
+        }
+        catalog.parse_backup_id.return_value = done_id
+        catalog.should_keep_backup.return_value = False
+        cloud_backup_catalog_mock.return_value = catalog
+
+        # WHEN barman-cloud-backup-delete is called with minimum-redundancy 1
+        # targeting the only DONE backup
+        with pytest.raises(SystemExit):
+            cloud_backup_delete.main(
+                [
+                    "cloud_storage_url",
+                    "test_server",
+                    "--backup-id",
+                    done_id,
+                    "--minimum-redundancy",
+                    "1",
+                ]
+            )
+
+        # THEN the deletion was skipped (no delete_objects calls)
+        get_cloud_interface_mock.return_value.delete_objects.assert_not_called()
+        # AND the log reports skipping due to minimum redundancy
+        assert "Skipping delete of backup %s" % done_id in caplog.text
+
+    @mock.patch("barman.clients.cloud_backup_delete._delete_backup")
+    @mock.patch("barman.clients.cloud_backup_delete.CloudBackupCatalog")
+    @mock.patch("barman.clients.cloud_backup_delete.get_cloud_interface")
+    def test_started_backup_excluded_allows_deletion(
+        self,
+        get_cloud_interface_mock,
+        cloud_backup_catalog_mock,
+        mock_delete_backup,
+    ):
+        """
+        Deleting a backup when two DONE backups exist (plus a STARTED) and
+        minimum_redundancy is 1 should succeed: only DONE backups count.
+        """
+        done_id1 = "20250101T100000"
+        done_id2 = "20250101T110000"
+        started_id = "20250101T120000"
+
+        def make_info(bid, status):
+            info = mock.MagicMock()
+            info.backup_id = bid
+            info.status = status
+            info.snapshots_info = None
+            return info
+
+        done1 = make_info(done_id1, BackupInfo.DONE)
+        done2 = make_info(done_id2, BackupInfo.DONE)
+        started = make_info(started_id, BackupInfo.STARTED)
+
+        catalog = mock.Mock()
+        catalog.unreadable_backups = []
+        catalog.get_backup_list.return_value = {
+            done_id1: done1,
+            done_id2: done2,
+            started_id: started,
+        }
+        catalog.parse_backup_id.return_value = done_id1
+        catalog.should_keep_backup.return_value = False
+        cloud_backup_catalog_mock.return_value = catalog
+
+        # WHEN barman-cloud-backup-delete targets done_id1 with minimum-redundancy 1
+        # THEN no OperationErrorExit is raised and the redundancy check passes because
+        # only DONE backups are counted (2 DONE >= minimum_redundancy 1)
+        cloud_backup_delete.main(
+            [
+                "cloud_storage_url",
+                "test_server",
+                "--backup-id",
+                done_id1,
+                "--minimum-redundancy",
+                "1",
+            ]
+        )
+
+        # AND _delete_backup was called, confirming the redundancy check was passed
+        mock_delete_backup.assert_called_once()

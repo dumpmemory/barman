@@ -3897,9 +3897,9 @@ class TestCloudBackupCatalog(object):
     def get_backup_info_file_object(self):
         """Minimal backup info"""
         return BytesIO(b"""
-backup_label=None
-end_time=2014-12-22 09:25:27.410470+01:00
-""")
+            backup_label=None
+            end_time=2014-12-22 09:25:27.410470+01:00
+            """)
 
     def raise_exception(self):
         raise Exception("something went wrong reading backup.info")
@@ -4289,12 +4289,12 @@ end_time=2014-12-22 09:25:27.410470+01:00
     def catalog_with_named_backup(self, in_memory_cloud_interface):
         backup_infos = {
             "20221107T120000": BytesIO(b"""backup_label=None
-end_time=2022-11-07 12:05:00
-backup_name=named backup
-"""),
+                end_time=2022-11-07 12:05:00
+                backup_name=named backup
+                """),
             "20221109T120000": BytesIO(b"""backup_label=None
-end_time=2022-11-09 12:05:00
-"""),
+                end_time=2022-11-09 12:05:00
+                """),
         }
         in_memory_cloud_interface.path = ""
         for id, backup_info in backup_infos.items():
@@ -6527,3 +6527,204 @@ class TestCloudWalDownloader:
         with pytest.raises(SystemExit) as exc_info:
             downloader._ensure_spool_dir_exists()
         assert exc_info.value.code == 2
+
+
+class TestCoordinateBackupStartedUpload(object):
+    """Tests that coordinate_backup uploads backup.info with STARTED status."""
+
+    server_name = "test_server"
+
+    @mock.patch("barman.cloud.CloudBackupUploader.create_upload_controller")
+    @mock.patch("barman.cloud.CloudBackupUploader._backup_data_files")
+    @mock.patch("barman.cloud.ConcurrentBackupStrategy")
+    @mock.patch("barman.cloud.BackupInfo")
+    def test_backup_info_uploaded_with_started_before_data(
+        self,
+        mock_backup_info,
+        mock_backup_strategy,
+        _mock_backup_data_files,
+        _mock_create_upload_controller,
+    ):
+        """
+        Verify that backup.info is uploaded with status=STARTED immediately
+        after _start_backup(), before any data files are copied.
+        """
+        # GIVEN a CloudBackupUploader
+        mock_cloud_interface = MagicMock(MAX_ARCHIVE_SIZE=99999, MIN_CHUNK_SIZE=2)
+        mock_postgres = MagicMock(server_major_version=150000)
+        mock_backup_info.return_value.backup_label = None
+        mock_backup_info.return_value.backup_id = "20250101T120000"
+        uploader = CloudBackupUploader(
+            self.server_name,
+            mock_cloud_interface,
+            99999,
+            mock_postgres,
+        )
+
+        # Configure BackupInfo class-level constants to real strings so that
+        # cloud.py code such as ``BackupInfo.STARTED`` resolves correctly when
+        # the class is patched.
+        mock_backup_info.STARTED = BackupInfo.STARTED
+        mock_backup_info.DONE = BackupInfo.DONE
+
+        upload_calls = []
+
+        # Wire set_attribute to actually update the mock's attribute so that
+        # status changes made via set_attribute() are observable.
+        def fake_set_attribute(attr, value):
+            setattr(mock_backup_info.return_value, attr, value)
+
+        mock_backup_info.return_value.set_attribute.side_effect = fake_set_attribute
+
+        # Track each upload_fileobj call with the status at the time of the call
+        def record_upload(fileobj, key):
+            if "backup.info" in key:
+                upload_calls.append(mock_backup_info.return_value.status)
+
+        mock_cloud_interface.upload_fileobj.side_effect = record_upload
+
+        # WHEN backup is called
+        uploader.backup()
+
+        # THEN backup.info was uploaded at least twice
+        assert len(upload_calls) >= 2, (
+            "Expected backup.info to be uploaded at least twice "
+            "(once with STARTED, once with final status)"
+        )
+        # AND the first upload was with status STARTED
+        assert upload_calls[0] == BackupInfo.STARTED, (
+            "Expected first backup.info upload to have status STARTED, "
+            "got %s" % upload_calls[0]
+        )
+
+    @mock.patch("barman.cloud.CloudBackupUploader.create_upload_controller")
+    @mock.patch("barman.cloud.CloudBackupUploader._backup_data_files")
+    @mock.patch("barman.cloud.ConcurrentBackupStrategy")
+    @mock.patch("barman.cloud.BackupInfo")
+    def test_backup_info_uploaded_with_failed_on_error(
+        self,
+        mock_backup_info,
+        mock_backup_strategy,
+        mock_backup_data_files,
+        _mock_create_upload_controller,
+    ):
+        """
+        Verify that backup.info is uploaded with status=FAILED in the finally
+        block when an error occurs after the initial STARTED upload.
+        """
+        # GIVEN a CloudBackupUploader where _backup_data_files raises an error
+        mock_cloud_interface = MagicMock(MAX_ARCHIVE_SIZE=99999, MIN_CHUNK_SIZE=2)
+        mock_postgres = MagicMock(server_major_version=150000)
+        mock_backup_info.return_value.backup_label = None
+        mock_backup_info.return_value.backup_id = "20250101T120000"
+        uploader = CloudBackupUploader(
+            self.server_name,
+            mock_cloud_interface,
+            99999,
+            mock_postgres,
+        )
+
+        # Configure the patched BackupInfo class to use real status string constants
+        # so that cloud.py code such as ``BackupInfo.FAILED`` resolves to 'FAILED'
+        # rather than a MagicMock attribute.
+        mock_backup_info.STARTED = BackupInfo.STARTED
+        mock_backup_info.FAILED = BackupInfo.FAILED
+        mock_backup_info.DONE = BackupInfo.DONE
+
+        upload_calls = []
+
+        def mock_start_backup(backup_info):
+            backup_info.status = BackupInfo.STARTED
+
+        mock_backup_strategy.return_value.start_backup.side_effect = mock_start_backup
+        mock_backup_data_files.side_effect = Exception("upload error")
+
+        # Make set_attribute actually update the mock's attribute so that
+        # handle_backup_errors(…, FAILED) is reflected when the finally block
+        # calls _upload_backup_info().
+        def mock_set_attribute(name, value):
+            setattr(mock_backup_info.return_value, name, value)
+
+        mock_backup_info.return_value.set_attribute.side_effect = mock_set_attribute
+
+        def record_upload(fileobj, key):
+            if "backup.info" in key:
+                upload_calls.append(mock_backup_info.return_value.status)
+
+        mock_cloud_interface.upload_fileobj.side_effect = record_upload
+
+        # WHEN backup is called, it raises SystemExit due to the error
+        with pytest.raises(SystemExit):
+            uploader.backup()
+
+        # THEN backup.info was uploaded at least twice
+        assert len(upload_calls) >= 2
+        # AND the first upload had status STARTED
+        assert upload_calls[0] == BackupInfo.STARTED
+        # AND the final upload had status FAILED
+        assert upload_calls[-1] == BackupInfo.FAILED
+
+
+class TestGetBackupIdUsingShortcutSkipsStarted(object):
+    """Tests that _get_backup_id_using_shortcut skips STARTED backups."""
+
+    def _make_catalog(self, backups_by_id):
+        """Return a CloudBackupCatalog with a mocked get_backup_list."""
+        catalog = CloudBackupCatalog(MagicMock(), "test-server")
+        catalog.get_backup_list = lambda: backups_by_id
+        return catalog
+
+    def _backup(self, status):
+        b = MagicMock()
+        b.status = status
+        return b
+
+    def test_last_skips_started_backup(self):
+        """last/latest must skip in-progress backups and return latest DONE."""
+        backups = {
+            "20250101T100000": self._backup(BackupInfo.DONE),
+            "20250101T110000": self._backup(BackupInfo.DONE),
+            "20250101T120000": self._backup(BackupInfo.STARTED),
+        }
+        catalog = self._make_catalog(backups)
+        assert catalog._get_backup_id_using_shortcut("last") == "20250101T110000"
+        assert catalog._get_backup_id_using_shortcut("latest") == "20250101T110000"
+
+    def test_first_skips_started_backup(self):
+        """first/oldest must skip in-progress backups and return oldest DONE."""
+        backups = {
+            "20250101T100000": self._backup(BackupInfo.STARTED),
+            "20250101T110000": self._backup(BackupInfo.DONE),
+            "20250101T120000": self._backup(BackupInfo.DONE),
+        }
+        catalog = self._make_catalog(backups)
+        assert catalog._get_backup_id_using_shortcut("first") == "20250101T110000"
+        assert catalog._get_backup_id_using_shortcut("oldest") == "20250101T110000"
+
+    def test_last_returns_none_when_all_started(self):
+        """last/latest returns None if all backups are STARTED."""
+        backups = {
+            "20250101T100000": self._backup(BackupInfo.STARTED),
+            "20250101T110000": self._backup(BackupInfo.STARTED),
+        }
+        catalog = self._make_catalog(backups)
+        assert catalog._get_backup_id_using_shortcut("last") is None
+        assert catalog._get_backup_id_using_shortcut("latest") is None
+
+    def test_first_returns_none_when_all_started(self):
+        """first/oldest returns None if all backups are STARTED."""
+        backups = {
+            "20250101T100000": self._backup(BackupInfo.STARTED),
+        }
+        catalog = self._make_catalog(backups)
+        assert catalog._get_backup_id_using_shortcut("first") is None
+        assert catalog._get_backup_id_using_shortcut("oldest") is None
+
+    def test_last_failed_not_affected_by_started_filter(self):
+        """last-failed continues to return the most recent FAILED backup."""
+        backups = {
+            "20250101T100000": self._backup(BackupInfo.FAILED),
+            "20250101T110000": self._backup(BackupInfo.STARTED),
+        }
+        catalog = self._make_catalog(backups)
+        assert catalog._get_backup_id_using_shortcut("last-failed") == "20250101T100000"

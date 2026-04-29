@@ -391,9 +391,9 @@ class TestCloudRestore(object):
 
         cloud_backup_catalog = mock_catalog.return_value
 
-        available_backups = (
-            cloud_backup_catalog.get_backup_list.return_value.values.return_value
-        ) = backups.values()
+        cloud_backup_catalog.get_backup_list.return_value.values.return_value = (
+            backups.values()
+        )
         recovery_dir = "/path/to/restore_dir"
 
         target_args = (
@@ -421,14 +421,14 @@ class TestCloudRestore(object):
 
         if target_option == "target_time":
             mock_get_bkp_id_from_tgt_time.assert_called_once_with(
-                available_backups, target, target_tli
+                mock.ANY, target, target_tli
             )
         elif target_option == "target_lsn":
             mock_get_bkp_id_from_tgt_lsn.assert_called_once_with(
-                available_backups, target, target_tli
+                mock.ANY, target, target_tli
             )
         elif target_option is None:
-            mock_get_last_bkp_id.assert_called_once_with(available_backups)
+            mock_get_last_bkp_id.assert_called_once_with(mock.ANY)
 
         cloud_backup_catalog.get_backup_info.assert_called_once_with(expected_backup_id)
 
@@ -499,9 +499,9 @@ class TestCloudRestore(object):
 
         cloud_backup_catalog = mock_catalog.return_value
 
-        available_backups = (
-            cloud_backup_catalog.get_backup_list.return_value.values.return_value
-        ) = backups.values()
+        cloud_backup_catalog.get_backup_list.return_value.values.return_value = (
+            backups.values()
+        )
         recovery_dir = "/path/to/restore_dir"
 
         target_args = ["--target-tli", str(target_tli)]
@@ -523,11 +523,9 @@ class TestCloudRestore(object):
         )
 
         if target_tli == "current":
-            mock_get_last_bkp_id.assert_called_once_with(available_backups)
+            mock_get_last_bkp_id.assert_called_once_with(mock.ANY)
         else:
-            mock_get_bkp_id_from_tgt_tli.assert_called_once_with(
-                available_backups, parsed_tli
-            )
+            mock_get_bkp_id_from_tgt_tli.assert_called_once_with(mock.ANY, parsed_tli)
 
         cloud_backup_catalog.get_backup_info.assert_called_once_with(expected_backup_id)
 
@@ -609,6 +607,64 @@ class TestCloudRestore(object):
             "argument --target-lsn: not allowed with argument --target-time"
             in captured.err
         )
+
+
+class TestAutoRestoreExcludesStartedBackups(object):
+    """Verify that STARTED backups are excluded from the auto-backup-id selection path."""
+
+    @mock.patch("barman.clients.cloud_restore.CloudBackupDownloaderObjectStore")
+    @mock.patch("barman.clients.cloud_restore.get_last_backup_id")
+    @mock.patch("barman.clients.cloud_restore.CloudBackupCatalog")
+    @mock.patch("barman.clients.cloud_restore.get_cloud_interface")
+    def test_started_backup_excluded_from_available_backups(
+        self,
+        _mock_cloud_interface_factory,
+        mock_catalog,
+        mock_get_last_bkp_id,
+        _mock_backup_downloader,
+    ):
+        """
+        Verify that STARTED backups are not passed to the backup selection utilities
+        when backup_id is ``auto``.
+
+        An in-progress backup has no valid ``end_time`` or ``end_xlog``, so passing it
+        to ``get_last_backup_id`` / ``get_backup_id_from_target_time`` / etc. would
+        either raise an AttributeError or silently return the wrong backup.
+        """
+        # GIVEN a backup catalog containing one DONE backup and one STARTED backup
+        done_backup_id = "20250108T120000"
+        started_backup_id = "20250109T120000"
+        backups = {
+            done_backup_id: build_test_backup_info(
+                backup_id=done_backup_id,
+                status="DONE",
+                end_time=load_datetime_tz("2025-01-08 12:00:00-03:00"),
+                end_xlog="3/61000000",
+                snapshots_info=None,
+            ),
+            started_backup_id: build_test_backup_info(
+                backup_id=started_backup_id,
+                status="STARTED",
+                end_time=None,
+                end_xlog=None,
+                snapshots_info=None,
+            ),
+        }
+        cloud_backup_catalog = mock_catalog.return_value
+        cloud_backup_catalog.get_backup_list.return_value = backups
+        mock_get_last_bkp_id.return_value = done_backup_id
+        cloud_backup_catalog.get_backup_info.return_value = backups[done_backup_id]
+
+        # WHEN barman-cloud-restore is invoked with backup_id "auto"
+        cloud_restore.main(
+            ["cloud_storage_url", "test_server", "auto", "/path/to/restore_dir"]
+        )
+
+        # THEN only the DONE backup is passed to the selection utility
+        actual_backups_arg = mock_get_last_bkp_id.call_args[0][0]
+        backup_ids_passed = [b.backup_id for b in actual_backups_arg]
+        assert done_backup_id in backup_ids_passed
+        assert started_backup_id not in backup_ids_passed
 
 
 class TestCloudBackupDownloader(object):
