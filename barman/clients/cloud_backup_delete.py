@@ -36,6 +36,7 @@ from barman.cloud_providers import (
 )
 from barman.cloud_providers.aws_s3 import S3CloudInterface
 from barman.exceptions import BadXlogPrefix, InvalidRetentionPolicy
+from barman.infofile import BackupInfo
 from barman.retention_policies import RetentionPolicyFactory
 from barman.utils import check_non_negative, force_str
 
@@ -383,7 +384,12 @@ def main(args=None):
                     )
                     raise OperationErrorExit()
                 if config.minimum_redundancy > 0:
-                    if config.minimum_redundancy >= len(catalog.get_backup_list()):
+                    completed_backups = [
+                        b
+                        for b in catalog.get_backup_list().values()
+                        if b.status != BackupInfo.STARTED
+                    ]
+                    if config.minimum_redundancy >= len(completed_backups):
                         _logger.error(
                             "Skipping delete of backup %s for server %s "
                             "due to minimum redundancy requirements "
@@ -392,7 +398,7 @@ def main(args=None):
                             backup_id,
                             config.server_name,
                             config.minimum_redundancy,
-                            len(catalog.get_backup_list()),
+                            len(completed_backups),
                         )
                         raise OperationErrorExit()
                 _delete_backup(cloud_interface, catalog, backup_id, config)

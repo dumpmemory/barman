@@ -33,6 +33,7 @@ from barman.cloud_providers import (
 )
 from barman.exceptions import ConfigurationException
 from barman.fs import UnixLocalCommand
+from barman.infofile import BackupInfo
 from barman.recovery_executor import SnapshotRecoveryExecutor
 from barman.utils import (
     check_tli,
@@ -101,7 +102,11 @@ def main(args=None):
                 # string ("current", "latest")
                 target_tli = parse_target_tli(obj=catalog, target_tli=config.target_tli)
 
-                available_backups = catalog.get_backup_list().values()
+                available_backups = [
+                    b
+                    for b in catalog.get_backup_list().values()
+                    if b.status != BackupInfo.STARTED
+                ]
                 if target_option is None:
                     if target_tli is not None:
                         backup_id = get_backup_id_from_target_tli(

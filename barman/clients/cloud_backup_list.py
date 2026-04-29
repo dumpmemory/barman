@@ -68,17 +68,33 @@ def main(args=None):
                 )
                 for backup_id in sorted(backup_list):
                     item = backup_list[backup_id]
-                    if item and item.status == BackupInfo.DONE:
-                        keep_target = catalog.get_keep_target(item.backup_id)
-                        keep_status = (
-                            keep_target and "KEEP:%s" % keep_target.upper() or ""
+                    if item:
+                        end_time = (
+                            item.end_time.strftime("%Y-%m-%d %H:%M:%S")
+                            if item.end_time is not None
+                            else ""
                         )
+                        if item.status == BackupInfo.DONE:
+                            keep_target = catalog.get_keep_target(item.backup_id)
+                            archival_status = (
+                                keep_target and "KEEP:%s" % keep_target.upper() or ""
+                            )
+                        else:
+                            # For non-DONE backups, surface the current status in
+                            # the Archival Status column so the operator can see
+                            # in-progress or failed backups, while still showing
+                            # an end_time when one is available (e.g. FAILED
+                            # backups may or may not have an end_time).
+                            archival_status = item.status
                         print(
                             COLUMNS.format(
                                 item.backup_id,
-                                item.end_time.strftime("%Y-%m-%d %H:%M:%S"),
-                                item.begin_wal,
-                                keep_status,
+                                end_time,
+                                # begin_wal may be None for STARTED backups
+                                # that have not yet reached the data-transfer
+                                # phase.
+                                item.begin_wal or "",
+                                archival_status,
                                 item.backup_name or "",
                             )
                         )

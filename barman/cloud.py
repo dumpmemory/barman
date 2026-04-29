@@ -2331,9 +2331,15 @@ class CloudBackupCatalog(KeepManagerMixinCloud):
 
         backup_ids = sorted(backups.keys())
         if shortcut in ("last", "latest"):
-            return backup_ids[-1]
+            for bid in reversed(backup_ids):
+                if backups[bid].status != BackupInfo.STARTED:
+                    return bid
+            return None
         elif shortcut in ("first", "oldest"):
-            return backup_ids[0]
+            for bid in backup_ids:
+                if backups[bid].status != BackupInfo.STARTED:
+                    return bid
+            return None
         elif shortcut == "last-failed":
             # If no failed backups are found, the last instruction
             # of this method is a "return None", so we rely on that.
