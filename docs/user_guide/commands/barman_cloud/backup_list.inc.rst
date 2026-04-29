@@ -27,6 +27,12 @@
 This script lists backups stored in the cloud that were created using the
 ``barman-cloud-backup`` command.
 
+Backups in any state are included in the listing. Completed backups
+(status ``DONE``) show their end time and, where applicable, their archival
+keep target (e.g. ``KEEP:FULL``). In-progress or failed backups show their
+status (e.g. ``STARTED``) in the *Archival Status* column and an empty
+*End Time*.
+
 .. note::
   For GCP, only authentication with ``GOOGLE_APPLICATION_CREDENTIALS`` env is supported.
   To use an alternative GCP universe (e.g. S3NS/T-Systems), set the
