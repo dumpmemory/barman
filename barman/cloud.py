@@ -1523,6 +1523,12 @@ class CloudBackup(with_metaclass(ABCMeta)):
 
             self._start_backup()
 
+            # Mark as STARTED and upload backup.info so the backup is visible
+            # in the catalog immediately.  The finally block will overwrite
+            # this with the final status (DONE or FAILED).
+            self.backup_info.set_attribute("status", BackupInfo.STARTED)
+            self._upload_backup_info()
+
             self._take_backup()
 
             self._stop_backup()
