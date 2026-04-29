@@ -2048,12 +2048,15 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         Export a completed backup to a portable tarball format.
 
         This method creates a tarball containing:
-        - ``backup/`` directory with complete backup data
-        - ``wals/`` directory with all required WAL files preserving hash structure
-        - ``xlog.db`` metadata file for exported WAL files
         - ``identity.json`` from server
         - ``backup.info`` metadata
         - ``barman.json`` with system information
+        - ``backup/`` directory with complete backup data
+        - ``wals/`` directory with all required WAL files preserving hash structure
+        - ``xlog.db`` metadata file for exported WAL files
+
+        Metadata files are written first so that the importer can validate
+        server identity in streaming mode (``r|*``) before reading bulk data.
 
         The caller (server.py) is responsible for:
         - Generating the export filename
@@ -2075,15 +2078,16 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         output.debug("Creating export tarball at '%s'" % output_filepath)
 
         with tarfile.open(output_filepath, "w|") as tar:
+            # Add metadata files first so that the importer can validate
+            # identity before reading the bulk data in streaming mode (r|*)
+            self._add_metadata_to_tar(tar, identity_data, backup_info, barman_data)
+
             # Add backup data with backup/ prefix
             output.debug("Adding backup data from '%s'" % backup_dir)
             tar.add(backup_dir, arcname="backup")
 
             # Add WAL files and xlog.db
             self._add_wal_data_to_tar(tar, backup_info)
-
-            # Add metadata files to tarball root
-            self._add_metadata_to_tar(tar, identity_data, backup_info, barman_data)
 
     def _add_metadata_to_tar(self, tar, identity_data, backup_info, barman_data):
         """
