@@ -2566,6 +2566,16 @@ def config_update(args):
             "wal_path",
             help="the value of the '%%p' keyword (according to 'archive_command').",
         ),
+        argument(
+            "-p",
+            "--parallel",
+            default=None,
+            type=int,
+            help="Specifies the maximum number of WALs to archive in parallel. "
+            "Defaults to the server configuration value "
+            "(cloud_wal_archive_parallel), which itself defaults to 0 "
+            "(disabled).",
+        ),
     ]
 )
 def cloud_wal_archive(args):
@@ -2593,8 +2603,14 @@ def cloud_wal_archive(args):
         skip_passive=True,
     )
 
+    if args.parallel is not None:
+        server.config.cloud_wal_archive_parallel = args.parallel
+
     with closing(server):
-        server.cloud_wal_archive(args.wal_path)
+        server.cloud_wal_archive(
+            args.wal_path,
+            server.config.cloud_wal_archive_parallel,
+        )
 
     output.close_and_exit()
 

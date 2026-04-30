@@ -17,10 +17,13 @@
 # along with Barman.  If not, see <http://www.gnu.org/licenses/>
 
 import collections
+import errno
 import filecmp
 import logging
+import multiprocessing
 import os
 import shutil
+import sys
 from abc import ABCMeta, abstractmethod
 from glob import glob
 from tempfile import NamedTemporaryFile
@@ -1578,3 +1581,442 @@ class StreamingWalArchiver(WalArchiver):
         Set additional status info - invoked by Server.status()
         """
         # TODO: Add status information for WAL streaming
+
+
+class WalPrefetchWorker(multiprocessing.Process):
+    """
+    Custom worker class used to prefetch WAL files in parallel.
+
+    It is a simple wrapper around :class:`multiprocessing.Process` that holds the WAL info
+    to archive and provides a ``success`` property to check if the process was
+    successful after finished.
+    """
+
+    def __init__(self, wal_info, *args, **kwargs):
+        super(WalPrefetchWorker, self).__init__(*args, **kwargs)
+        self.wal_info = wal_info
+
+    @property
+    def success(self):
+        return self.exitcode == 0
+
+
+class CloudWalArchiver:
+    """
+    WAL archiver for cloud storage destinations.
+
+    This archiver uploads WAL files directly to cloud storage rather than storing them
+    on the local filesystem. It supports parallel prefetching of additional WAL files
+    that are ready for archival, improving throughput when Postgres ``archive_command``
+    invokes this archiver.
+
+    Unlike other archivers like :class:`FileWalArchiver` and :class:`StreamingWalArchiver`,
+    which archive WALs from ``incoming`` and ``streaming`` directories on the Barman,
+    host, this class is used to archive WALs living on the Postgres server itself i.e.
+    WALs on the ``pg_wal`` directory.
+
+    :cvar LAST_ARCHIVED_CACHE_FILE: Name of the cache file that stores the last
+        archived WAL name.
+    """
+
+    LAST_ARCHIVED_CACHE_FILE = "cloud-wal-last-archived"
+
+    def __init__(self, backup_manager):
+        """
+        Initialize the cloud WAL archiver.
+
+        :param barman.backup_manager.BackupManager backup_manager: The backup manager
+           of the server in use.
+        """
+        self.backup_manager = backup_manager
+        self.config = backup_manager.config
+        self.server = backup_manager.server
+        self.wal_storage = self.server.wal_storage
+        self.compression_manager = backup_manager.compression_manager
+        self.encryption_manager = backup_manager.encryption_manager
+
+    def archive(self, wal_path, parallel=0):
+        """
+        Archive a WAL file to cloud storage.
+
+        When *parallel* > 1, the WAL files that immediately follow the requested one
+        in the WAL sequence are checked for readiness (via ``.ready`` files in
+        ``pg_wal/archive_status``). Those that are ready are eligible for prefetching.
+        Up to ``parallel - 1`` extra WAL files are prefetched and uploaded concurrently
+        in background worker processes.
+
+        The requested WAL is always archived first. Prefetch workers are only started
+        after the primary WAL has been successfully archived. ``xlogdb`` is updated for
+        each successfully archived WAL. The last-archived cache is also updated at the
+        end with the last WAL written to ``xlog.db`` as to enable skipping
+        already-archived files on subsequent invocations.
+
+        :param str wal_path: Full path to the WAL file to archive, as requested by
+            Postgres's ``archive_command``.
+        :param int parallel: Total number of WAL files to archive in parallel.
+            ``0`` or ``1`` disables prefetching (only the requested WAL is archived).
+            When ``> 1``, up to ``parallel - 1`` extra WALs are prefetched and
+            archived concurrently.
+        """
+        if self._is_already_archived(wal_path):
+            _logger.debug(
+                "WAL file %s is already archived, skipping.",
+                os.path.basename(wal_path),
+            )
+            return
+
+        wal_info = self._build_wal_info(wal_path)
+
+        # Infer xlog_segment_size from the WAL file size. The archive_command is
+        # always invoked on a complete segment, so the file size equals the segment
+        # size exactly — no postgres connection required.
+        xlog_segment_size = os.path.getsize(wal_path)
+
+        # Derive prefetch count from the single `parallel` parameter.
+        # parallel=0 or 1 → no prefetching; parallel=N → N-1 prefetched WALs,
+        # matching the semantics of cloud-wal-restore --parallel.
+        n_prefetch = max(0, parallel - 1)
+
+        # Discover prefetch candidates using WAL sequence ordering: compute the next
+        # N segments after the requested one and check for .ready markers, stopping
+        # at the first gap in the sequence.
+        wals_to_prefetch = self._get_wals_to_prefetch(
+            wal_path, n_prefetch, xlog_segment_size
+        )
+        actual_prefetch = min(n_prefetch, len(wals_to_prefetch))
+        if actual_prefetch > 0:
+            _logger.debug(
+                "Prefetching %d WAL file(s) concurrently on server %s",
+                actual_prefetch,
+                self.config.name,
+            )
+
+        # Archive the requested WAL in the main process first.
+        # Prefetch workers are only started after the primary WAL is successfully
+        # archived — if it fails, no worker processes are spawned.
+        try:
+            self._archive_single_wal(wal_info)
+        except Exception as e:
+            output.error("Archival of WAL file %s failed: %s" % (wal_path, e))
+            raise
+
+        # Start a worker process for each WAL to prefetch, then wait for all of them.
+        # The list is already capped to `n_prefetch` items by _get_wals_to_prefetch,
+        # so no batching is needed.
+        prefetch_workers = []
+        for prefetch_wal_path in wals_to_prefetch:
+            try:
+                prefetch_wal_info = self._build_wal_info(prefetch_wal_path)
+            except Exception as e:
+                output.warning(
+                    "Could not read metadata for WAL file %s: %s. Stopping prefetch.",
+                    os.path.basename(prefetch_wal_path),
+                    e,
+                )
+                break
+            worker = WalPrefetchWorker(
+                wal_info=prefetch_wal_info,
+                target=self._prefetch_worker,
+                args=(prefetch_wal_info,),
+            )
+            worker.start()
+            prefetch_workers.append(worker)
+        for worker in prefetch_workers:
+            worker.join()
+
+        # Update xlogdb and the last-archived cache based on the results of the archivals
+        self._update_metadata(wal_info, prefetch_workers)
+
+    def _is_already_archived(self, wal_path):
+        """
+        Check if a WAL file has already been archived based on the last-archived cache.
+
+        Compares the WAL name against the cached last-archived WAL. Since WAL file
+        names are lexicographically ordered by LSN, any WAL name <= the cached name
+        has already been archived.
+
+        :param str wal_path: Full path to the WAL file.
+        :return: ``True`` if the WAL was already archived, ``False`` otherwise.
+        :rtype: bool
+        """
+        wal_name = os.path.basename(wal_path)
+        cached_wal = self._read_cloud_wal_last_archived()
+        return bool(
+            cached_wal and xlog.is_wal_file(wal_name) and wal_name <= cached_wal
+        )
+
+    def _get_wals_to_prefetch(self, requested_wal_path, number, xlog_segment_size):
+        """
+        Get the next WAL files in sequence that are ready for prefetched archival.
+
+        Computes the names of the next *number* WAL files after *requested_wal_path*
+        in the WAL sequence, then checks each for a corresponding ``.ready`` marker
+        in ``pg_wal/archive_status``. Discovery stops at the first WAL in the sequence
+        that does not have a ``.ready`` file — a gap in readiness means later WALs are
+        unlikely to be ready either, and Postgres will request them soon anyway.
+
+        Only actual WAL segment files are returned; ``.history`` and ``.backup`` files
+        are not prefetched.
+
+        :param str requested_wal_path: Full path to the WAL file being archived in the
+            main process i.e. the WAL file requested by Postgres's ``archive_command``.
+        :param int number: Maximum number of WAL files to return for prefetching.
+        :param int xlog_segment_size: The WAL segment size in bytes, used to compute
+            correct segment boundaries when generating the sequence.
+        :return: List of WAL file paths ready for prefetching, in sequence order, up to
+            *number* entries.
+        :rtype: list[str]
+        """
+        # .history and .backup files are archived normally but do not trigger prefetch
+        if not xlog.is_wal_file(requested_wal_path):
+            return []
+
+        if number <= 0:
+            return []
+
+        pg_wal_dir = os.path.dirname(requested_wal_path)
+        archive_status_dir = os.path.join(pg_wal_dir, "archive_status")
+        if not os.path.isdir(archive_status_dir):
+            output.warning(
+                "archive_status directory %s does not exist; prefetching skipped.",
+                archive_status_dir,
+            )
+            return []
+
+        requested_wal_name = os.path.basename(requested_wal_path)
+
+        # Generate WAL names in sequence starting from the requested WAL.
+        # The first name returned is the requested WAL itself, so we skip it.
+        sequence = xlog.generate_segment_names(
+            begin=requested_wal_name,
+            xlog_segment_size=xlog_segment_size,
+        )
+        next(sequence)  # skip the requested WAL
+
+        wals_to_prefetch = []
+        for wal_name in sequence:
+            if len(wals_to_prefetch) >= number:
+                break
+
+            ready_file = os.path.join(archive_status_dir, "%s.ready" % wal_name)
+            if not os.path.exists(ready_file):
+                # Stop at the first gap — later WALs in the sequence will not be
+                # ready either, and Postgres will request them in order soon.
+                _logger.debug(
+                    "WAL %s is not ready for archival yet; stopping prefetch on"
+                    " server %s.",
+                    wal_name,
+                    self.config.name,
+                )
+                break
+
+            wal_path = os.path.join(pg_wal_dir, wal_name)
+            if not os.path.exists(wal_path):
+                # The WAL file was recycled by Postgres between the time .ready was
+                # created and our scan.  Skip this candidate and continue — the file
+                # is no longer available but the sequence may still continue.
+                _logger.debug(
+                    "WAL %s has a .ready marker but the file no longer exists"
+                    " (recycled); skipping.",
+                    wal_name,
+                )
+                continue
+
+            _logger.debug(
+                "Found WAL file %s ready for prefetch archival on server %s.",
+                wal_name,
+                self.config.name,
+            )
+            wals_to_prefetch.append(wal_path)
+
+        return wals_to_prefetch
+
+    def _build_wal_info(self, wal_path):
+        """
+        Create a WalFileInfo object for a given *wal_path*.
+
+        :param str wal_path: Full path to the WAL file.
+        :return: A WalFileInfo instance populated with metadata from the file.
+        :rtype: barman.infofile.WalFileInfo
+        """
+        # The WAL file comes directly from pg_wal, so it is expected to be plain
+        # (no compression or encryption applied by Postgres).
+        return WalFileInfo.from_file(
+            filename=wal_path,
+            compression_manager=self.compression_manager,
+            unidentified_compression=None,
+            encryption_manager=self.encryption_manager,
+            encryption=None,
+        )
+
+    def _prefetch_worker(self, wal_info):
+        """
+        Worker function that archives a WAL file in a subprocess.
+
+        Invoked as the target of a :class:`WalPrefetchWorker` process. Archives
+        the WAL file and exits with code 0 on success or 1 on failure. Exceptions
+        are logged but not propagated, since the parent process checks success via
+        the worker's exit code.
+
+        :param barman.infofile.WalFileInfo wal_info: Metadata for the WAL file to
+            archive.
+        """
+        try:
+            self._archive_single_wal(wal_info)
+        except Exception as e:
+            output.warning("Prefetch of WAL file %s failed: %s" % (wal_info.name, e))
+            sys.exit(1)
+
+    def _archive_single_wal(self, wal_info):
+        """
+        Archive/Upload a single WAL file to cloud storage.
+
+        Compresses and uploads the WAL file using the configured storage strategy.
+        Handles duplicate detection: if an identical file already exists in cloud
+        storage, the upload is silently skipped; if a different file exists with
+        the same name, the local file is copied to the errors directory.
+
+        :param barman.infofile.WalFileInfo wal_info: Metadata for the WAL file to
+            archive.
+        """
+        compressor = self.compression_manager.get_default_compressor()
+        encryption = self.encryption_manager.get_encryption()
+        try:
+            # We skip the delete because the WAL file is expected to be inside 'pg_wal',
+            # not inside the 'incoming' directory.
+            self.wal_storage.save(compressor, encryption, wal_info, skip_delete=True)
+        except MatchingDuplicateWalFile:
+            _logger.info(
+                "WAL file %s is already archived in cloud storage, skipping.",
+                wal_info.name,
+            )
+        except DuplicateWalFile:
+            _logger.warning(
+                "WAL file %s is already archived in cloud storage of server %s but "
+                "with different content. Copying it to the errors directory.",
+                wal_info.name,
+                self.config.name,
+            )
+            # We copy instead of moving the WAL file to the errors directory because
+            # this is a WAL inside 'pg_wal' and should not be modified by Barman.
+            self._copy_wal_file_to_errors_directory(
+                wal_info.orig_filename, wal_info.name, "duplicate"
+            )
+
+    def _copy_wal_file_to_errors_directory(self, src, file_name, suffix):
+        """
+        Copy a problematic WAL file to the errors directory.
+
+        Unlike :meth:`Server.move_wal_file_to_errors_directory`, this method copies
+        rather than moves the file, preserving the original. This is necessary when
+        archiving directly from ``pg_wal``, since PostgreSQL owns those files and
+        Barman should not remove them.
+
+        :param str src: Full path to the source WAL file.
+        :param str file_name: Base name of the WAL file (used for the destination name).
+        :param str suffix: Suffix to append to the destination file name (e.g.,
+            ``"duplicate"`` or ``"unknown"``).
+        """
+        error_dst = self.server.get_errors_dst(file_name, suffix)
+        try:
+            shutil.copy(src, error_dst)
+        except IOError as e:
+            if e.errno == errno.ENOENT:
+                _logger.warning("%s not found" % src)
+
+    def _update_metadata(self, wal_info, prefetch_workers):
+        """
+        Update archival metadata on ``xlogdb`` and update the last-archived cache.
+
+        Appends a line to ``xlogdb`` for each successfully archived WAL (in order).
+        The last WAL written to ``xlogdb`` is also written to the last-archived cache
+        file.
+
+        It stops writing to ``xlogdb`` at the first failure found, as to avoid having
+        any holes in ``xlogdb``. E.g. if WAL files A, B, C and D are for archival, but
+        C fails to be archived, only A and B are written to ``xlogdb`` (even though D
+        might have been successfully archived). This maintains the last-archived cache
+        consistent. If we were to also write D to ``xlogdb``, the last-archived cache
+        would be updated with D, and thus the next attempt of C by Postgres would
+        mistakenly consider it as already archived.
+
+        :param barman.infofile.WalFileInfo wal_info: Metadata for the main WAL file.
+        :param list[WalPrefetchWorker] prefetch_workers: List of prefetch workers,
+            in the order their WAL files should appear in xlogdb.
+        """
+        with self.server.xlogdb("a") as fxlogdb:
+            fxlogdb.write(wal_info.to_xlogdb_line())
+            last_write_xlogdb = wal_info.name
+            for worker in prefetch_workers:
+                if worker.success:
+                    fxlogdb.write(worker.wal_info.to_xlogdb_line())
+                    last_write_xlogdb = worker.wal_info.name
+                else:
+                    break
+
+        # Only update the last-archived cache for WAL segment files.
+        # A .history from a new timeline (e.g. "00000003.history") sorts before a
+        # WAL segment of the previous timeline (e.g. "000000020000000000000001"),
+        # because '.' (0x2e) < '0' (0x30). If we cached the .history name, a
+        # delayed old-timeline WAL would satisfy `wal_name <= cached` and be
+        # wrongly skipped as already-archived. We also don't want to cache .backup or
+        # .partial files, just in case.
+        if xlog.is_wal_file(last_write_xlogdb):
+            self._write_cloud_wal_last_archived(last_write_xlogdb)
+
+    @property
+    def last_archived_cache_path(self):
+        """
+        Return the full path to the cache file that stores the last archived WAL name.
+
+        :return: Absolute path to the cache file.
+        :rtype: str
+        """
+        return os.path.join(self.server.meta_directory, self.LAST_ARCHIVED_CACHE_FILE)
+
+    def _read_cloud_wal_last_archived(self):
+        """
+        Read the name of the last archived WAL file from the cache file.
+
+        :return: The name of the last archived WAL file, or ``None`` if not available.
+        :rtype: str|None
+        """
+        try:
+            with open(self.last_archived_cache_path, "r") as f:
+                return f.read().strip()
+        except (OSError, IOError) as e:
+            _logger.debug(
+                "Could not read last-archived cache at %s: %s",
+                self.last_archived_cache_path,
+                e,
+            )
+            return None
+
+    def _write_cloud_wal_last_archived(self, wal_name):
+        """
+        Write the name of the last archived WAL file to the cache file atomically.
+
+        Uses a write-to-temporary-file-then-rename pattern to ensure the cache file is
+        never partially written. An incomplete write followed by a crash would leave a
+        corrupt cache file that could cause future WALs to be incorrectly skipped.
+
+        :param str wal_name: The name of the last archived WAL file.
+        """
+        tmp_path = None
+        try:
+            cache_dir = os.path.dirname(self.last_archived_cache_path)
+            with NamedTemporaryFile(mode="w", dir=cache_dir, delete=False) as tmp:
+                tmp_path = tmp.name
+                tmp.write(wal_name)
+            os.rename(tmp_path, self.last_archived_cache_path)
+        except (OSError, IOError) as e:
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            _logger.warning(
+                "Failed to write last archived WAL file name to cache file %s: %s",
+                self.last_archived_cache_path,
+                e,
+            )

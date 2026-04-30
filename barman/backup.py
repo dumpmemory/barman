@@ -65,10 +65,8 @@ from barman.exceptions import (
     BackupException,
     CommandFailedException,
     CompressionIncompatibility,
-    DuplicateWalFile,
     ExportBackupException,
     LockFileBusy,
-    MatchingDuplicateWalFile,
     SshCommandException,
     UnknownBackupIdException,
 )
@@ -98,7 +96,7 @@ from barman.utils import (
     human_readable_timedelta,
     pretty_size,
 )
-from barman.wal_archiver import CloudWalStorageStrategy
+from barman.wal_archiver import CloudWalArchiver, CloudWalStorageStrategy
 
 _logger = logging.getLogger(__name__)
 
@@ -1312,7 +1310,7 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         for archiver in self.server.archivers:
             archiver.archive(verbose)
 
-    def cloud_wal_archive(self, wal_path):
+    def cloud_wal_archive(self, wal_path, parallel=0):
         """
         Archive a WAL file to cloud storage.
 
@@ -1342,27 +1340,14 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             from ``pg_wal``.
 
         :param str wal_path: the path of the WAL file to archive
+        :param int parallel: number of WALs to archive in parallel (0=disabled)
         """
-        # Get a WAL file info and the compressor/encryptor, similar to what is done
-        # through WalArchiver when running 'barman archive-wal'.
-        wal_info = WalFileInfo.from_file(
-            filename=wal_path,
-            compression_manager=self.compression_manager,
-            unidentified_compression=None,
-            encryption_manager=self.encryption_manager,
-            encryption=None,
-        )
-        compressor = self.compression_manager.get_default_compressor()
-        encryption = self.encryption_manager.get_encryption()
-
-        wal_storage = self.server.wal_storage
-
         # In the docstring we mention we don't perform validation here, but we still
         # want to make sure that the WAL storage strategy is compatible with this
         # method, otherwise we can end up in a situation where the WAL file is
         # removed/modified without being archived in cloud storage, which can cause data
         # loss.
-        if not isinstance(wal_storage, CloudWalStorageStrategy):
+        if not isinstance(self.server.wal_storage, CloudWalStorageStrategy):
             output.error(
                 "The 'cloud-wal-archive' command can only be used with cloud WAL "
                 "storage strategies. Please check your server configuration and ensure "
@@ -1370,29 +1355,8 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             )
             return
 
-        try:
-            # We skip the delete because the WAL file is expected to be inside 'pg_wal',
-            # not inside the 'incoming' directory.
-            wal_storage.save(compressor, encryption, wal_info, skip_delete=True)
-            output.info("WAL file %s archived in cloud storage.", wal_info.name)
-        except MatchingDuplicateWalFile:
-            output.info(
-                "WAL file %s is already archived in cloud storage, skipping.",
-                wal_info.name,
-            )
-        except DuplicateWalFile:
-            output.warning(
-                "WAL file %s is already archived in cloud storage of server %s but "
-                "with different content",
-                wal_info.name,
-                self.config.name,
-            )
-            # We copy instead of moving the WAL file to the errors directory because
-            # 'wal_info.path' points to a WAL inside 'pg_wal', and should not be
-            # modified by Barman.
-            self.server.copy_wal_file_to_errors_directory(
-                wal_info.orig_filename, wal_info.name, "duplicate"
-            )
+        cloud_archiver = CloudWalArchiver(self)
+        cloud_archiver.archive(wal_path, parallel)
 
     def cloud_wal_restore(self, wal_name, wal_dest, parallel, spool_dir):
         """
