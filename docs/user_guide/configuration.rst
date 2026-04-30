@@ -1318,6 +1318,20 @@ level is used. The default value is ``medium``.
 
 Scope: Global / Server / Model.
 
+**cloud_wal_archive_parallel**
+
+Controls the number of WAL files that ``barman cloud-wal-archive`` will upload in
+parallel. When set to ``N`` (where N > 1), up to ``N - 1`` additional WAL files that
+are ready in ``pg_wal/archive_status`` are uploaded concurrently in background
+processes after the primary WAL has been successfully archived. Defaults to ``0``
+(disabled).
+
+.. note::
+  This option only applies when using the ``local-to-cloud`` backup method with
+  ``barman cloud-wal-archive`` as the ``archive_command``.
+
+Scope: Global / Server.
+
 **incoming_wals_directory**
 
 Specifies the directory where incoming WAL files are archived. Requires ``archiver`` to

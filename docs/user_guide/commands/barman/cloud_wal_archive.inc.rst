@@ -10,6 +10,7 @@ Synopsis
 
     cloud-wal-archive
         [ { -h | --help } ]
+        [ { -p | --parallel } PARALLEL ]
         SERVER_NAME WAL_PATH
 
 Description
@@ -35,3 +36,12 @@ Parameters
 
 ``-h`` / ``--help``
     Show a help message and exit. Provides information about command usage.
+
+``-p`` / ``--parallel``
+    Number of WALs to archive in parallel. When set to a value greater than ``1``,
+    up to ``parallel - 1`` additional WAL files that are ready in
+    ``pg_wal/archive_status`` are uploaded concurrently in background processes after
+    the primary WAL has been successfully archived. This can reduce WAL archival backlog
+    during periods of high WAL generation. Defaults to the
+    ``cloud_wal_archive_parallel`` server configuration value, which itself defaults
+    to ``0`` (disabled).

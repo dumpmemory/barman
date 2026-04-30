@@ -446,6 +446,18 @@ using the `barman cloud-wal-archive` command, which uploads WAL files via the
 
     archive_command = 'barman cloud-wal-archive myserver %p'
 
+To reduce WAL archival backlog during periods of high WAL generation, the ``--parallel``
+flag (or the ``cloud_wal_archive_parallel`` configuration option) can be used to upload
+additional WAL files concurrently:
+
+.. code-block:: text
+
+    archive_command = 'barman cloud-wal-archive --parallel 2 myserver %p'
+
+When ``--parallel N`` is set (N > 1), up to ``N - 1`` extra WAL files that are ready
+in ``pg_wal/archive_status`` are uploaded in background processes after the primary WAL
+has been successfully archived.
+
 
 General Backup Settings
 -----------------------
