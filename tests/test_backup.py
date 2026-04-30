@@ -47,6 +47,7 @@ from barman.exceptions import (
     CommandFailedException,
     CompressionIncompatibility,
     ExportBackupException,
+    ImportBackupException,
     RecoveryInvalidTargetException,
 )
 from barman.infofile import BackupInfo, load_datetime_tz
@@ -3648,3 +3649,534 @@ class TestExportBackup(object):
                 tar.extractfile("barman.json").read().decode("utf-8")
             )
             assert barman_content["barman_ver"] == "3.10.0"
+
+
+class TestImportBackup(object):
+    """Test class for BackupManager.import_backup and related helper methods."""
+
+    @pytest.fixture
+    def import_env(self, tmpdir):
+        """
+        Set up a backup manager and helper to create valid export tarballs.
+
+        Returns a dict with ``backup_manager``, ``tmpdir``, and a
+        ``make_tarball`` helper.
+        """
+        backup_manager = build_backup_manager(
+            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
+        )
+        # Ensure basebackups_directory exists on disk
+        os.makedirs(backup_manager.config.basebackups_directory, exist_ok=True)
+
+        def make_tarball(
+            identity=None,
+            backup_info_content=None,
+            include_backup_dir=True,
+        ):
+            """
+            Create a valid export tarball on disk.
+
+            :param dict identity: identity.json content
+            :param str backup_info_content: raw backup.info content
+            :param bool include_backup_dir: whether to include backup/ directory
+            :return: path to the created tarball
+            :rtype: str
+            """
+            if identity is None:
+                identity = {"systemid": "1234567890", "version": "15"}
+            if backup_info_content is None:
+                # Match production: ``backup_id`` is not a ``Field`` on
+                # ``BackupInfo``, so ``BackupInfo.save()`` does not write it
+                # to the file. A real exported ``backup.info`` therefore has
+                # no ``backup_id=`` line.
+                backup_info_content = (
+                    "server_name=TestServer\n"
+                    "status=DONE\n"
+                    "begin_wal=000000010000000000000001\n"
+                    "end_wal=000000010000000000000002\n"
+                )
+
+            input_tarball = os.path.join(tmpdir.strpath, "export.tar")
+            with tarfile.open(input_tarball, "w") as tar:
+                # Add identity.json
+                identity_bytes = json.dumps(identity).encode("utf-8")
+                info = tarfile.TarInfo(name="identity.json")
+                info.size = len(identity_bytes)
+                tar.addfile(info, io.BytesIO(identity_bytes))
+
+                # Add backup.info
+                info_bytes = backup_info_content.encode("utf-8")
+                info = tarfile.TarInfo(name="backup.info")
+                info.size = len(info_bytes)
+                tar.addfile(info, io.BytesIO(info_bytes))
+
+                # Add backup/ directory with a test file
+                if include_backup_dir:
+                    data_content = b"test data"
+                    info = tarfile.TarInfo(name="backup/data/test_file.txt")
+                    info.size = len(data_content)
+                    tar.addfile(info, io.BytesIO(data_content))
+
+            return input_tarball
+
+        return {
+            "backup_manager": backup_manager,
+            "tmpdir": tmpdir,
+            "make_tarball": make_tarball,
+        }
+
+    def test_import_backup_success(self, import_env):
+        """
+        Test that import_backup extracts tarball, validates identity, registers
+        metadata, and moves backup data to the correct location.
+        """
+        # GIVEN a valid export tarball
+        backup_manager = import_env["backup_manager"]
+        input_tarball = import_env["make_tarball"]()
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # WHEN import_backup is called
+        backup_manager.import_backup(input_tarball, local_identity, "20240101T120000")
+
+        # THEN the backup is registered in the cache
+        backup_info = backup_manager.get_backup("20240101T120000")
+        assert backup_info is not None
+        assert backup_info.backup_id == "20240101T120000"
+
+        # AND the backup data directory exists with the test file
+        data_dir = backup_info.get_basebackup_directory()
+        assert os.path.isdir(data_dir)
+        assert os.path.exists(os.path.join(data_dir, "data", "test_file.txt"))
+
+        # AND no staging directories are left behind
+        base_dir = backup_manager.config.basebackups_directory
+        staging_dirs = [d for d in os.listdir(base_dir) if d.startswith(".import-")]
+        assert len(staging_dirs) == 0
+
+    def test_import_backup_identity_mismatch(self, import_env):
+        """
+        Test that import raises ImportBackupException when systemid mismatches.
+        """
+        # GIVEN a tarball with systemid "9999999999"
+        backup_manager = import_env["backup_manager"]
+        input_tarball = import_env["make_tarball"](
+            identity={"systemid": "9999999999", "version": "15"}
+        )
+
+        # AND a local identity with a different systemid
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # WHEN import_backup is called
+        # THEN an ImportBackupException is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "identity mismatch" in str(exc_info.value).lower()
+        assert "9999999999" in str(exc_info.value)
+        assert "1234567890" in str(exc_info.value)
+
+        # AND no staging directories are left behind
+        base_dir = backup_manager.config.basebackups_directory
+        staging_dirs = [d for d in os.listdir(base_dir) if d.startswith(".import-")]
+        assert len(staging_dirs) == 0
+
+    def test_import_backup_version_mismatch_warns(self, import_env, capsys):
+        """
+        Test that a PostgreSQL version mismatch logs a warning but does not
+        block the import.
+        """
+        # GIVEN a tarball with PG version "15" and local server with version "16"
+        backup_manager = import_env["backup_manager"]
+        input_tarball = import_env["make_tarball"](
+            identity={"systemid": "1234567890", "version": "15"}
+        )
+        local_identity = {"systemid": "1234567890", "version": "16"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # WHEN import_backup is called
+        backup_manager.import_backup(input_tarball, local_identity, "20240101T120000")
+
+        # THEN a warning about version mismatch is emitted
+        out, err = capsys.readouterr()
+        assert "version mismatch" in err.lower()
+        assert "15" in err
+        assert "16" in err
+
+        # AND the import still succeeds
+        backup_info = backup_manager.get_backup("20240101T120000")
+        assert backup_info is not None
+
+    def test_import_backup_missing_identity_json(self, import_env):
+        """
+        Test that import raises ImportBackupException when identity.json is
+        missing from the tarball.
+        """
+        # GIVEN a tarball without identity.json
+        tmpdir = import_env["tmpdir"]
+        input_tarball = os.path.join(tmpdir.strpath, "no_identity.tar")
+        with tarfile.open(input_tarball, "w") as tar:
+            data = b"backup_id=20240101T120000\nserver_name=TestServer\n"
+            info = tarfile.TarInfo(name="backup.info")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        backup_manager = import_env["backup_manager"]
+        local_identity = {"systemid": "1234567890"}
+
+        # WHEN import_backup is called
+        # THEN an ImportBackupException is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "identity.json" in str(exc_info.value)
+
+    def test_import_backup_missing_backup_info(self, import_env):
+        """
+        Test that import raises ImportBackupException when backup.info is
+        missing from the tarball.
+        """
+        # GIVEN a tarball with identity.json and a backup/ directory but no
+        # backup.info (so the backup.info check is the one that fires)
+        tmpdir = import_env["tmpdir"]
+        input_tarball = os.path.join(tmpdir.strpath, "no_backup_info.tar")
+        with tarfile.open(input_tarball, "w") as tar:
+            identity = json.dumps({"systemid": "1234567890", "version": "15"}).encode(
+                "utf-8"
+            )
+            info = tarfile.TarInfo(name="identity.json")
+            info.size = len(identity)
+            tar.addfile(info, io.BytesIO(identity))
+
+            data_content = b"test data"
+            info = tarfile.TarInfo(name="backup/data/test_file.txt")
+            info.size = len(data_content)
+            tar.addfile(info, io.BytesIO(data_content))
+
+        backup_manager = import_env["backup_manager"]
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # WHEN import_backup is called
+        # THEN an ImportBackupException is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "backup.info" in str(exc_info.value)
+
+    def test_import_backup_missing_backup_directory(self, import_env):
+        """
+        Test that import raises ImportBackupException when the backup/
+        directory is missing from the tarball.
+        """
+        # GIVEN a tarball without backup/ directory
+        backup_manager = import_env["backup_manager"]
+        input_tarball = import_env["make_tarball"](include_backup_dir=False)
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # WHEN import_backup is called
+        # THEN an ImportBackupException is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "backup/ directory" in str(exc_info.value)
+
+        # AND the catalog is left clean: no meta file, no cache entry,
+        # no target data directory, no staging directory
+        meta_info_path = os.path.join(
+            backup_manager.server.meta_directory, "20240101T120000-backup.info"
+        )
+        assert not os.path.exists(meta_info_path)
+        assert backup_manager.get_backup("20240101T120000") is None
+
+        target_dir = os.path.join(
+            backup_manager.config.basebackups_directory, "20240101T120000"
+        )
+        assert not os.path.exists(target_dir)
+
+        base_dir = backup_manager.config.basebackups_directory
+        staging_dirs = [d for d in os.listdir(base_dir) if d.startswith(".import-")]
+        assert len(staging_dirs) == 0
+
+    def test_import_backup_duplicate_backup_id(self, import_env):
+        """
+        Test that import raises ImportBackupException when backup_id already
+        exists in the catalog.
+        """
+        # GIVEN a valid export tarball
+        backup_manager = import_env["backup_manager"]
+        input_tarball = import_env["make_tarball"]()
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # AND a backup with the same ID already exists in the catalog
+        existing_backup = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=backup_manager.server,
+        )
+        backup_manager.backup_cache_add(existing_backup)
+
+        # WHEN import_backup is called
+        # THEN an ImportBackupException is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "already exists" in str(exc_info.value)
+        assert "20240101T120000" in str(exc_info.value)
+
+    def test_import_backup_cleanup_on_failure(self, import_env):
+        """
+        Test that staging directory is cleaned up on any failure that occurs
+        after the staging directory has been created.
+        """
+        # GIVEN a tarball with valid identity but no backup/ directory
+        # (fails after extraction, when staging dir already exists)
+        backup_manager = import_env["backup_manager"]
+        input_tarball = import_env["make_tarball"](include_backup_dir=False)
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # WHEN import_backup is called and fails
+        with pytest.raises(ImportBackupException):
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        # THEN no staging directories are left in basebackups_directory
+        base_dir = backup_manager.config.basebackups_directory
+        staging_dirs = [d for d in os.listdir(base_dir) if d.startswith(".import-")]
+        assert len(staging_dirs) == 0
+
+    def test_import_backup_path_traversal_rejected(self, import_env):
+        """
+        Test that a tarball with path traversal entries is rejected.
+        """
+        # GIVEN a tarball containing a valid identity.json but also a path
+        # traversal entry — identity validation passes, but extraction
+        # should be rejected.
+        tmpdir = import_env["tmpdir"]
+        input_tarball = os.path.join(tmpdir.strpath, "evil.tar")
+        with tarfile.open(input_tarball, "w") as tar:
+            # Add valid identity.json so we pass identity validation
+            identity = json.dumps({"systemid": "1234567890", "version": "15"}).encode(
+                "utf-8"
+            )
+            info = tarfile.TarInfo(name="identity.json")
+            info.size = len(identity)
+            tar.addfile(info, io.BytesIO(identity))
+
+            # Add path traversal entry
+            data = b"malicious content"
+            info = tarfile.TarInfo(name="../../../etc/passwd")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        backup_manager = import_env["backup_manager"]
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # WHEN import_backup is called
+        # THEN an ImportBackupException is raised mentioning unsafe path
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "unsafe path" in str(exc_info.value).lower()
+
+    def test_extract_tarball_rejects_sibling_prefix_collision(self, import_env):
+        """
+        Test that the path-traversal check uses path-prefix (not string-prefix)
+        semantics. A sibling directory whose name string-starts-with the
+        staging dir's name (e.g. ``staging`` vs ``stagingX``) must not slip
+        through the check.
+
+        This case is exercised directly against ``_extract_tarball`` so the
+        staging dir name is predictable (the random suffix from
+        ``tempfile.mkdtemp`` would make it impossible to reliably construct
+        a sibling whose name collides as a string prefix).
+        """
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+
+        # GIVEN a staging dir
+        staging_dir = tmpdir.mkdir("staging").strpath
+
+        # AND a tarball entry that resolves to a sibling whose name starts
+        # with the staging dir's name as a string (../stagingX/file.txt).
+        # The resolved path "<tmpdir>/stagingX/file.txt" string-starts-with
+        # "<tmpdir>/staging", but is not under "<tmpdir>/staging/".
+        input_tarball = os.path.join(tmpdir.strpath, "evil.tar")
+        with tarfile.open(input_tarball, "w") as tar:
+            data = b"malicious content"
+            info = tarfile.TarInfo(name="../stagingX/file.txt")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        # WHEN _extract_tarball is called
+        # THEN it raises ImportBackupException mentioning the unsafe path
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._extract_tarball(input_tarball, staging_dir)
+
+        assert "unsafe path" in str(exc_info.value).lower()
+
+    def test_import_backup_unsafe_member_type_rejected(self, import_env):
+        """
+        Test that a tarball containing a non-regular-file/non-directory entry
+        (symlink, hardlink, device, fifo, etc.) is rejected, even if the path
+        would be safe.
+        """
+        # GIVEN a tarball with valid identity.json followed by a symlink entry
+        tmpdir = import_env["tmpdir"]
+        input_tarball = os.path.join(tmpdir.strpath, "with_symlink.tar")
+        with tarfile.open(input_tarball, "w") as tar:
+            # Add valid identity.json so we pass identity validation
+            identity = json.dumps({"systemid": "1234567890", "version": "15"}).encode(
+                "utf-8"
+            )
+            info = tarfile.TarInfo(name="identity.json")
+            info.size = len(identity)
+            tar.addfile(info, io.BytesIO(identity))
+
+            # Add a symlink entry pointing somewhere outside (or anywhere —
+            # the type itself is the problem, not the target)
+            symlink_info = tarfile.TarInfo(name="evil_link")
+            symlink_info.type = tarfile.SYMTYPE
+            symlink_info.linkname = "/etc/passwd"
+            tar.addfile(symlink_info)
+
+        backup_manager = import_env["backup_manager"]
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # WHEN import_backup is called
+        # THEN an ImportBackupException is raised mentioning unsafe member type
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "unsafe member type" in str(exc_info.value).lower()
+        assert "evil_link" in str(exc_info.value)
+
+    def test_import_backup_invalid_tarball(self, import_env):
+        """
+        Test that a non-tar file raises ImportBackupException.
+        """
+        # GIVEN a file that is not a valid tarball
+        tmpdir = import_env["tmpdir"]
+        not_a_tarball = os.path.join(tmpdir.strpath, "not_a_tarball.tar")
+        with open(not_a_tarball, "w") as f:
+            f.write("this is not a tarball")
+
+        backup_manager = import_env["backup_manager"]
+        local_identity = {"systemid": "1234567890"}
+
+        # WHEN import_backup is called
+        # THEN an ImportBackupException is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                not_a_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "Failed to read identity.json from tarball" in str(exc_info.value)
+
+    def test_import_backup_metadata_failure_rolls_back_data(self, import_env):
+        """
+        Test that when _import_backup_metadata fails (e.g. corrupt
+        backup.info), the already-moved data directory is removed and
+        no orphan state is left behind.
+        """
+        # GIVEN a tarball with valid identity and backup/ directory but
+        # a backup.info that cannot be parsed by LocalBackupInfo
+        backup_manager = import_env["backup_manager"]
+        input_tarball = import_env["make_tarball"](
+            backup_info_content="this is not valid backup info content\n"
+        )
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # WHEN import_backup is called
+        # THEN an ImportBackupException is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "Failed to load backup.info" in str(exc_info.value)
+
+        # AND the data directory that was already moved is rolled back
+        target_dir = os.path.join(
+            backup_manager.config.basebackups_directory, "20240101T120000"
+        )
+        assert not os.path.exists(target_dir)
+
+        # AND no staging directories are left behind
+        base_dir = backup_manager.config.basebackups_directory
+        staging_dirs = [d for d in os.listdir(base_dir) if d.startswith(".import-")]
+        assert len(staging_dirs) == 0
+
+        # AND no backup is registered in the cache
+        assert backup_manager.get_backup("20240101T120000") is None
+
+    def test_read_identity_from_tarball_invalid_json(self, import_env):
+        """
+        Test that _read_identity_from_tarball raises ImportBackupException
+        when identity.json contains invalid JSON.
+        """
+        # GIVEN a tarball with an identity.json that is not valid JSON
+        tmpdir = import_env["tmpdir"]
+        input_tarball = os.path.join(tmpdir.strpath, "bad_json.tar")
+        with tarfile.open(input_tarball, "w") as tar:
+            bad_json = b"not valid json {{"
+            info = tarfile.TarInfo(name="identity.json")
+            info.size = len(bad_json)
+            tar.addfile(info, io.BytesIO(bad_json))
+
+        backup_manager = import_env["backup_manager"]
+
+        # WHEN _read_identity_from_tarball is called
+        # THEN an ImportBackupException is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._read_identity_from_tarball(input_tarball)
+
+        assert "Failed to parse identity.json" in str(exc_info.value)
+
+    def test_import_backup_identity_missing_systemid(self, import_env):
+        """
+        Test that import raises KeyError when identity.json does not contain
+        a systemid field, since these keys are expected to always be defined.
+        """
+        # GIVEN a tarball with an identity.json that has no systemid
+        backup_manager = import_env["backup_manager"]
+        input_tarball = import_env["make_tarball"](identity={"version": "15"})
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # WHEN import_backup is called
+        # THEN a KeyError is raised because systemid should always be defined
+        with pytest.raises(KeyError) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "systemid" in str(exc_info.value)
