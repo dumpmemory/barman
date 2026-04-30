@@ -358,6 +358,7 @@ class TestConfig(object):
                 "compression_level": "medium",
                 "cloud_staging_directory": "/tmp/barman/cloud-staging",
                 "cloud_staging_max_size": 30 * 1024 * 1024 * 1024,  # 30 GiB
+                "cloud_wal_archive_parallel": 0,
                 "last_backup_maximum_age": timedelta(1),
                 "last_backup_minimum_size": 1048576,
                 "last_wal_maximum_age": timedelta(hours=1),
@@ -400,6 +401,7 @@ class TestConfig(object):
                 "cluster": "web",
                 "cloud_staging_directory": "/tmp/barman/cloud-staging",
                 "cloud_staging_max_size": 30 * 1024 * 1024 * 1024,  # 30 GiB
+                "cloud_wal_archive_parallel": 0,
                 "compression": None,
                 "compression_level": "medium",
                 "conninfo": "host=web01 user=postgres port=5432",
@@ -1463,6 +1465,7 @@ class TestModelConfig:
             "cloud_staging_max_size": None,
             "cloud_upload_max_archive_size": None,
             "cloud_upload_min_chunk_size": None,
+            "cloud_wal_archive_parallel": None,
             "cluster": "SOME_CLUSTER",
             "compression": None,
             "compression_level": None,
@@ -1580,6 +1583,7 @@ class TestModelConfig:
             "cloud_staging_max_size": {"source": "SOME_SOURCE", "value": None},
             "cloud_upload_max_archive_size": {"source": "SOME_SOURCE", "value": None},
             "cloud_upload_min_chunk_size": {"source": "SOME_SOURCE", "value": None},
+            "cloud_wal_archive_parallel": {"source": "SOME_SOURCE", "value": None},
             "cluster": {"source": "SOME_SOURCE", "value": "SOME_CLUSTER"},
             "compression": {"source": "SOME_SOURCE", "value": None},
             "compression_level": {"source": "SOME_SOURCE", "value": None},
