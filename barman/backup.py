@@ -66,6 +66,7 @@ from barman.exceptions import (
     CommandFailedException,
     CompressionIncompatibility,
     ExportBackupException,
+    ImportBackupException,
     LockFileBusy,
     SshCommandException,
     UnknownBackupIdException,
@@ -76,6 +77,7 @@ from barman.infofile import (
     BackupInfo,
     BackupInfoFactory,
     CloudLocalBackupInfo,
+    LocalBackupInfo,
     WalFileInfo,
 )
 from barman.lockfile import ServerBackupIdLock, ServerBackupSyncLock
@@ -2217,6 +2219,239 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
                 "backup '%s': %s" % (backup_info.backup_id, current_required)
             )
         return wal_count
+
+    def import_backup(self, input_tarball, local_identity, backup_id):
+        """
+        Import a backup from an exported tarball into the Barman catalog.
+
+        Extracts the tarball to a temporary staging directory, validates server
+        identity, registers backup metadata, and moves backup data to the
+        target location. Uses a staging directory to make the write to the
+        catalog atomic — a failed import leaves no partial state.
+
+        :param str input_tarball: path to the exported backup tarball
+        :param dict local_identity: local server identity data for validation
+        :param str backup_id: the backup ID extracted from the tarball filename
+        :raises ImportBackupException: on identity mismatch or invalid tarball
+        """
+        output.debug("Starting import of backup from '%s'" % input_tarball)
+
+        # Check that the backup_id doesn't already exist in the catalog
+        existing = self.get_backup(backup_id)
+        if existing is not None:
+            raise ImportBackupException(
+                "Backup '%s' already exists in the catalog for server '%s'"
+                % (backup_id, self.config.name)
+            )
+
+        # Validate server identity before extracting
+        export_identity = self._read_identity_from_tarball(input_tarball)
+        self._validate_import_identity(export_identity, local_identity)
+
+        # Construct the BackupInfo object up front so that knowledge about
+        # where the catalog lives on disk (target data directory, canonical
+        # backup.info path) stays inside LocalBackupInfo rather than being
+        # rebuilt from config + backup_id at multiple call sites.
+        backup_info = LocalBackupInfo(self.server, backup_id=backup_id)
+
+        staging_dir = tempfile.mkdtemp(
+            dir=self.config.basebackups_directory,
+            prefix=".import-",
+        )
+
+        try:
+            # Extract tarball to staging directory
+            output.debug("Extracting tarball to staging directory '%s'" % staging_dir)
+            self._extract_tarball(input_tarball, staging_dir)
+
+            # Pre-flight: verify the tarball contained the required entries
+            # BEFORE we touch the catalog or move any data. This makes the
+            # error reported reflect what is actually missing, regardless of
+            # the order helpers run in below.
+            if not os.path.isdir(os.path.join(staging_dir, "backup")):
+                raise ImportBackupException(
+                    "Exported tarball does not contain a backup/ directory"
+                )
+            if not os.path.exists(os.path.join(staging_dir, "backup.info")):
+                raise ImportBackupException(
+                    "Exported tarball does not contain backup.info"
+                )
+
+            # Move backup data to its target location first. This is the
+            # publish point: if it fails, no catalog state has been written.
+            self._import_backup_data(staging_dir, backup_info)
+
+            # Register backup metadata. If this fails, roll back the data
+            # move so we do not leave an orphaned data directory on disk.
+            try:
+                self._import_backup_metadata(staging_dir, backup_info)
+            except Exception:
+                target_dir = backup_info.get_basebackup_directory()
+                if os.path.exists(target_dir):
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                raise
+
+            output.info(
+                "Successfully imported backup '%s' into server '%s'"
+                % (backup_info.backup_id, self.config.name)
+            )
+        finally:
+            # Clean up the staging directory, removing leftovers
+            # From successful or failed operations
+            if os.path.exists(staging_dir):
+                shutil.rmtree(staging_dir)
+
+    def _extract_tarball(self, input_tarball, staging_dir):
+        """
+        Extract the exported tarball to a staging directory.
+
+        Uses streaming mode (``r|*``) to keep only one TarInfo object in
+        memory at a time, avoiding excessive memory usage for tarballs with
+        many files.
+
+        :param str input_tarball: path to the tarball
+        :param str staging_dir: target directory for extraction
+        :raises ImportBackupException: if extraction fails
+        """
+        try:
+            with tarfile.open(input_tarball, "r|*") as tar:
+                real_staging_dir = os.path.realpath(staging_dir)
+                for member in tar:
+                    # Security: prevent path traversal attacks. Compare against
+                    # ``staging_dir + os.sep`` so that a sibling directory whose
+                    # name is a string-prefix of the staging dir cannot slip
+                    # through (e.g. ``.import-abc`` vs ``.import-abcXYZ``).
+                    member_path = os.path.join(staging_dir, member.name)
+                    real_member_path = os.path.realpath(member_path)
+                    if real_member_path != real_staging_dir and not (
+                        real_member_path.startswith(real_staging_dir + os.sep)
+                    ):
+                        raise ImportBackupException(
+                            "Tarball contains unsafe path: '%s'" % member.name
+                        )
+                    # Security: reject links and other special file types.
+                    # Only regular files and directories are expected in an
+                    # exported backup tarball.
+                    if not (member.isdir() or member.isreg()):
+                        raise ImportBackupException(
+                            "Tarball contains unsafe member type: '%s'" % member.name
+                        )
+                    tar.extract(member, path=staging_dir)
+        except (tarfile.TarError, OSError) as e:
+            raise ImportBackupException(
+                "Failed to extract tarball '%s': %s" % (input_tarball, e)
+            )
+
+    def _read_identity_from_tarball(self, input_tarball):
+        """
+        Read identity.json directly from the tarball without extracting.
+
+        Uses streaming mode (``r|*``) to avoid loading all TarInfo objects
+        into memory. Since the export writes metadata first, identity.json
+        is found immediately.
+
+        :param str input_tarball: path to the tarball
+        :return: parsed identity data
+        :rtype: dict
+        :raises ImportBackupException: if identity.json is missing or unreadable
+        """
+        try:
+            with tarfile.open(input_tarball, "r|*") as tar:
+                for member in tar:
+                    if member.name == "identity.json":
+                        f = tar.extractfile(member)
+                        if f is None:
+                            raise ImportBackupException(
+                                "identity.json in tarball is not a regular file"
+                            )
+                        with closing(f):
+                            return json.loads(f.read().decode("utf-8"))
+                raise ImportBackupException(
+                    "Exported tarball does not contain identity.json"
+                )
+        except tarfile.TarError as e:
+            raise ImportBackupException(
+                "Failed to read identity.json from tarball: %s" % e
+            )
+        except (ValueError, json.JSONDecodeError) as e:
+            raise ImportBackupException(
+                "Failed to parse identity.json from tarball: %s" % e
+            )
+
+    def _validate_import_identity(self, export_identity, local_identity):
+        """
+        Validate that the exported backup belongs to the target server by
+        comparing identity data.
+
+        :param dict export_identity: identity data from the exported tarball
+        :param dict local_identity: local server identity data
+        :raises ImportBackupException: if identity validation fails
+        """
+        # Validate systemid match
+        # "systemid" is expected to always be present in the identity data
+        export_systemid = export_identity["systemid"]
+        local_systemid = local_identity["systemid"]
+
+        if export_systemid != local_systemid:
+            raise ImportBackupException(
+                "Server identity mismatch: exported backup has systemid '%s' "
+                "but target server has systemid '%s'"
+                % (export_systemid, local_systemid)
+            )
+
+        # Warn on PostgreSQL version mismatch (non-blocking)
+        # "version" is expected to always be present in the identity data
+        export_version = export_identity["version"]
+        local_version = local_identity["version"]
+        if export_version != local_version:
+            output.warning(
+                "PostgreSQL version mismatch: exported backup has version '%s' "
+                "but target server has version '%s'" % (export_version, local_version)
+            )
+
+    def _import_backup_metadata(self, staging_dir, backup_info):
+        """
+        Load backup.info from the staging directory into ``backup_info``,
+        persist it to the catalog, and register it in the cache. Assumes
+        the pre-flight in :meth:`import_backup` has already verified that
+        ``backup.info`` exists in the staging dir.
+
+        :param str staging_dir: path to the staging directory
+        :param LocalBackupInfo backup_info: the backup info object to
+            populate from the staging file and register in the catalog
+        :raises ImportBackupException: if metadata loading or registration fails
+        """
+        backup_info_path = os.path.join(staging_dir, "backup.info")
+
+        try:
+            backup_info.load(filename=backup_info_path)
+            backup_info.save()
+        except Exception as e:
+            raise ImportBackupException("Failed to load backup.info: %s" % e)
+
+        # Register in cache
+        self.backup_cache_add(backup_info)
+
+    def _import_backup_data(self, staging_dir, backup_info):
+        """
+        Move backup data from the staging directory to the target backup
+        location. Assumes the pre-flight in :meth:`import_backup` has
+        already verified that ``backup/`` exists in the staging dir.
+
+        :param str staging_dir: path to the staging directory
+        :param LocalBackupInfo backup_info: the backup info object whose
+            ``get_basebackup_directory()`` provides the target path
+        :raises ImportBackupException: if the data move fails
+        """
+        source_dir = os.path.join(staging_dir, "backup")
+        target_dir = backup_info.get_basebackup_directory()
+
+        try:
+            os.rename(source_dir, target_dir)
+        except OSError as e:
+            raise ImportBackupException(
+                "Failed to move backup data to '%s': %s" % (target_dir, e)
+            )
 
     def get_wal_file_info(self, filename):
         """
