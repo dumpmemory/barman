@@ -2039,6 +2039,154 @@ class Server(RemoteStatusMixin):
                     )
             raise
 
+    def import_backup(self, input_tarball):
+        """
+        Import a backup from an exported tarball into the Barman catalog.
+
+        This method handles orchestration of the import process:
+        - Validates cloud storage is not configured
+        - Reads local identity data for validation
+        - Ensures backup directories exist
+        - Delegates core import work to backup_manager
+
+        :param str input_tarball: path to the exported backup tarball
+        """
+        # Cloud storage is not yet supported for backup import
+        if self.use_backup_cloud_storage or self.use_wal_cloud_storage:
+            output.error("Backup import is not supported for cloud storage")
+            return
+
+        # Verify identity file exists - required for identity validation
+        local_identity = self.read_identity_file()
+        if not local_identity:
+            output.error(
+                "No identity file found for server '%s'. "
+                "The identity file is required to validate the backup during import."
+                % self.config.name
+            )
+            return
+
+        # Ensure backup directories exist
+        try:
+            self._make_directories()
+        except OSError as e:
+            output.error(
+                "Failed to create backup directory '%s': %s" % (e.filename, e.strerror)
+            )
+            return
+
+        # Validate tarball filename and checksum integrity. The checksum
+        # check reads the tarball end-to-end. The backup manager will then
+        # open the tarball again to extract it. This is intentional: we
+        # want to detect corruption BEFORE writing anything to the catalog,
+        # which means we cannot fold the hash computation into the
+        # extraction stream.
+        backup_id = self._validate_import_tarball_name(input_tarball)
+        if not backup_id:
+            return
+
+        # Serialize catalog mutations with other backup operations.
+        try:
+            with ServerBackupLock(self.config.barman_lock_directory, self.config.name):
+                with ServerBackupIdLock(
+                    self.config.barman_lock_directory, self.config.name, backup_id
+                ):
+                    # Delegate core import work to backup_manager
+                    self.backup_manager.import_backup(
+                        input_tarball, local_identity, backup_id
+                    )
+        except LockFileBusy:
+            output.error(
+                "Another backup operation is already running on server '%s'"
+                % self.config.name
+            )
+            return
+        except LockFilePermissionDenied:
+            output.error(
+                "Permission denied while acquiring backup import lock for server "
+                "'%s'" % self.config.name
+            )
+            return
+        except LockFileException as e:
+            output.error(
+                "Unable to acquire backup import lock for server '%s': %s"
+                % (self.config.name, force_str(e))
+            )
+            return
+
+    def _validate_import_tarball_name(self, input_tarball):
+        """
+        Validate that the tarball filename matches the expected export format
+        and that the embedded checksum matches the file's actual checksum.
+
+        Expected format::
+
+            backup-export-{SERVER_NAME}-{BACKUP_ID}-{TIMESTAMP}-{CHECKSUM}.tar
+
+        Where BACKUP_ID and TIMESTAMP are ``YYYYMMDDTHHMMSS`` and CHECKSUM is
+        8 lowercase hex characters.
+
+        :param str input_tarball: path to the tarball
+        :return: the backup_id extracted from the filename, or None on failure
+        :rtype: str|None
+        """
+        filename = os.path.basename(input_tarball)
+
+        base_error = (
+            "Tarball filename does not match the expected export format "
+            "'backup-export-SERVER_NAME-BACKUP_ID-TIMESTAMP-CHECKSUM.tar': '%s'"
+            % filename
+        )
+
+        filename, extension = os.path.splitext(filename)
+
+        if extension != ".tar":
+            output.error(f"{base_error}. Expected a .tar file extension.")
+            return None
+
+        prefix = "backup-export-%s-" % self.config.name
+
+        if not filename.startswith(prefix):
+            output.error(f"{base_error}. Expected filename to start with '{prefix}'.")
+            return None
+
+        # Strip prefix, leaving BACKUP_ID-TIMESTAMP-CHECKSUM
+        remainder = filename[len(prefix) :]
+        parts = remainder.split("-")
+
+        if len(parts) != 3:
+            output.error(
+                f"{base_error}. Expected filename to contain the backup ID, timestamp, "
+                "and checksum after the server name."
+            )
+            return None
+
+        backup_id, timestamp, expected_checksum = parts
+
+        # Validate BACKUP_ID and TIMESTAMP format
+        for label, value in [("BACKUP_ID", backup_id), ("TIMESTAMP", timestamp)]:
+            try:
+                datetime.datetime.strptime(value, "%Y%m%dT%H%M%S")
+            except ValueError:
+                output.error(
+                    f"{base_error}. Expected {label} to be in the format "
+                    f"'YYYYMMDDTHHMMSS', got '{value}'."
+                )
+                return None
+
+        # Verify the checksum matches the file contents
+        output.debug("Verifying tarball checksum")
+        actual_checksum = file_hash(input_tarball)[:8]
+        if actual_checksum != expected_checksum:
+            output.error(
+                "Tarball checksum mismatch: filename contains '%s' "
+                "but actual checksum is '%s'. The file may have been "
+                "modified or corrupted." % (expected_checksum, actual_checksum)
+            )
+            return None
+
+        return backup_id
+
     def backup(self, wait=False, wait_timeout=None, backup_name=None, **kwargs):
         """
         Performs a backup for the server

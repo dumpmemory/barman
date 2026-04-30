@@ -2317,6 +2317,10 @@ def import_backup(args):
         server.config.name,
     )
 
+    # Delegate to server for orchestration
+    with closing(server):
+        server.import_backup(input_tarball)
+
     output.close_and_exit()
 
 
