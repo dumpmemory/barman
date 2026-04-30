@@ -140,6 +140,12 @@ class ExportBackupException(BarmanException):
     """
 
 
+class ImportBackupException(BarmanException):
+    """
+    Exception for import-backup operation failures.
+    """
+
+
 class SyncError(SyncException):
     """
     Synchronisation error
