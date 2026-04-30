@@ -1303,15 +1303,23 @@ class Server(RemoteStatusMixin):
 
     def _make_directories(self):
         """
-        Make backup directories in case they do not exist
+        Make server's directories in case they do not exist
         """
+        dirs = []
         for key in self.config.KEYS:
             if key.endswith("_directory") and hasattr(self.config, key):
                 val = getattr(self.config, key)
                 # Create the directory only if it does not exist and is not a URL
                 if val is not None and not os.path.isdir(val) and "://" not in val:
-                    # noinspection PyTypeChecker
-                    os.makedirs(val)
+                    dirs.append(val)
+
+        # The meta directory is a server-level property, not a config key,
+        # so it must be added explicitly.
+        if not os.path.isdir(self.meta_directory):
+            dirs.append(self.meta_directory)
+
+        for directory in dirs:
+            os.makedirs(directory, exist_ok=True)
 
     def check_directories(self, check_strategy):
         """

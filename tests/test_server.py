@@ -252,22 +252,33 @@ class TestServer(object):
 
     @patch("barman.server.os.makedirs", wraps=os.makedirs)
     def test_make_directories(self, mock_makedirs, tmpdir):
-        # GIVEN a server with wals_directory and basebackups_directory config options
+        # GIVEN a server with wals_directory, basebackups_directory, and
+        # incoming_wals_directory config options, plus a real backup_directory
+        # so that meta_directory resolves to a concrete path
         server = build_real_server()
         wals_dir = tmpdir.mkdir("wals").strpath  # existing dir
         incoming_dir = tmpdir.join("incoming").strpath  # non-existing dir
         basebackups_dir = "s3://mybucket/basebackups"  # URL, should be ignored
+        backup_dir = tmpdir.strpath
         server.config = mock.MagicMock(
             KEYS=["wals_directory", "basebackups_directory", "incoming_wals_directory"],
             wals_directory=wals_dir,
             incoming_wals_directory=incoming_dir,
             basebackups_directory=basebackups_dir,
+            backup_directory=backup_dir,
         )
+        # Reset the mock to ignore any makedirs calls made during server initialization
+        mock_makedirs.reset_mock()
         # WHEN _make_directories is called
         server._make_directories()
-        # THEN only the non-existing path is created, the existing and URL are skipped
+        # THEN the non-existing config dir and the meta directory are created;
+        # the existing dir and the URL are skipped
+        meta_dir = os.path.join(backup_dir, "meta")
         assert os.path.exists(incoming_dir)
-        mock_makedirs.assert_called_once_with(incoming_dir)
+        assert os.path.exists(meta_dir)
+        mock_makedirs.assert_any_call(incoming_dir, exist_ok=True)
+        mock_makedirs.assert_any_call(meta_dir, exist_ok=True)
+        assert mock_makedirs.call_count == 2
 
     @patch("barman.server.os")
     def test_xlogdb_with_exception(self, os_mock, tmpdir):
