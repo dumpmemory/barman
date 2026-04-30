@@ -438,15 +438,11 @@ class LocalWalStorageStrategy(WalStorageStrategy):
             if src_file != current_file:
                 self._copy_stats(src_file, current_file, wal_info)
 
-            # Perform the real filesystem operation with the xlogdb lock taken
-            # This makes the operation atomic from the xlogdb's perspective
-            with self.server.xlogdb("a") as fxlogdb:
-                self._rename_or_copy_file(current_file, dst_file)
-                self._remove_intermediary_files()
-                self._fsync_contents(src_dir, dst_dir, dst_file)
-                # At this point the original file has been removed
-                wal_info.orig_filename = None
-                fxlogdb.write(wal_info.to_xlogdb_line())
+            self._rename_or_copy_file(current_file, dst_file)
+            self._remove_intermediary_files()
+            self._fsync_contents(src_dir, dst_dir, dst_file)
+            # At this point the original file has been removed
+            wal_info.orig_filename = None
 
         except Exception as e:
             error = e
@@ -650,17 +646,13 @@ class CloudWalStorageStrategy(WalStorageStrategy):
                 upload_fileobj = open(wal_info.orig_filename, "rb")
 
             with upload_fileobj:
-                with self.server.xlogdb("a") as fxlogdb:
-                    key = self._build_wal_object_key(
-                        wal_info.name, wal_info.compression
+                key = self._build_wal_object_key(wal_info.name, wal_info.compression)
+                try:
+                    self.cloud_interface.upload_fileobj(
+                        fileobj=upload_fileobj, key=key, fail_if_exists=True
                     )
-                    try:
-                        self.cloud_interface.upload_fileobj(
-                            fileobj=upload_fileobj, key=key, fail_if_exists=True
-                        )
-                    except ObjectKeyAlreadyExists:
-                        self._check_duplicate(wal_info, key)
-                    fxlogdb.write(wal_info.to_xlogdb_line())
+                except ObjectKeyAlreadyExists:
+                    self._check_duplicate(wal_info, key)
         except Exception as e:
             error = e
             raise
@@ -733,13 +725,9 @@ class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):
         self.config = backup_manager.config
         self.name = name
         if self.server.use_wal_cloud_storage:
-            self.storage_strategy = CloudWalStorageStrategy(
-                self.backup_manager, self.server
-            )
+            self.wal_storage = CloudWalStorageStrategy(self.backup_manager, self.server)
         else:
-            self.storage_strategy = LocalWalStorageStrategy(
-                self.backup_manager, self.server
-            )
+            self.wal_storage = LocalWalStorageStrategy(self.backup_manager, self.server)
         super(WalArchiver, self).__init__()
 
     def receive_wal(self, reset=False):
@@ -820,7 +808,9 @@ class WalArchiver(with_metaclass(ABCMeta, RemoteStatusMixin)):
             )
             # Archive the WAL file
             try:
-                self.storage_strategy.save(compressor, encryption, wal_info)
+                with self.server.xlogdb("a") as fxlogdb:
+                    self.wal_storage.save(compressor, encryption, wal_info)
+                    fxlogdb.write(wal_info.to_xlogdb_line())
             except MatchingDuplicateWalFile:
                 # We already have this file. Simply unlink the file.
                 os.unlink(wal_info.orig_filename)

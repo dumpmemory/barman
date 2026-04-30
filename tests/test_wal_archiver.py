@@ -193,9 +193,7 @@ class TestFileWalArchiver(object):
         assert batch.total_size == 1
         assert batch.run_size == 1
         get_next_batch_mock.return_value = batch
-        archiver.storage_strategy = MagicMock(
-            save=MagicMock(side_effect=DuplicateWalFile)
-        )
+        archiver.wal_storage = MagicMock(save=MagicMock(side_effect=DuplicateWalFile))
         datetime_mock.utcnow.return_value.strftime.return_value = "test_time"
 
         archiver.archive(fxlogdb_mock)
@@ -211,7 +209,7 @@ class TestFileWalArchiver(object):
             "File moved to errors directory." % (wal_info.name, archiver.config.name)
         ) in caplog.text
 
-        archiver.storage_strategy = MagicMock(
+        archiver.wal_storage = MagicMock(
             save=MagicMock(side_effect=MatchingDuplicateWalFile)
         )
         archiver.archive(fxlogdb_mock)
@@ -220,9 +218,7 @@ class TestFileWalArchiver(object):
         # Test batch errors
         caplog_reset(caplog)
         batch.errors = ["testfile_1", "testfile_2"]
-        archiver.storage_strategy = MagicMock(
-            save=MagicMock(side_effect=DuplicateWalFile)
-        )
+        archiver.wal_storage = MagicMock(save=MagicMock(side_effect=DuplicateWalFile))
         archiver.archive(fxlogdb_mock)
         out, err = capsys.readouterr()
 
@@ -269,7 +265,7 @@ class TestFileWalArchiver(object):
         fxlogdb_mock = MagicMock()
         backup_manager = MagicMock()
         archiver = FileWalArchiver(backup_manager)
-        archiver.storage_strategy = MagicMock()
+        archiver.wal_storage = MagicMock()
         archiver.config.name = "test_server"
 
         wal_info = WalFileInfo(name="test_wal_file")
@@ -1656,9 +1652,6 @@ class TestLocalWalStorageStrategy:
             "/server/wals/000000010000000000000001",
             mock_wal_info,
         )
-        # AND the xlogdb is opened for the save operation
-        wal_storage.server.xlogdb.assert_called_once_with("a")
-        wal_storage.server.xlogdb.return_value.__enter__.assert_called_once()
         # AND the file is renamed to the destination
         mock_rename.assert_called_once_with(
             "/src/path/000000010000000000000001",
@@ -1670,10 +1663,8 @@ class TestLocalWalStorageStrategy:
         mock_fsync.assert_called_once_with(
             "/src/path", "/server/wals", "/server/wals/000000010000000000000001"
         )
-        # AND the wal_info line is written to the opened xlogdb
-        wal_storage.server.xlogdb.return_value.__enter__.return_value.write.assert_called_once_with(
-            mock_wal_info.to_xlogdb_line.return_value
-        )
+        # AND xlogdb is NOT touched by save() — that responsibility belongs to the caller
+        wal_storage.server.xlogdb.assert_not_called()
         # AND finally the post-archive scripts are run with correct arguments
         mock_run_post_scripts.assert_called_once_with(
             mock_wal_info, "/server/wals/000000010000000000000001", None
@@ -1751,9 +1742,8 @@ class TestLocalWalStorageStrategy:
             mock_compress.return_value,
             mock_wal_info,
         )
-        # AND the xlogdb is opened for the save operation
-        wal_storage.server.xlogdb.assert_called_once_with("a")
-        wal_storage.server.xlogdb.return_value.__enter__.assert_called_once()
+        # AND xlogdb is NOT touched by save() — that responsibility belongs to the caller
+        wal_storage.server.xlogdb.assert_not_called()
         # AND the compressed file is renamed to the destination
         mock_rename.assert_called_once_with(
             mock_compress.return_value,
@@ -1764,10 +1754,6 @@ class TestLocalWalStorageStrategy:
         # AND the contents are fsynced
         mock_fsync.assert_called_once_with(
             "/src/path", "/server/wals", "/server/wals/000000010000000000000001"
-        )
-        # AND the wal_info line is written to the opened xlogdb
-        wal_storage.server.xlogdb.return_value.__enter__.return_value.write.assert_called_once_with(
-            mock_wal_info.to_xlogdb_line.return_value
         )
         # AND finally the post-archive scripts are run with correct arguments
         mock_run_post_scripts.assert_called_once_with(
@@ -1843,9 +1829,8 @@ class TestLocalWalStorageStrategy:
             mock_encrypt.return_value,
             mock_wal_info,
         )
-        # AND the xlogdb is opened for the save operation
-        wal_storage.server.xlogdb.assert_called_once_with("a")
-        wal_storage.server.xlogdb.return_value.__enter__.assert_called_once()
+        # AND xlogdb is NOT touched by save() — that responsibility belongs to the caller
+        wal_storage.server.xlogdb.assert_not_called()
         # AND the encrypted file is renamed to the destination
         mock_rename.assert_called_once_with(
             mock_encrypt.return_value,
@@ -1856,10 +1841,6 @@ class TestLocalWalStorageStrategy:
         # AND the contents are fsynced
         mock_fsync.assert_called_once_with(
             "/src/path", "/server/wals", "/server/wals/000000010000000000000001"
-        )
-        # AND the wal_info line is written to the opened xlogdb
-        wal_storage.server.xlogdb.return_value.__enter__.return_value.write.assert_called_once_with(
-            mock_wal_info.to_xlogdb_line.return_value
         )
         # AND finally the post-archive scripts are run with correct arguments
         mock_run_post_scripts.assert_called_once_with(
@@ -1939,9 +1920,8 @@ class TestLocalWalStorageStrategy:
             mock_encrypt.return_value,
             mock_wal_info,
         )
-        # AND the xlogdb is opened for the save operation
-        wal_storage.server.xlogdb.assert_called_once_with("a")
-        wal_storage.server.xlogdb.return_value.__enter__.assert_called_once()
+        # AND xlogdb is NOT touched by save() — that responsibility belongs to the caller
+        wal_storage.server.xlogdb.assert_not_called()
         # AND the compressed-encrypted file is renamed to the destination
         mock_rename.assert_called_once_with(
             mock_encrypt.return_value,
@@ -1952,10 +1932,6 @@ class TestLocalWalStorageStrategy:
         # AND the contents are fsynced
         mock_fsync.assert_called_once_with(
             "/src/path", "/server/wals", "/server/wals/000000010000000000000001"
-        )
-        # AND the wal_info line is written to the opened xlogdb
-        wal_storage.server.xlogdb.return_value.__enter__.return_value.write.assert_called_once_with(
-            mock_wal_info.to_xlogdb_line.return_value
         )
         # AND finally the post-archive scripts are run with correct arguments
         mock_run_post_scripts.assert_called_once_with(
@@ -2204,18 +2180,15 @@ class TestCloudWalStorageStrategy:
         mock_run_pre_scripts.assert_called_once_with(
             mock_wal_info, "/src/path/000000010000000000000001"
         )
-        # AND the source file and xlogdb are opened correctly
+        # AND the source file is opened correctly
         mock_open.assert_called_once_with("/src/path/000000010000000000000001", "rb")
-        wal_storage.server.xlogdb.assert_called_once_with("a")
+        # AND xlogdb is NOT touched by save() — that responsibility belongs to the caller
+        wal_storage.server.xlogdb.assert_not_called()
         # AND the opened src file is uploaded to the cloud with the correct key
         wal_storage.cloud_interface.upload_fileobj.assert_called_once_with(
             fileobj=mock_open.return_value,
             key="backups/barman/TestServer/wals/0000000100000001/000000010000000000000001",
             fail_if_exists=True,
-        )
-        # AND the wal_info line is written to the opened xlogdb
-        wal_storage.server.xlogdb.return_value.__enter__.return_value.write.assert_called_once_with(
-            mock_wal_info.to_xlogdb_line.return_value
         )
         # AND the post-archive scripts are run with correct arguments
         mock_run_post_scripts.assert_called_once_with(
