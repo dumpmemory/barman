@@ -2925,7 +2925,9 @@ class TestCloudWalArchiveCli:
     @pytest.fixture
     def mock_args(self):
         return MagicMock(
-            server_name="SOME_SERVER", wal_path="/pg_wal/000000010000000000000001"
+            server_name="SOME_SERVER",
+            wal_path="/pg_wal/000000010000000000000001",
+            parallel=None,
         )
 
     @patch("barman.cli.output")
@@ -2993,17 +2995,43 @@ class TestCloudWalArchiveCli:
         """
         Test :func:`cloud_wal_archive`.
 
-        It should call cloud_wal_archive on the server with the provided WAL path if
-        all validations pass.
+        It should call cloud_wal_archive on the server with the WAL path and the
+        configured parallel value when all validations pass.
         """
+        mock_server = mock_get_server.return_value
+        mock_server.config.cloud_wal_archive_parallel = 0
+
         with patch("os.path.isdir", return_value=False), patch(
             "os.path.exists", return_value=True
         ), patch("barman.cli.is_any_xlog_file", return_value=True):
             with pytest.raises(SystemExit):
                 cloud_wal_archive(mock_args)
 
-        mock_get_server.return_value.cloud_wal_archive.assert_called_once_with(
-            "/pg_wal/000000010000000000000001"
+        mock_server.cloud_wal_archive.assert_called_once_with(
+            "/pg_wal/000000010000000000000001", 0
+        )
+
+    @patch("barman.cli.get_server")
+    def test_cloud_wal_archive_cli_overrides_config(self, mock_get_server, mock_args):
+        """
+        Test :func:`cloud_wal_archive`.
+
+        The CLI flag --parallel should override the server config value.
+        """
+        mock_args.parallel = 4
+        mock_server = mock_get_server.return_value
+        mock_server.config.cloud_wal_archive_parallel = 0
+
+        with patch("os.path.isdir", return_value=False), patch(
+            "os.path.exists", return_value=True
+        ), patch("barman.cli.is_any_xlog_file", return_value=True):
+            with pytest.raises(SystemExit):
+                cloud_wal_archive(mock_args)
+
+        # THEN the config value should be overridden by the CLI flag
+        assert mock_server.config.cloud_wal_archive_parallel == 4
+        mock_server.cloud_wal_archive.assert_called_once_with(
+            "/pg_wal/000000010000000000000001", 4
         )
 
 

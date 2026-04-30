@@ -4086,7 +4086,7 @@ class TestServer(object):
         server.backup_manager = Mock()
 
         # WHEN cloud_wal_archive is called
-        server.cloud_wal_archive("some_wal_file")
+        server.cloud_wal_archive("some_wal_file", parallel=0)
 
         # THEN expected error is logged
         mock_output.error.assert_called_once_with(
@@ -4118,14 +4118,13 @@ class TestServer(object):
         mock_use_wal_cloud_storage.return_value = False
 
         # WHEN cloud_wal_archive is called
-        server.cloud_wal_archive("some_wal_file")
+        server.cloud_wal_archive("some_wal_file", parallel=0)
 
         # THEN expected error is logged
         mock_output.error.assert_called_once_with(
             "cloud-wal-archive is not supported for server %s because no cloud storage "
-            "configuration is set in 'wals_directory'. Please check the "
-            "configuration of server %s.",
-            server.config.name,
+            "configuration is set in 'wals_directory'. Please check the server "
+            "configuration.",
             server.config.name,
         )
 
@@ -4149,10 +4148,12 @@ class TestServer(object):
         mock_use_wal_cloud_storage.return_value = True
 
         # WHEN cloud_wal_archive is called
-        server.cloud_wal_archive("some_wal_file")
+        server.cloud_wal_archive("some_wal_file", parallel=4)
 
-        # THEN the manager's cloud_wal_archive method is called with the correct file name
-        server.backup_manager.cloud_wal_archive.assert_called_once_with("some_wal_file")
+        # THEN the manager's cloud_wal_archive method is called with all args
+        server.backup_manager.cloud_wal_archive.assert_called_once_with(
+            "some_wal_file", 4
+        )
 
         # AND no error is logged
         mock_output.error.assert_not_called()
@@ -4960,7 +4961,7 @@ class TestServer(object):
     @patch("barman.server.datetime")
     def test_get_errors_dst(self, mock_datetime, suffix):
         """
-        Test the _get_errors_dst method generates correct destination paths
+        Test the get_errors_dst method generates correct destination paths
         """
         errors_dir = "path/to/errors"
         server = build_real_server(
@@ -4976,7 +4977,7 @@ class TestServer(object):
         mock_datetime.datetime.now.return_value = mock_now
 
         filename = "000000010000000000000001"
-        result = server._get_errors_dst(filename, suffix)
+        result = server.get_errors_dst(filename, suffix)
 
         # Verify datetime.now was called with timezone.utc
         mock_datetime.datetime.now.assert_called_once_with(mock_datetime.timezone.utc)
@@ -5010,32 +5011,6 @@ class TestServer(object):
         server.move_wal_file_to_errors_directory(src, filename, suffix)
         mock_shutil.move.assert_called_once_with(src, error_dst)
         mock_shutil.copy.assert_not_called()
-
-    @pytest.mark.parametrize(
-        "suffix",
-        ["duplicate", "unknown"],
-    )
-    @patch("barman.server.shutil")
-    def test_copy_wal_file_to_errors_directory(self, mock_shutil, suffix):
-        """
-        Test the copy_wal_file_to_errors_directory method generates correct destination
-        paths and copies the file to the errors directory.
-        """
-        errors_dir = "path/to/errors"
-        server = build_real_server(
-            main_conf={
-                "backup_options": "concurrent_backup",
-                "errors_directory": errors_dir,
-            }
-        )
-
-        src = "original_file"
-        filename = "filename"
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        error_dst = "%s/%s.%s.%s" % (errors_dir, filename, stamp, suffix)
-        server.copy_wal_file_to_errors_directory(src, filename, suffix)
-        mock_shutil.copy.assert_called_once_with(src, error_dst)
-        mock_shutil.move.assert_not_called()
 
 
 class TestCheckStrategy(object):

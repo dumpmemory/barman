@@ -46,9 +46,7 @@ from barman.exceptions import (
     BackupException,
     CommandFailedException,
     CompressionIncompatibility,
-    DuplicateWalFile,
     ExportBackupException,
-    MatchingDuplicateWalFile,
     RecoveryInvalidTargetException,
 )
 from barman.infofile import BackupInfo, load_datetime_tz
@@ -3030,166 +3028,73 @@ class TestCloudBackup(object):
         # AND CloudBackupExecutor was called with the backup manager
         mock_cloud_executor.assert_called_once_with(manager)
 
-    @patch("barman.backup.WalFileInfo")
+    @patch("barman.backup.CloudWalArchiver")
     @patch("barman.backup.output")
-    def test_cloud_wal_archive_success(self, mock_output, mock_wal_file_info):
+    def test_cloud_wal_archive_success(self, mock_output, mock_cloud_wal_archiver):
         """
-        Test successful cloud_wal_archive with skip_delete=True for a server using cloud
-        storage.
+        Test cloud_wal_archive creates a CloudWalArchiver and delegates archival to it.
         """
-        # GIVEN a backup manager for a server using cloud storage for WALs
+        # GIVEN a backup manager for a server using cloud WAL storage
         backup_manager = build_backup_manager()
-        backup_manager.server.use_wal_cloud_storage = True
+        backup_manager.server.wal_storage = Mock(spec=CloudWalStorageStrategy)
 
-        mock_wal_storage = Mock(spec=CloudWalStorageStrategy)
-        backup_manager.server.wal_storage = mock_wal_storage
-
-        mock_compressor = Mock()
-        backup_manager.compression_manager.get_default_compressor = Mock(
-            return_value=mock_compressor
-        )
-
-        mock_encryption = Mock()
-        backup_manager.encryption_manager.get_encryption = Mock(
-            return_value=mock_encryption
-        )
-
-        # WHEN cloud_wal_archive is called
+        # WHEN cloud_wal_archive is called with no explicit parallel setting
         wal_path = "/pg_wal/000000010000000000000001"
         backup_manager.cloud_wal_archive(wal_path)
 
-        # THEN WalFileInfo.from_file is called as expected
-        mock_wal_file_info.from_file.assert_called_once_with(
-            filename=wal_path,
-            compression_manager=backup_manager.compression_manager,
-            unidentified_compression=None,
-            encryption_manager=backup_manager.encryption_manager,
-            encryption=None,
-        )
+        # THEN a CloudWalArchiver is created with the backup manager
+        mock_cloud_wal_archiver.assert_called_once_with(backup_manager)
 
-        # AND wal_storage.save is called with skip_delete=True
-        mock_wal_storage.save.assert_called_once_with(
-            mock_compressor,
-            mock_encryption,
-            mock_wal_file_info.from_file.return_value,
-            skip_delete=True,
+        # AND archive is called with the wal path and default options
+        mock_cloud_wal_archiver.return_value.archive.assert_called_once_with(
+            wal_path, 0
         )
 
         # AND no error is logged
         mock_output.error.assert_not_called()
 
-    @patch("barman.backup.WalFileInfo")
+    @patch("barman.backup.CloudWalArchiver")
     @patch("barman.backup.output")
-    def test_cloud_wal_archive_matching_duplicate_wal_file(
-        self, mock_output, mock_wal_file_info
+    def test_cloud_wal_archive_with_parallel(
+        self, mock_output, mock_cloud_wal_archiver
     ):
         """
-        Test cloud_wal_archive handles MatchingDuplicateWalFile exception for a server using
-        cloud storage for WALs.
+        Test cloud_wal_archive passes the parallel value through to CloudWalArchiver.
         """
-        # GIVEN a backup manager for a server using cloud storage for WALs
+        # GIVEN a backup manager for a server using cloud WAL storage
         backup_manager = build_backup_manager()
-        backup_manager.server.use_wal_cloud_storage = True
+        backup_manager.server.wal_storage = Mock(spec=CloudWalStorageStrategy)
 
-        mock_wal_storage = Mock(spec=CloudWalStorageStrategy)
-        mock_wal_storage.save.side_effect = MatchingDuplicateWalFile("wal_name")
-        backup_manager.server.wal_storage = mock_wal_storage
-
-        backup_manager.compression_manager.get_default_compressor = Mock(
-            return_value=None
-        )
-        backup_manager.encryption_manager.get_encryption = Mock(return_value=None)
-
-        # WHEN cloud_wal_archive is called
+        # WHEN cloud_wal_archive is called with an explicit parallel value
         wal_path = "/pg_wal/000000010000000000000001"
-        backup_manager.cloud_wal_archive(wal_path)
+        backup_manager.cloud_wal_archive(wal_path, parallel=4)
 
-        # THEN wal_storage.save is called with skip_delete=True
-        mock_wal_storage.save.assert_called_once_with(
-            None,
-            None,
-            mock_wal_file_info.from_file.return_value,
-            skip_delete=True,
+        # THEN archive is called with the provided parallel value
+        mock_cloud_wal_archiver.return_value.archive.assert_called_once_with(
+            wal_path, 4
         )
 
-        # AND an info is logged about the matching duplicate WAL file
-        mock_output.info.assert_called_once_with(
-            "WAL file %s is already archived in cloud storage, skipping.",
-            mock_wal_file_info.from_file.return_value.name,
-        )
-
-    @patch("barman.backup.WalFileInfo")
-    @patch("barman.backup.output")
-    def test_cloud_wal_archive_duplicate_wal_file(
-        self, mock_output, mock_wal_file_info
-    ):
-        """
-        Test cloud_wal_archive handles DuplicateWalFile exception for a server using cloud
-        storage for WALs.
-        """
-        # GIVEN a backup manager for a server using cloud storage for WALs
-        backup_manager = build_backup_manager()
-        backup_manager.server.use_wal_cloud_storage = True
-
-        mock_wal_storage = Mock(spec=CloudWalStorageStrategy)
-        mock_wal_storage.save.side_effect = DuplicateWalFile("wal_name")
-        backup_manager.server.wal_storage = mock_wal_storage
-
-        backup_manager.compression_manager.get_default_compressor = Mock(
-            return_value=None
-        )
-        backup_manager.encryption_manager.get_encryption = Mock(return_value=None)
-
-        # WHEN cloud_wal_archive is called
-        wal_path = "/pg_wal/000000010000000000000001"
-        backup_manager.cloud_wal_archive(wal_path)
-
-        # THEN wal_storage.save is called with skip_delete=True
-        mock_wal_storage.save.assert_called_once_with(
-            None,
-            None,
-            mock_wal_file_info.from_file.return_value,
-            skip_delete=True,
-        )
-
-        # AND an error is logged about the duplicate WAL file
-        mock_output.warning.assert_called_once_with(
-            "WAL file %s is already archived in cloud storage of server %s but "
-            "with different content",
-            mock_wal_file_info.from_file.return_value.name,
-            backup_manager.config.name,
-        )
-
-    @patch("barman.backup.WalFileInfo")
+    @patch("barman.backup.CloudWalArchiver")
     @patch("barman.backup.output")
     def test_cloud_wal_archive_invalid_wal_storage_strategy(
-        self, mock_output, mock_wal_file_info
+        self, mock_output, mock_cloud_wal_archiver
     ):
         """
         Test cloud_wal_archive logs an error if the server's wal_storage is not a
-        CloudWalStorageStrategy.
+        CloudWalStorageStrategy, and does not create a CloudWalArchiver.
         """
-        # GIVEN a backup manager for a server using cloud storage for WALs
+        # GIVEN a backup manager whose wal_storage is not a CloudWalStorageStrategy
         backup_manager = build_backup_manager()
-        backup_manager.server.use_wal_cloud_storage = True
-
-        mock_wal_storage = Mock(spec=LocalWalStorageStrategy)
-        mock_wal_storage.save.side_effect = DuplicateWalFile("wal_name")
-        backup_manager.server.wal_storage = mock_wal_storage
-
-        backup_manager.compression_manager.get_default_compressor = Mock(
-            return_value=None
-        )
-        backup_manager.encryption_manager.get_encryption = Mock(return_value=None)
+        backup_manager.server.wal_storage = Mock(spec=LocalWalStorageStrategy)
 
         # WHEN cloud_wal_archive is called
         wal_path = "/pg_wal/000000010000000000000001"
         backup_manager.cloud_wal_archive(wal_path)
 
-        # THEN wal_storage.save is not called
-        mock_wal_storage.save.assert_not_called()
+        # THEN no CloudWalArchiver is created
+        mock_cloud_wal_archiver.assert_not_called()
 
-        # AND an error is logged about the duplicate WAL file
+        # AND an error is logged
         mock_output.error.assert_called_once_with(
             "The 'cloud-wal-archive' command can only be used with cloud WAL "
             "storage strategies. Please check your server configuration and ensure "

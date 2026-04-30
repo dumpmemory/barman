@@ -36,11 +36,13 @@ from barman.infofile import WalFileInfo
 from barman.process import ProcessInfo
 from barman.server import CheckOutputStrategy
 from barman.wal_archiver import (
+    CloudWalArchiver,
     CloudWalStorageStrategy,
     FileWalArchiver,
     LocalWalStorageStrategy,
     StreamingWalArchiver,
     WalArchiverQueue,
+    WalPrefetchWorker,
     WalStorageStrategy,
 )
 
@@ -2599,4 +2601,620 @@ class TestCloudWalStorageStrategy:
             obj_key,
             mock_tempfile.return_value.__enter__.return_value.name,
             decompress="gzip",
+        )
+
+
+class TestCloudWalArchiver:
+    """Tests for :class:`CloudWalArchiver`."""
+
+    def _make_archiver(self):
+        """Return a :class:`CloudWalArchiver` backed by a mocked backup manager."""
+        backup_manager = build_backup_manager()
+        backup_manager.server.wal_storage = MagicMock(spec=CloudWalStorageStrategy)
+        backup_manager.server.xlogdb = MagicMock()
+        backup_manager.server.xlogdb.return_value.__enter__ = MagicMock(
+            return_value=MagicMock()
+        )
+        backup_manager.server.xlogdb.return_value.__exit__ = MagicMock(
+            return_value=False
+        )
+        backup_manager.server.meta_directory = "/barman/meta"
+        backup_manager.server.get_errors_dst = MagicMock(
+            return_value="/barman/errors/some_wal.duplicate"
+        )
+        backup_manager.compression_manager.get_default_compressor = MagicMock(
+            return_value=None
+        )
+        backup_manager.encryption_manager.get_encryption = MagicMock(return_value=None)
+        return CloudWalArchiver(backup_manager)
+
+    @patch("builtins.open", new_callable=MagicMock)
+    def test_is_already_archived_returns_true_when_wal_le_cached(self, mock_open):
+        """
+        _is_already_archived should return True when the WAL name is
+        lexicographically <= the cached last-archived WAL.
+        """
+        # GIVEN a cached last-archived WAL of 000000010000000000000005
+        mock_open.return_value.__enter__.return_value.read.return_value = (
+            "000000010000000000000005"
+        )
+        archiver = self._make_archiver()
+
+        # WHEN checking a WAL that precedes the cached entry
+        result = archiver._is_already_archived("/pg_wal/000000010000000000000003")
+
+        # THEN it is considered already archived
+        assert result is True
+
+    @patch("builtins.open", new_callable=MagicMock)
+    def test_is_already_archived_returns_false_when_wal_gt_cached(self, mock_open):
+        """
+        _is_already_archived should return False when the WAL name is
+        greater than the cached last-archived WAL.
+        """
+        # GIVEN a cached last-archived WAL of 000000010000000000000005
+        mock_open.return_value.__enter__.return_value.read.return_value = (
+            "000000010000000000000005"
+        )
+        archiver = self._make_archiver()
+
+        # WHEN checking a WAL that comes after the cached entry
+        result = archiver._is_already_archived("/pg_wal/000000010000000000000007")
+
+        # THEN it is not considered already archived
+        assert result is False
+
+    def test_is_already_archived_returns_false_when_cache_missing(self):
+        """
+        _is_already_archived should return False when no cache file exists.
+        """
+        archiver = self._make_archiver()
+
+        # WHEN the cache file does not exist (open raises IOError)
+        with patch("builtins.open", side_effect=IOError):
+            result = archiver._is_already_archived("/pg_wal/000000010000000000000001")
+
+        # THEN the WAL is not considered already archived
+        assert not result
+
+    def test_is_already_archived_returns_false_for_non_wal_file(self):
+        """
+        _is_already_archived should return False for non-WAL files (e.g. .history).
+        Non-WAL files are never deduplicated via the cache.
+        """
+        archiver = self._make_archiver()
+
+        with patch("builtins.open", return_value=MagicMock()):
+            result = archiver._is_already_archived("/pg_wal/00000001.history")
+
+        assert not result
+
+    def test_get_wals_to_prefetch_returns_next_in_sequence(self, tmp_path):
+        """
+        _get_wals_to_prefetch should return the next WAL paths in strict sequence
+        order, stopping once the requested limit is reached.
+        """
+        # GIVEN a pg_wal directory with archive_status containing .ready files
+        pg_wal = tmp_path / "pg_wal"
+        archive_status = pg_wal / "archive_status"
+        archive_status.mkdir(parents=True)
+
+        requested = "000000010000000000000003"
+        # WALs 004, 005, 006 are ready and present; 002 is before the requested — irrelevant
+        for wal in [
+            "000000010000000000000004",
+            "000000010000000000000005",
+            "000000010000000000000006",
+        ]:
+            (archive_status / f"{wal}.ready").touch()
+            (pg_wal / wal).touch()
+
+        archiver = self._make_archiver()
+        requested_path = str(pg_wal / requested)
+
+        # WHEN requesting up to 2 prefetch WALs
+        result = archiver._get_wals_to_prefetch(
+            requested_path, 2, barman.xlog.DEFAULT_XLOG_SEG_SIZE
+        )
+
+        # THEN exactly the next 2 WALs in sequence are returned
+        assert result == [
+            str(pg_wal / "000000010000000000000004"),
+            str(pg_wal / "000000010000000000000005"),
+        ]
+
+    def test_get_wals_to_prefetch_stops_at_first_gap(self, tmp_path):
+        """
+        _get_wals_to_prefetch should stop at the first WAL in the sequence that
+        does not have a .ready marker, even if later ones do.
+        """
+        pg_wal = tmp_path / "pg_wal"
+        archive_status = pg_wal / "archive_status"
+        archive_status.mkdir(parents=True)
+
+        requested = "000000010000000000000001"
+        # WAL 002 is ready, 003 is NOT ready (gap), 004 is ready but should be skipped
+        (archive_status / "000000010000000000000002.ready").touch()
+        (pg_wal / "000000010000000000000002").touch()
+        (archive_status / "000000010000000000000004.ready").touch()
+        (pg_wal / "000000010000000000000004").touch()
+
+        archiver = self._make_archiver()
+
+        result = archiver._get_wals_to_prefetch(
+            str(pg_wal / requested), 5, barman.xlog.DEFAULT_XLOG_SEG_SIZE
+        )
+
+        # THEN only WAL 002 is returned — discovery stops at the gap on 003
+        assert result == [str(pg_wal / "000000010000000000000002")]
+
+    def test_get_wals_to_prefetch_skips_recycled_wal_file(self, tmp_path):
+        """
+        _get_wals_to_prefetch should skip a WAL that has a .ready marker but whose
+        file no longer exists (recycled by Postgres), and continue to the next one.
+        """
+        pg_wal = tmp_path / "pg_wal"
+        archive_status = pg_wal / "archive_status"
+        archive_status.mkdir(parents=True)
+
+        requested = "000000010000000000000001"
+        # WAL 002 has .ready but the actual file is missing (recycled)
+        (archive_status / "000000010000000000000002.ready").touch()
+        # WAL 003 is fully ready
+        (archive_status / "000000010000000000000003.ready").touch()
+        (pg_wal / "000000010000000000000003").touch()
+
+        archiver = self._make_archiver()
+
+        result = archiver._get_wals_to_prefetch(
+            str(pg_wal / requested), 5, barman.xlog.DEFAULT_XLOG_SEG_SIZE
+        )
+
+        # THEN WAL 002 is skipped (file gone) and WAL 003 is returned
+        assert result == [str(pg_wal / "000000010000000000000003")]
+
+    def test_get_wals_to_prefetch_returns_empty_for_non_wal_requested_path(
+        self, tmp_path
+    ):
+        """
+        _get_wals_to_prefetch should return an empty list if the requested path is
+        not a WAL file (e.g. a .history file). Prefetch only applies to WAL segments.
+        """
+        pg_wal = tmp_path / "pg_wal"
+        pg_wal.mkdir()
+        archiver = self._make_archiver()
+
+        result = archiver._get_wals_to_prefetch(
+            str(pg_wal / "00000001.history"), 5, barman.xlog.DEFAULT_XLOG_SEG_SIZE
+        )
+
+        assert result == []
+
+    def test_get_wals_to_prefetch_returns_empty_when_archive_status_missing(
+        self, tmp_path
+    ):
+        """
+        _get_wals_to_prefetch should return an empty list when the archive_status
+        directory does not exist.
+        """
+        pg_wal = tmp_path / "pg_wal"
+        pg_wal.mkdir()
+        archiver = self._make_archiver()
+
+        result = archiver._get_wals_to_prefetch(
+            str(pg_wal / "000000010000000000000001"),
+            5,
+            barman.xlog.DEFAULT_XLOG_SEG_SIZE,
+        )
+
+        assert result == []
+
+    @patch("barman.wal_archiver.os.path.getsize")
+    @patch("barman.wal_archiver.CloudWalArchiver._write_cloud_wal_last_archived")
+    @patch("barman.wal_archiver.CloudWalArchiver._read_cloud_wal_last_archived")
+    @patch("barman.wal_archiver.WalFileInfo")
+    def test_archive_no_prefetch_archives_only_requested_wal(
+        self,
+        mock_wal_file_info,
+        mock_read_cache,
+        mock_write_cache,
+        mock_getsize,
+    ):
+        """
+        When parallel=0, only the requested WAL is archived and no workers are spawned.
+        The xlog_segment_size is inferred from the WAL file size via os.path.getsize,
+        since a complete WAL segment is always exactly xlog_segment_size bytes.
+        """
+        # GIVEN no cached last-archived WAL
+        mock_read_cache.return_value = None
+        mock_getsize.return_value = barman.xlog.DEFAULT_XLOG_SEG_SIZE
+        archiver = self._make_archiver()
+
+        wal_path = "/pg_wal/000000010000000000000001"
+
+        # WHEN archiving with parallel=0 (no prefetch)
+        with patch.object(archiver, "_archive_single_wal") as mock_archive:
+            with patch.object(
+                archiver, "_get_wals_to_prefetch", return_value=[]
+            ) as mock_prefetch:
+                archiver.archive(wal_path, parallel=0)
+
+        # THEN prefetch was called with the WAL path, prefetch count=0 (derived from
+        # parallel=0 → n_prefetch=0), and segment size inferred from the file size
+        mock_prefetch.assert_called_once_with(
+            wal_path,
+            0,
+            barman.xlog.DEFAULT_XLOG_SEG_SIZE,
+        )
+
+        # AND the main WAL was archived
+        mock_archive.assert_called_once_with(mock_wal_file_info.from_file.return_value)
+
+    @patch("barman.wal_archiver.os.path.getsize")
+    @patch("barman.wal_archiver.CloudWalArchiver._write_cloud_wal_last_archived")
+    @patch("barman.wal_archiver.CloudWalArchiver._read_cloud_wal_last_archived")
+    @patch("barman.wal_archiver.WalFileInfo")
+    @patch("barman.wal_archiver.WalPrefetchWorker")
+    def test_archive_spawns_workers_for_all_prefetch_wals(
+        self,
+        mock_worker_cls,
+        mock_wal_file_info,
+        mock_read_cache,
+        mock_write_cache,
+        mock_getsize,
+    ):
+        """
+        When parallel=5 (n_prefetch=4 extra WALs), all 4 available prefetch WALs
+        are archived concurrently. Workers are spawned for every eligible prefetch WAL.
+        """
+        # GIVEN no cached last-archived WAL and 4 extra WALs ready
+        mock_read_cache.return_value = None
+        extra_wals = [f"/pg_wal/00000001000000000000000{i}" for i in range(2, 6)]
+
+        mock_worker = MagicMock()
+        mock_worker.success = True
+        mock_worker_cls.return_value = mock_worker
+
+        archiver = self._make_archiver()
+        wal_path = "/pg_wal/000000010000000000000001"
+
+        with patch.object(archiver, "_archive_single_wal"):
+            with patch.object(
+                archiver, "_get_wals_to_prefetch", return_value=extra_wals
+            ):
+                archiver.archive(wal_path, parallel=5)
+
+        # THEN all 4 WALs were archived
+        assert mock_worker_cls.call_count == 4
+        assert mock_worker.start.call_count == 4
+
+    @patch("barman.wal_archiver.os.path.getsize")
+    @patch("barman.wal_archiver.CloudWalArchiver._write_cloud_wal_last_archived")
+    @patch("barman.wal_archiver.CloudWalArchiver._read_cloud_wal_last_archived")
+    @patch("barman.wal_archiver.WalFileInfo")
+    @patch("barman.wal_archiver.WalPrefetchWorker")
+    def test_archive_prefetch_capped_by_available_wals(
+        self,
+        mock_worker_cls,
+        mock_wal_file_info,
+        mock_read_cache,
+        mock_write_cache,
+        mock_getsize,
+    ):
+        """
+        When fewer WALs are available than parallel would allow, only the
+        available candidates are prefetched.
+        """
+        # GIVEN only 1 extra WAL ready, but parallel=6 (n_prefetch=5)
+        mock_read_cache.return_value = None
+        mock_worker = MagicMock()
+        mock_worker.success = True
+        mock_worker_cls.return_value = mock_worker
+
+        archiver = self._make_archiver()
+        wal_path = "/pg_wal/000000010000000000000001"
+
+        with patch.object(archiver, "_archive_single_wal"):
+            with patch.object(
+                archiver,
+                "_get_wals_to_prefetch",
+                return_value=["/pg_wal/000000010000000000000002"],
+            ):
+                archiver.archive(wal_path, parallel=6)
+
+        # THEN only 1 worker was spawned (capped by available WALs)
+        assert mock_worker_cls.call_count == 1
+
+    @patch("barman.wal_archiver.CloudWalArchiver._read_cloud_wal_last_archived")
+    def test_archive_skips_already_archived_wal(self, mock_read_cache):
+        """
+        archive() should return early without archiving when the WAL is already
+        in the last-archived cache.
+        """
+        # GIVEN the cache says 000000010000000000000005 was the last archived
+        mock_read_cache.return_value = "000000010000000000000005"
+        archiver = self._make_archiver()
+
+        # WHEN requesting to archive an earlier WAL
+        with patch.object(archiver, "_archive_single_wal") as mock_archive:
+            archiver.archive("/pg_wal/000000010000000000000003")
+
+        # THEN archival is skipped entirely
+        mock_archive.assert_not_called()
+
+    @patch("barman.wal_archiver.os.path.getsize")
+    @patch("barman.wal_archiver.CloudWalArchiver._write_cloud_wal_last_archived")
+    @patch("barman.wal_archiver.CloudWalArchiver._read_cloud_wal_last_archived")
+    @patch("barman.wal_archiver.WalFileInfo")
+    @patch("barman.wal_archiver.WalPrefetchWorker")
+    def test_archive_spawns_no_workers_on_main_wal_failure(
+        self,
+        mock_worker_cls,
+        mock_wal_file_info,
+        mock_read_cache,
+        mock_write_cache,
+        mock_getsize,
+    ):
+        """
+        When the main WAL archival fails, archive() must not spawn any prefetch workers.
+        Prefetching only begins after the primary WAL is confirmed archived, so a
+        primary failure leaves no orphan processes to worry about.
+        """
+        mock_read_cache.return_value = None
+        archiver = self._make_archiver()
+
+        wal_path = "/pg_wal/000000010000000000000001"
+
+        with patch.object(
+            archiver, "_archive_single_wal", side_effect=Exception("boom")
+        ):
+            with patch.object(
+                archiver,
+                "_get_wals_to_prefetch",
+                return_value=["/pg_wal/000000010000000000000002"],
+            ):
+                with pytest.raises(Exception, match="boom"):
+                    archiver.archive(wal_path, parallel=2)
+
+        # THEN no worker was ever created or started
+        mock_worker_cls.assert_not_called()
+
+    @patch("barman.wal_archiver.os.path.getsize")
+    @patch("barman.wal_archiver.CloudWalArchiver._write_cloud_wal_last_archived")
+    @patch("barman.wal_archiver.CloudWalArchiver._read_cloud_wal_last_archived")
+    @patch("barman.wal_archiver.WalPrefetchWorker")
+    def test_archive_prefetch_build_wal_info_failure_is_non_fatal(
+        self,
+        mock_worker_cls,
+        mock_read_cache,
+        mock_write_cache,
+        mock_getsize,
+        caplog,
+    ):
+        """
+        When _build_wal_info raises for a prefetch WAL, archive() must not propagate
+        the exception — prefetch failures are non-fatal because the primary WAL was
+        already archived successfully. A warning is logged, no workers are spawned for
+        the failing WAL, and _update_metadata is still called.
+        """
+        # GIVEN no cached last-archived WAL
+        mock_read_cache.return_value = None
+        mock_getsize.return_value = barman.xlog.DEFAULT_XLOG_SEG_SIZE
+        archiver = self._make_archiver()
+
+        wal_path = "/pg_wal/000000010000000000000001"
+        prefetch_wal_path = "/pg_wal/000000010000000000000002"
+
+        main_wal_info = MagicMock()
+        main_wal_info.name = "000000010000000000000001"
+
+        # WHEN _build_wal_info succeeds for the main WAL but raises for the prefetch WAL
+        build_wal_info_results = [main_wal_info, PermissionError("Permission denied")]
+
+        with patch.object(archiver, "_archive_single_wal") as mock_archive:
+            with patch.object(
+                archiver,
+                "_get_wals_to_prefetch",
+                return_value=[prefetch_wal_path],
+            ):
+                with patch.object(
+                    archiver,
+                    "_build_wal_info",
+                    side_effect=build_wal_info_results,
+                ):
+                    with patch.object(archiver, "_update_metadata") as mock_update:
+                        # THEN archive() completes without raising
+                        archiver.archive(wal_path, parallel=2)
+
+        # AND the main WAL was archived
+        mock_archive.assert_called_once_with(main_wal_info)
+
+        # AND no prefetch workers were spawned
+        mock_worker_cls.assert_not_called()
+
+        # AND _update_metadata was still called (with no prefetch workers)
+        mock_update.assert_called_once_with(main_wal_info, [])
+
+        # AND a warning was logged
+        assert (
+            "Could not read metadata for WAL file 000000010000000000000002"
+            in caplog.text
+        )
+
+    @patch("barman.wal_archiver.WalFileInfo")
+    def test_archive_single_wal_handles_matching_duplicate(self, mock_wal_file_info):
+        """
+        _archive_single_wal should silently skip a WAL that is already in cloud
+        storage with the same content (MatchingDuplicateWalFile).
+        """
+        archiver = self._make_archiver()
+        archiver.wal_storage.save.side_effect = MatchingDuplicateWalFile("wal_name")
+        mock_wal_info = MagicMock()
+        mock_wal_info.name = "000000010000000000000001"
+
+        # WHEN _archive_single_wal is called and a matching duplicate is detected
+        # THEN no exception is raised
+        archiver._archive_single_wal(mock_wal_info)
+
+        # AND save was called once
+        archiver.wal_storage.save.assert_called_once()
+
+    @patch("barman.wal_archiver.shutil.copy")
+    @patch("barman.wal_archiver.WalFileInfo")
+    def test_archive_single_wal_copies_conflicting_duplicate_to_errors(
+        self, mock_wal_file_info, mock_shutil_copy
+    ):
+        """
+        _archive_single_wal should copy the WAL to the errors directory when it
+        conflicts with a different WAL of the same name already in cloud storage
+        (DuplicateWalFile).
+        """
+        archiver = self._make_archiver()
+        archiver.wal_storage.save.side_effect = DuplicateWalFile("wal_name")
+        mock_wal_info = MagicMock()
+        mock_wal_info.name = "000000010000000000000001"
+        mock_wal_info.orig_filename = "/pg_wal/000000010000000000000001"
+
+        # WHEN _archive_single_wal is called with a conflicting duplicate
+        archiver._archive_single_wal(mock_wal_info)
+
+        # THEN get_errors_dst was called to resolve the error destination
+        archiver.server.get_errors_dst.assert_called_once_with(
+            mock_wal_info.name, "duplicate"
+        )
+
+        # AND shutil.copy was used to copy (not move) the WAL to the errors directory
+        mock_shutil_copy.assert_called_once_with(
+            mock_wal_info.orig_filename,
+            archiver.server.get_errors_dst.return_value,
+        )
+
+    def test_update_metadata_stops_writing_at_first_worker_failure(self):
+        """
+        _update_metadata should stop writing to xlogdb at the first failed worker,
+        to avoid gaps in the archive that would corrupt the last-archived cache.
+        """
+        # GIVEN a main WAL and three workers: first succeeds, second fails, third succeeds
+        main_wal_info = MagicMock()
+        main_wal_info.name = "000000010000000000000001"
+        main_wal_info.to_xlogdb_line.return_value = "line1\n"
+
+        worker_ok = MagicMock(spec=WalPrefetchWorker)
+        worker_ok.success = True
+        worker_ok.wal_info = MagicMock()
+        worker_ok.wal_info.name = "000000010000000000000002"
+        worker_ok.wal_info.to_xlogdb_line.return_value = "line2\n"
+
+        worker_fail = MagicMock(spec=WalPrefetchWorker)
+        worker_fail.success = False
+        worker_fail.wal_info = MagicMock()
+        worker_fail.wal_info.name = "000000010000000000000003"
+
+        worker_after_fail = MagicMock(spec=WalPrefetchWorker)
+        worker_after_fail.success = True
+        worker_after_fail.wal_info = MagicMock()
+        worker_after_fail.wal_info.name = "000000010000000000000004"
+        worker_after_fail.wal_info.to_xlogdb_line.return_value = "line4\n"
+
+        archiver = self._make_archiver()
+        mock_fxlogdb = MagicMock()
+        archiver.server.xlogdb.return_value.__enter__.return_value = mock_fxlogdb
+
+        with patch.object(archiver, "_write_cloud_wal_last_archived") as mock_write:
+            archiver._update_metadata(
+                main_wal_info, [worker_ok, worker_fail, worker_after_fail]
+            )
+
+        # THEN xlogdb receives main WAL and first successful worker only
+        assert mock_fxlogdb.write.call_count == 2
+        mock_fxlogdb.write.assert_any_call("line1\n")
+        mock_fxlogdb.write.assert_any_call("line2\n")
+
+        # AND the cache is updated with the last successfully written WAL
+        mock_write.assert_called_once_with("000000010000000000000002")
+
+    def test_update_metadata_does_not_cache_history_file(self):
+        """
+        _update_metadata must not write a .history file name to the
+        last-archived cache.
+
+        A .history file (e.g. "00000003.history") sorts lexicographically before
+        a WAL segment of the previous timeline (e.g.
+        "000000020000000000000001") because '.' (0x2e) < '0' (0x30). If the
+        .history name were cached, a delayed old-timeline WAL would satisfy
+        ``wal_name <= cached`` and be incorrectly skipped as already archived.
+        """
+        # GIVEN the main "WAL" being archived is actually a .history file
+        history_info = MagicMock()
+        history_info.name = "00000003.history"
+        history_info.to_xlogdb_line.return_value = "history-line\n"
+
+        archiver = self._make_archiver()
+        mock_fxlogdb = MagicMock()
+        archiver.server.xlogdb.return_value.__enter__.return_value = mock_fxlogdb
+
+        # WHEN _update_metadata is called with no prefetch workers
+        with patch.object(archiver, "_write_cloud_wal_last_archived") as mock_write:
+            archiver._update_metadata(history_info, [])
+
+        # THEN the xlogdb entry is still written (history files are valid xlogdb entries)
+        mock_fxlogdb.write.assert_called_once_with("history-line\n")
+
+        # AND the last-archived cache is NOT updated (would corrupt cross-timeline detection)
+        mock_write.assert_not_called()
+
+    def test_write_cloud_wal_last_archived_writes_atomically(self, tmp_path):
+        """
+        _write_cloud_wal_last_archived must write via a temporary file and then
+        rename it into place, so the cache file is never partially written. A crash
+        during a direct open("w") would leave a truncated (corrupt) cache.
+        """
+        # GIVEN an archiver whose meta_directory is a known temp path
+        archiver = self._make_archiver()
+        archiver.server.meta_directory = str(tmp_path)
+        cache_dir = str(tmp_path)
+        tmp_file_path = str(tmp_path / "tmpXXXXXX")
+
+        mock_tmp = MagicMock()
+        mock_tmp.__enter__ = MagicMock(return_value=mock_tmp)
+        mock_tmp.__exit__ = MagicMock(return_value=False)
+        mock_tmp.name = tmp_file_path
+
+        # WHEN the last-archived cache is updated
+        with patch(
+            "barman.wal_archiver.NamedTemporaryFile", return_value=mock_tmp
+        ) as mock_ntf, patch("barman.wal_archiver.os.rename") as mock_rename:
+            archiver._write_cloud_wal_last_archived("000000010000000000000042")
+
+            # THEN a NamedTemporaryFile was created in the cache directory
+            mock_ntf.assert_called_once_with(mode="w", dir=cache_dir, delete=False)
+
+            # AND the WAL name was written to the temporary file
+            mock_tmp.write.assert_called_once_with("000000010000000000000042")
+
+            # AND the temporary file was atomically renamed to the final cache path
+            mock_rename.assert_called_once_with(
+                tmp_file_path, archiver.last_archived_cache_path
+            )
+
+    def test_write_cloud_wal_last_archived_logs_warning_on_io_error(self, caplog):
+        """
+        _write_cloud_wal_last_archived should log a warning and not propagate the
+        exception if writing the cache file fails with an I/O error.
+        """
+        import logging
+
+        archiver = self._make_archiver()
+
+        with patch(
+            "barman.wal_archiver.NamedTemporaryFile", side_effect=IOError("disk full")
+        ):
+            with caplog.at_level(logging.WARNING, logger="barman.wal_archiver"):
+                # WHEN writing fails with an IOError
+                # THEN no exception is raised
+                archiver._write_cloud_wal_last_archived("000000010000000000000042")
+
+        # AND a warning is logged
+        assert (
+            "Failed to write last archived WAL file name to cache file" in caplog.text
         )
