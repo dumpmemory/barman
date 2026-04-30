@@ -42,6 +42,7 @@ from barman.config import BackupOptions
 from barman.exceptions import (
     CommandFailedException,
     LockFileBusy,
+    LockFileException,
     LockFilePermissionDenied,
     PostgresDuplicateReplicationSlot,
     PostgresInvalidReplicationSlot,
@@ -5303,3 +5304,338 @@ class TestExportBackup(object):
 
         # AND no files are left in the export directory
         assert len(os.listdir(output_directory.strpath)) == 0
+
+
+class TestImportBackup(object):
+    """Test class for Server.import_backup."""
+
+    def test_import_backup_success(self, tmpdir):
+        """
+        Test that import_backup orchestrates the import process correctly.
+        """
+        # GIVEN a server with a valid identity file
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        identity_data = {"systemid": "1234567890", "version": "15"}
+        input_tarball = "/some/backup.tar"
+
+        # WHEN import_backup is called
+        with patch.object(server, "read_identity_file", return_value=identity_data):
+            with patch.object(server, "_make_directories"):
+                with patch.object(
+                    server,
+                    "_validate_import_tarball_name",
+                    return_value="20240101T120000",
+                ):
+                    with patch.object(
+                        server.backup_manager, "import_backup"
+                    ) as mock_import:
+                        server.import_backup(input_tarball)
+
+        # THEN backup_manager.import_backup was called with correct arguments
+        mock_import.assert_called_once_with(
+            input_tarball, identity_data, "20240101T120000"
+        )
+
+    def test_import_backup_no_identity_returns_error(self, tmpdir, capsys):
+        """
+        Test that import_backup returns early with an error when no identity
+        file exists.
+        """
+        # GIVEN a server without an identity file
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        # WHEN import_backup is called with no identity file
+        with patch.object(server, "read_identity_file", return_value={}):
+            with patch.object(server.backup_manager, "import_backup") as mock_import:
+                server.import_backup("/some/backup.tar")
+
+        # THEN an error message is displayed
+        out, err = capsys.readouterr()
+        assert "No identity file found" in err
+        assert "identity file is required" in err
+
+        # AND backup_manager.import_backup was NOT called
+        mock_import.assert_not_called()
+
+    def test_import_backup_cloud_storage_returns_error(self, tmpdir, capsys):
+        """
+        Test that import_backup returns early with an error when cloud storage
+        is configured.
+        """
+        # GIVEN a server with cloud storage configured
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        # AND cloud storage is configured
+        with patch.object(
+            type(server), "use_backup_cloud_storage", new_callable=PropertyMock
+        ) as mock_cloud:
+            mock_cloud.return_value = True
+            # WHEN import_backup is called
+            server.import_backup("/some/backup.tar")
+
+        # THEN an error message is displayed
+        out, err = capsys.readouterr()
+        assert "not supported for cloud storage" in err
+
+    def test_import_backup_make_directories_failure(self, tmpdir, capsys):
+        """
+        Test that import_backup returns early with an error when directory
+        creation fails.
+        """
+        # GIVEN a server with valid identity
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        identity_data = {"systemid": "1234567890"}
+        os_error = OSError(13, "Permission denied")
+        os_error.filename = "/some/dir"
+
+        # WHEN import_backup is called and _make_directories fails
+        with patch.object(server, "read_identity_file", return_value=identity_data):
+            with patch.object(server, "_make_directories", side_effect=os_error):
+                server.import_backup("/some/backup.tar")
+
+        # THEN an error message is displayed
+        out, err = capsys.readouterr()
+        assert "Failed to create backup directory" in err
+
+    def test_import_backup_invalid_tarball_name_returns_error(self, tmpdir):
+        """
+        Test that import_backup returns early when the tarball filename
+        does not pass validation.
+        """
+        # GIVEN a server with valid identity
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        identity_data = {"systemid": "1234567890"}
+
+        # WHEN import_backup is called with an invalid filename
+        with patch.object(server, "read_identity_file", return_value=identity_data):
+            with patch.object(server, "_make_directories"):
+                with patch.object(
+                    server, "_validate_import_tarball_name", return_value=None
+                ):
+                    with patch.object(
+                        server.backup_manager, "import_backup"
+                    ) as mock_import:
+                        server.import_backup("/some/bad-name.tar")
+
+        # THEN backup_manager.import_backup was NOT called
+        mock_import.assert_not_called()
+
+    def test_validate_import_tarball_name_valid(self, tmpdir):
+        """
+        Test that _validate_import_tarball_name returns the backup_id for a
+        tarball with a valid filename and matching checksum.
+        """
+        # GIVEN a server
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        # AND a tarball with a valid export filename and matching checksum
+        tarball_path = tmpdir.join(
+            "backup-export-main-20240101T120000-20240101T130000-abcd1234.tar"
+        ).strpath
+        with open(tarball_path, "wb") as f:
+            f.write(b"test content")
+
+        # AND the checksum matches
+        with patch("barman.server.file_hash", return_value="abcd1234" + "0" * 56):
+            # WHEN _validate_import_tarball_name is called
+            result = server._validate_import_tarball_name(tarball_path)
+
+        # THEN it returns the backup_id
+        assert result == "20240101T120000"
+
+    def test_validate_import_tarball_name_invalid_pattern(self, tmpdir, capsys):
+        """
+        Test that _validate_import_tarball_name returns None for a filename
+        that doesn't match the expected pattern.
+        """
+        # GIVEN a server
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        # AND a tarball with an invalid filename
+        tarball_path = tmpdir.join("random-backup.tar").strpath
+        with open(tarball_path, "wb") as f:
+            f.write(b"test content")
+
+        # WHEN _validate_import_tarball_name is called
+        result = server._validate_import_tarball_name(tarball_path)
+
+        # THEN it returns None
+        assert result is None
+
+        # AND an error about the filename format is displayed
+        out, err = capsys.readouterr()
+        assert "does not match the expected export format" in err
+
+    def test_validate_import_tarball_name_checksum_mismatch(self, tmpdir, capsys):
+        """
+        Test that _validate_import_tarball_name returns None when the
+        embedded checksum does not match the file's actual checksum.
+        """
+        # GIVEN a server
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        # AND a tarball with a valid filename but wrong checksum
+        tarball_path = tmpdir.join(
+            "backup-export-main-20240101T120000-20240101T130000-abcd1234.tar"
+        ).strpath
+        with open(tarball_path, "wb") as f:
+            f.write(b"test content")
+
+        # AND the actual checksum is different
+        with patch("barman.server.file_hash", return_value="deadbeef" + "0" * 56):
+            # WHEN _validate_import_tarball_name is called
+            result = server._validate_import_tarball_name(tarball_path)
+
+        # THEN it returns None
+        assert result is None
+
+        # AND an error about checksum mismatch is displayed
+        out, err = capsys.readouterr()
+        assert "checksum mismatch" in err.lower()
+        assert "abcd1234" in err
+        assert "deadbeef" in err
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "backup-export-.tar",
+            "backup-export-main-20240101T120000-abcd1234.tar",
+            "backup-export-main-20240101T120000-20240101T130000-abcd1234.tar.gz",
+            "not-an-export.tar",
+        ],
+    )
+    def test_validate_import_tarball_name_rejects_bad_patterns(self, tmpdir, filename):
+        """
+        Test that _validate_import_tarball_name rejects various malformed
+        filenames.
+        """
+        # GIVEN a server
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        # AND a tarball with a malformed filename
+        tarball_path = tmpdir.join(filename).strpath
+        with open(tarball_path, "wb") as f:
+            f.write(b"test content")
+
+        # WHEN _validate_import_tarball_name is called
+        result = server._validate_import_tarball_name(tarball_path)
+
+        # THEN it returns None
+        assert result is None
+
+    def test_validate_import_tarball_name_server_with_hyphens(self, tmpdir):
+        """
+        Test that _validate_import_tarball_name correctly handles server
+        names containing hyphens.
+        """
+        # GIVEN a server whose name contains hyphens
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+        server.config.name = "my-pg-server"
+
+        # AND a tarball with that hyphenated server name
+        tarball_path = tmpdir.join(
+            "backup-export-my-pg-server-20240101T120000-20240101T130000-abcd1234.tar"
+        ).strpath
+        with open(tarball_path, "wb") as f:
+            f.write(b"test content")
+
+        # AND the checksum matches
+        with patch("barman.server.file_hash", return_value="abcd1234" + "0" * 56):
+            # WHEN _validate_import_tarball_name is called
+            result = server._validate_import_tarball_name(tarball_path)
+
+        # THEN it returns the backup_id
+        assert result == "20240101T120000"
+
+    def test_validate_import_tarball_name_wrong_server(self, tmpdir, capsys):
+        """
+        Test that _validate_import_tarball_name rejects a tarball exported
+        from a different server.
+        """
+        # GIVEN a server
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        # AND a tarball exported from a different server
+        tarball_path = tmpdir.join(
+            "backup-export-other-server-20240101T120000-20240101T130000-abcd1234.tar"
+        ).strpath
+        with open(tarball_path, "wb") as f:
+            f.write(b"test content")
+
+        # WHEN _validate_import_tarball_name is called
+        result = server._validate_import_tarball_name(tarball_path)
+
+        # THEN it returns None
+        assert result is None
+
+        # AND an error about the filename format is displayed
+        out, err = capsys.readouterr()
+        assert "does not match the expected export format" in err
+
+    @pytest.mark.parametrize(
+        "lock_exception, expected_message",
+        [
+            (LockFileBusy(), "Another backup operation is already running"),
+            (LockFilePermissionDenied(), "Permission denied while acquiring"),
+            (LockFileException("disk full"), "Unable to acquire backup import lock"),
+        ],
+    )
+    def test_import_backup_lock_acquisition_failure(
+        self, tmpdir, capsys, lock_exception, expected_message
+    ):
+        """
+        Test that import_backup reports a clear error when lock acquisition
+        (or any operation under the lock) raises a LockFile* exception, and
+        does not propagate the exception.
+        """
+        # GIVEN a server with valid identity
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+        identity_data = {"systemid": "1234567890", "version": "15"}
+
+        # WHEN import_backup is called and the operation under the lock raises
+        # the given LockFile* exception
+        with patch.object(server, "read_identity_file", return_value=identity_data):
+            with patch.object(server, "_make_directories"):
+                with patch.object(
+                    server,
+                    "_validate_import_tarball_name",
+                    return_value="20240101T120000",
+                ):
+                    with patch.object(
+                        server.backup_manager,
+                        "import_backup",
+                        side_effect=lock_exception,
+                    ):
+                        # THEN no exception is propagated
+                        server.import_backup("/some/backup.tar")
+
+        # AND the right error message is reported
+        out, err = capsys.readouterr()
+        assert expected_message in err
