@@ -1,0 +1,16 @@
+---
+- summary: Add parallel WAL archiving support to `barman cloud-wal-archive`
+  description: |
+    `barman cloud-wal-archive` now supports a `--parallel` flag (and the
+    corresponding `cloud_wal_archive_parallel` configuration option) that enables
+    opportunistic prefetching of additional WAL files during archival. When
+    `--parallel N` is set (N > 1), up to N - 1 extra WAL files that are ready in
+    `pg_wal/archive_status` are identified and uploaded concurrently in background
+    worker processes after the primary WAL has been successfully archived. This can
+    significantly reduce WAL archival backlog during periods of high WAL generation.
+    If a WAL file was already uploaded by a previous invocation, subsequent calls to
+    ``archive_command`` for that WAL will detect it and exit immediately with 0,
+    avoiding redundant uploads.
+  type: minor_change
+  jira_tickets:
+    - BAR-1101
