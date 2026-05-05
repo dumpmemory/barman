@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import tarfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import dateutil.parser
@@ -3672,6 +3673,8 @@ class TestImportBackup(object):
             identity=None,
             backup_info_content=None,
             include_backup_dir=True,
+            include_wals=True,
+            wal_configs=None,
         ):
             """
             Create a valid export tarball on disk.
@@ -3679,6 +3682,9 @@ class TestImportBackup(object):
             :param dict identity: identity.json content
             :param str backup_info_content: raw backup.info content
             :param bool include_backup_dir: whether to include backup/ directory
+            :param bool include_wals: whether to include wals/ dir and xlog.db
+            :param list|None wal_configs: list of (wal_name, compression) tuples.
+                Defaults to WALs matching begin_wal..end_wal in backup_info_content.
             :return: path to the created tarball
             :rtype: str
             """
@@ -3695,6 +3701,11 @@ class TestImportBackup(object):
                     "begin_wal=000000010000000000000001\n"
                     "end_wal=000000010000000000000002\n"
                 )
+            if wal_configs is None:
+                wal_configs = [
+                    ("000000010000000000000001", None),
+                    ("000000010000000000000002", None),
+                ]
 
             input_tarball = os.path.join(tmpdir.strpath, "export.tar")
             with tarfile.open(input_tarball, "w") as tar:
@@ -3717,12 +3728,56 @@ class TestImportBackup(object):
                     info.size = len(data_content)
                     tar.addfile(info, io.BytesIO(data_content))
 
+                # Add wals/ directory and xlog.db
+                if include_wals:
+                    xlogdb_content = ""
+                    for wal_name, compression in wal_configs:
+                        # Create WAL file entry in wals/<hash_dir>/<name>
+                        from barman import xlog as xlog_mod
+
+                        hash_subdir = xlog_mod.hash_dir(wal_name)
+                        wal_data = os.urandom(16)
+                        wal_path = "wals/%s/%s" % (hash_subdir, wal_name)
+                        info = tarfile.TarInfo(name=wal_path)
+                        info.size = len(wal_data)
+                        tar.addfile(info, io.BytesIO(wal_data))
+                        # Build xlog.db line
+                        comp_str = compression if compression else "None"
+                        xlogdb_content += "%s\t%d\t1712994000.0\t%s\tNone\n" % (
+                            wal_name,
+                            len(wal_data),
+                            comp_str,
+                        )
+
+                    # Add xlog.db
+                    xlogdb_bytes = xlogdb_content.encode("utf-8")
+                    info = tarfile.TarInfo(name="xlog.db")
+                    info.size = len(xlogdb_bytes)
+                    tar.addfile(info, io.BytesIO(xlogdb_bytes))
+
             return input_tarball
+
+        # Set up a real wals_directory and xlogdb for WAL import operations
+        wals_dir = tmpdir.mkdir("wals")
+        backup_manager.server.config.wals_directory = wals_dir.strpath
+        xlogdb_file = wals_dir.join("xlog.db")
+        xlogdb_file.write("")
+        backup_manager.server.xlogdb_file_path = xlogdb_file.strpath
+
+        @contextmanager
+        def _xlogdb_ctx(mode="r"):
+            with open(xlogdb_file.strpath, mode) as f:
+                yield f
+
+        backup_manager.server.xlogdb = _xlogdb_ctx
+        backup_manager.server.rebuild_xlogdb = Mock()
 
         return {
             "backup_manager": backup_manager,
             "tmpdir": tmpdir,
             "make_tarball": make_tarball,
+            "wals_dir": wals_dir,
+            "xlogdb_file": xlogdb_file,
         }
 
     def test_import_backup_success(self, import_env):
@@ -3893,7 +3948,7 @@ class TestImportBackup(object):
                 input_tarball, local_identity, "20240101T120000"
             )
 
-        assert "backup/ directory" in str(exc_info.value)
+        assert "'backup/' directory" in str(exc_info.value)
 
         # AND the catalog is left clean: no meta file, no cache entry,
         # no target data directory, no staging directory
@@ -4180,3 +4235,1435 @@ class TestImportBackup(object):
             )
 
         assert "systemid" in str(exc_info.value)
+
+    def test_verify_staged_wals_success(self, import_env):
+        """
+        Test that _verify_staged_wals passes when all required WALs are
+        listed in the staging xlog.db, present on disk, and do not collide
+        with the server's existing WAL archive.
+        """
+        # GIVEN a staging directory with wals/ and xlog.db matching the
+        # backup's required range, and an empty target server
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        staging_dir = tmpdir.mkdir("staging_valid")
+        wals_staging = staging_dir.mkdir("wals").mkdir("0000000100000000")
+        wals_staging.join("000000010000000000000001").write_binary(b"wal1")
+        wals_staging.join("000000010000000000000002").write_binary(b"wal2")
+
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000001\t16\t1712994000.0\tNone\tNone\n"
+            "000000010000000000000002\t16\t1712994000.0\tNone\tNone\n"
+        )
+        xlogdb_file.write("")
+
+        backup_info = Mock()
+        backup_info.get_required_wal_segments.return_value = iter(
+            ["000000010000000000000001", "000000010000000000000002"]
+        )
+
+        # WHEN _verify_staged_wals is called
+        # THEN no exception is raised
+        backup_manager._verify_staged_wals(staging_dir.strpath, backup_info)
+
+    def test_verify_staged_wals_missing_required_wal(self, import_env):
+        """
+        Test that _verify_staged_wals raises when a required WAL is not
+        listed in the staging xlog.db.
+        """
+        # GIVEN a staging dir where xlog.db only lists one of two required WALs
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        staging_dir = tmpdir.mkdir("staging_missing_xlogdb")
+        wals_staging = staging_dir.mkdir("wals").mkdir("0000000100000000")
+        wals_staging.join("000000010000000000000001").write_binary(b"wal1")
+
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000001\t16\t1712994000.0\tNone\tNone\n"
+        )
+        xlogdb_file.write("")
+
+        backup_info = Mock()
+        backup_info.get_required_wal_segments.return_value = iter(
+            ["000000010000000000000001", "000000010000000000000002"]
+        )
+
+        # WHEN _verify_staged_wals is called
+        # THEN an ImportBackupException naming the missing WAL is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._verify_staged_wals(staging_dir.strpath, backup_info)
+
+        assert "000000010000000000000002" in str(exc_info.value)
+        assert "not found in" in str(exc_info.value).lower()
+
+    def test_verify_staged_wals_listed_wal_missing_from_disk(self, import_env):
+        """
+        Test that _verify_staged_wals raises when a WAL is listed in
+        xlog.db but the physical file is not in staging.
+        """
+        # GIVEN a staging dir where xlog.db lists a WAL but the file is missing
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        staging_dir = tmpdir.mkdir("staging_missing_disk")
+        staging_dir.mkdir("wals").mkdir("0000000100000000")
+        # Only create the first WAL file, skip the second
+        staging_dir.join("wals", "0000000100000000", "000000010000000000000001").write(
+            "wal1", ensure=True
+        )
+
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000001\t16\t1712994000.0\tNone\tNone\n"
+            "000000010000000000000002\t16\t1712994000.0\tNone\tNone\n"
+        )
+        xlogdb_file.write("")
+
+        backup_info = Mock()
+        backup_info.get_required_wal_segments.return_value = iter(
+            ["000000010000000000000001", "000000010000000000000002"]
+        )
+
+        # WHEN _verify_staged_wals is called
+        # THEN an ImportBackupException about the missing physical file is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._verify_staged_wals(staging_dir.strpath, backup_info)
+
+        assert "000000010000000000000002" in str(exc_info.value)
+        assert "not found under its wals/ directory" in str(exc_info.value).lower()
+
+    def test_verify_staged_wals_malformed_xlogdb(self, import_env):
+        """
+        Test that _verify_staged_wals raises when staging xlog.db contains
+        a malformed entry.
+        """
+        # GIVEN a staging dir with a malformed xlog.db line
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        staging_dir = tmpdir.mkdir("staging_malformed")
+        staging_dir.mkdir("wals")
+        staging_dir.join("xlog.db").write("this is not a valid xlogdb line\n")
+        xlogdb_file.write("")
+
+        backup_info = Mock()
+        backup_info.get_required_wal_segments.return_value = iter(
+            ["000000010000000000000001"]
+        )
+
+        # WHEN _verify_staged_wals is called
+        # THEN an ImportBackupException about the malformed entry is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._verify_staged_wals(staging_dir.strpath, backup_info)
+
+        assert "malformed" in str(exc_info.value).lower()
+
+    def test_verify_staged_wals_conflict_in_server_xlogdb(self, import_env):
+        """
+        Test that _verify_staged_wals raises when an imported WAL is already
+        listed in the server's xlog.db.
+        """
+        # GIVEN a staging dir with a WAL that the server already lists
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        staging_dir = tmpdir.mkdir("staging_conflict_xlogdb")
+        wals_staging = staging_dir.mkdir("wals").mkdir("0000000100000000")
+        wals_staging.join("000000010000000000000001").write_binary(b"wal1")
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000001\t16\t1712994000.0\tNone\tNone\n"
+        )
+        xlogdb_file.write("000000010000000000000001\t16\t1712994000.0\tNone\tNone\n")
+
+        backup_info = Mock()
+        backup_info.get_required_wal_segments.return_value = iter(
+            ["000000010000000000000001"]
+        )
+
+        # WHEN _verify_staged_wals is called
+        # THEN an ImportBackupException about the conflict is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._verify_staged_wals(staging_dir.strpath, backup_info)
+
+        assert "already exist" in str(exc_info.value).lower()
+        assert "000000010000000000000001" in str(exc_info.value)
+
+    def test_verify_staged_wals_conflict_on_disk(self, import_env):
+        """
+        Test that _verify_staged_wals raises when an imported WAL file is
+        present on the server's disk even if absent from its xlog.db.
+        """
+        # GIVEN a staging dir with a WAL whose physical path exists on the server
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+        wals_dir = import_env["wals_dir"]
+
+        staging_dir = tmpdir.mkdir("staging_conflict_disk")
+        wals_staging = staging_dir.mkdir("wals").mkdir("0000000100000000")
+        wals_staging.join("000000010000000000000001").write_binary(b"wal1")
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000001\t16\t1712994000.0\tNone\tNone\n"
+        )
+        xlogdb_file.write("")
+        wals_dir.mkdir("0000000100000000").join(
+            "000000010000000000000001"
+        ).write_binary(b"existing")
+
+        backup_info = Mock()
+        backup_info.get_required_wal_segments.return_value = iter(
+            ["000000010000000000000001"]
+        )
+
+        # WHEN _verify_staged_wals is called
+        # THEN an ImportBackupException about the conflict is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._verify_staged_wals(staging_dir.strpath, backup_info)
+
+        assert "already exist" in str(exc_info.value).lower()
+        assert "000000010000000000000001" in str(exc_info.value)
+
+    def test_verify_staged_wals_many_conflicts_truncates(self, import_env):
+        """
+        Test that _verify_staged_wals truncates the conflict list to at
+        most 5 names in the error message and indicates how many more.
+        """
+        # GIVEN a staging dir with 7 WALs that all conflict with the server
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        staging_dir = tmpdir.mkdir("staging_many_conflicts")
+        wals_staging = staging_dir.mkdir("wals").mkdir("0000000100000000")
+        wal_names = ["00000001000000000000000%d" % i for i in range(1, 8)]
+        xlogdb_lines = ""
+        for name in wal_names:
+            wals_staging.join(name).write_binary(b"w")
+            xlogdb_lines += "%s\t16\t1712994000.0\tNone\tNone\n" % name
+        staging_dir.join("xlog.db").write(xlogdb_lines)
+        xlogdb_file.write(xlogdb_lines)
+
+        backup_info = Mock()
+        backup_info.get_required_wal_segments.return_value = iter(wal_names)
+
+        # WHEN _verify_staged_wals is called
+        # THEN the error message shows at most 5 and "and X more"
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._verify_staged_wals(staging_dir.strpath, backup_info)
+
+        assert "and 2 more" in str(exc_info.value)
+
+    def test_verify_staged_wals_idempotent_reimport(self, import_env):
+        """
+        Test that _verify_staged_wals treats a re-import of an identical
+        WAL (same xlog.db line AND byte-equal file content) as a no-op,
+        not a conflict.
+        """
+        # GIVEN a staging dir with a WAL and matching xlog.db line
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+        wals_dir = import_env["wals_dir"]
+
+        wal_name = "000000010000000000000001"
+        hash_subdir = "0000000100000000"
+        wal_content = b"identical wal content"
+        xlogdb_line = "%s\t%d\t1712994000.0\tNone\tNone\n" % (
+            wal_name,
+            len(wal_content),
+        )
+
+        staging_dir = tmpdir.mkdir("staging_idempotent")
+        wals_staging = staging_dir.mkdir("wals").mkdir(hash_subdir)
+        wals_staging.join(wal_name).write_binary(wal_content)
+        staging_dir.join("xlog.db").write(xlogdb_line)
+
+        # AND the target server has the same WAL with identical xlog.db
+        # line and identical file content
+        xlogdb_file.write(xlogdb_line)
+        wals_dir.mkdir(hash_subdir).join(wal_name).write_binary(wal_content)
+
+        backup_info = Mock()
+        backup_info.get_required_wal_segments.return_value = iter([wal_name])
+
+        # WHEN _verify_staged_wals is called
+        # THEN no exception is raised — idempotent re-import is allowed
+        backup_manager._verify_staged_wals(staging_dir.strpath, backup_info)
+
+    def test_verify_staged_wals_conflict_when_content_differs(self, import_env):
+        """
+        Test that _verify_staged_wals still reports a conflict when the
+        server has the same WAL name but the file contents differ — even
+        if the xlog.db line is otherwise identical.
+        """
+        # GIVEN a staging dir with a WAL and matching xlog.db line
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+        wals_dir = import_env["wals_dir"]
+
+        wal_name = "000000010000000000000001"
+        hash_subdir = "0000000100000000"
+        xlogdb_line = "%s\t9\t1712994000.0\tNone\tNone\n" % wal_name
+
+        staging_dir = tmpdir.mkdir("staging_content_differs")
+        wals_staging = staging_dir.mkdir("wals").mkdir(hash_subdir)
+        wals_staging.join(wal_name).write_binary(b"version A")
+        staging_dir.join("xlog.db").write(xlogdb_line)
+
+        # AND the target server has the same WAL name with identical
+        # xlog.db line but a different file body on disk
+        xlogdb_file.write(xlogdb_line)
+        wals_dir.mkdir(hash_subdir).join(wal_name).write_binary(b"version B")
+
+        backup_info = Mock()
+        backup_info.get_required_wal_segments.return_value = iter([wal_name])
+
+        # WHEN _verify_staged_wals is called
+        # THEN an ImportBackupException about the conflict is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._verify_staged_wals(staging_dir.strpath, backup_info)
+
+        assert "already exist" in str(exc_info.value).lower()
+        assert wal_name in str(exc_info.value)
+
+    def test_verify_staged_wals_conflict_when_xlogdb_line_differs(self, import_env):
+        """
+        Test that _verify_staged_wals reports a conflict when the server
+        has the same WAL name and byte-equal file contents but the
+        xlog.db line differs (e.g. recorded with different timestamp or
+        compression metadata).
+        """
+        # GIVEN a staging dir with a WAL and xlog.db line
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+        wals_dir = import_env["wals_dir"]
+
+        wal_name = "000000010000000000000001"
+        hash_subdir = "0000000100000000"
+        wal_content = b"identical body"
+
+        staging_dir = tmpdir.mkdir("staging_xlogdb_differs")
+        wals_staging = staging_dir.mkdir("wals").mkdir(hash_subdir)
+        wals_staging.join(wal_name).write_binary(wal_content)
+        staging_dir.join("xlog.db").write(
+            "%s\t%d\t1712994000.0\tNone\tNone\n" % (wal_name, len(wal_content))
+        )
+
+        # AND the target server has the same WAL name and byte-equal
+        # file body, but the xlog.db line differs (different timestamp)
+        xlogdb_file.write(
+            "%s\t%d\t9999999999.0\tNone\tNone\n" % (wal_name, len(wal_content))
+        )
+        wals_dir.mkdir(hash_subdir).join(wal_name).write_binary(wal_content)
+
+        backup_info = Mock()
+        backup_info.get_required_wal_segments.return_value = iter([wal_name])
+
+        # WHEN _verify_staged_wals is called
+        # THEN an ImportBackupException about the conflict is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._verify_staged_wals(staging_dir.strpath, backup_info)
+
+        assert "already exist" in str(exc_info.value).lower()
+        assert wal_name in str(exc_info.value)
+
+    def test_verify_staging_layout_complete(self, import_env):
+        """
+        All four expected entries (``backup/``, ``backup.info``,
+        ``wals/``, ``xlog.db``) present — no exception raised.
+        """
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+
+        staging_dir = tmpdir.mkdir("staging_layout_complete")
+        staging_dir.mkdir("backup")
+        staging_dir.join("backup.info").write("")
+        staging_dir.mkdir("wals")
+        staging_dir.join("xlog.db").write("")
+
+        backup_manager._verify_staging_layout(staging_dir.strpath)
+
+    @pytest.mark.parametrize(
+        "missing, expected_message_fragment",
+        [
+            ("backup", "'backup/' directory"),
+            ("backup.info", "'backup.info' file"),
+            ("wals", "'wals/' directory"),
+            ("xlog.db", "'xlog.db' file"),
+        ],
+    )
+    def test_verify_staging_layout_missing_entry(
+        self, import_env, missing, expected_message_fragment
+    ):
+        """
+        Each of the four expected entries, when missing, produces an
+        ``ImportBackupException`` whose message names the entry.
+        """
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+
+        staging_dir = tmpdir.mkdir(
+            "staging_layout_missing_%s" % missing.replace(".", "_").replace("/", "_")
+        )
+        # Create all four expected entries, then remove the one under test.
+        staging_dir.mkdir("backup")
+        staging_dir.join("backup.info").write("")
+        staging_dir.mkdir("wals")
+        staging_dir.join("xlog.db").write("")
+        target = staging_dir.join(missing)
+        if target.isdir():
+            target.remove(rec=True)
+        else:
+            target.remove()
+
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._verify_staging_layout(staging_dir.strpath)
+
+        assert expected_message_fragment in str(exc_info.value)
+
+    def test_verify_staging_layout_file_in_place_of_directory(self, import_env):
+        """
+        A regular file at a path that should be a directory must be
+        rejected with the "directory" message — that's the point of the
+        ``os.path.isdir`` check vs. plain ``os.path.exists``.
+        """
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+
+        staging_dir = tmpdir.mkdir("staging_layout_file_for_dir")
+        # 'backup' is supposed to be a directory; create a regular file
+        # there instead.
+        staging_dir.join("backup").write("not a directory")
+        staging_dir.join("backup.info").write("")
+        staging_dir.mkdir("wals")
+        staging_dir.join("xlog.db").write("")
+
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._verify_staging_layout(staging_dir.strpath)
+
+        assert "'backup/' directory" in str(exc_info.value)
+
+    def test_verify_staging_layout_directory_in_place_of_file(self, import_env):
+        """
+        A directory at a path that should be a file must be rejected
+        with the "file" message — symmetric to the previous test.
+        """
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+
+        staging_dir = tmpdir.mkdir("staging_layout_dir_for_file")
+        staging_dir.mkdir("backup")
+        # 'backup.info' should be a file; create a directory instead.
+        staging_dir.mkdir("backup.info")
+        staging_dir.mkdir("wals")
+        staging_dir.join("xlog.db").write("")
+
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._verify_staging_layout(staging_dir.strpath)
+
+        assert "'backup.info' file" in str(exc_info.value)
+
+    def test_iter_tarball_xlogdb_normal(self, import_env):
+        """
+        Yields ``(stripped_line, wal_name)`` tuples for each non-blank
+        entry, in file order.
+        """
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+
+        staging_dir = tmpdir.mkdir("staging_iter_normal")
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000001\t4\t1712994000.0\tNone\tNone\n"
+            "000000010000000000000002\t4\t1712994000.0\tNone\tNone\n"
+        )
+
+        entries = list(backup_manager._iter_tarball_xlogdb(staging_dir.strpath))
+
+        assert len(entries) == 2
+        # Each entry is (stripped_line, wal_name)
+        assert entries[0][1] == "000000010000000000000001"
+        assert entries[1][1] == "000000010000000000000002"
+        # Lines are stripped (no trailing newline)
+        for line, _ in entries:
+            assert not line.endswith("\n")
+
+    def test_iter_tarball_xlogdb_missing_file(self, import_env):
+        """
+        Raises ``ImportBackupException`` if the staging xlog.db file
+        cannot be opened.
+        """
+        backup_manager = import_env["backup_manager"]
+        tmpdir = import_env["tmpdir"]
+
+        empty_staging = tmpdir.mkdir("staging_iter_missing")
+        # no xlog.db inside
+
+        with pytest.raises(ImportBackupException) as exc_info:
+            list(backup_manager._iter_tarball_xlogdb(empty_staging.strpath))
+
+        assert "Failed to read xlog.db" in str(exc_info.value)
+
+    def test_iter_tarball_xlogdb_malformed_line(self, import_env):
+        """
+        Raises ``ImportBackupException`` with the offending line number
+        when a line cannot be parsed.
+        """
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+
+        staging_dir = tmpdir.mkdir("staging_iter_malformed")
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000001\t4\t1712994000.0\tNone\tNone\n"
+            "this is not a valid xlogdb line\n"
+        )
+
+        with pytest.raises(ImportBackupException) as exc_info:
+            list(backup_manager._iter_tarball_xlogdb(staging_dir.strpath))
+
+        assert "Malformed" in str(exc_info.value)
+        assert "line 2" in str(exc_info.value)
+
+    def test_iter_tarball_xlogdb_skips_blank_lines(self, import_env):
+        """
+        Blank or whitespace-only lines are silently skipped.
+        """
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+
+        staging_dir = tmpdir.mkdir("staging_iter_blanks")
+        staging_dir.join("xlog.db").write(
+            "\n"
+            "000000010000000000000001\t4\t1712994000.0\tNone\tNone\n"
+            "   \n"
+            "000000010000000000000002\t4\t1712994000.0\tNone\tNone\n"
+        )
+
+        entries = list(backup_manager._iter_tarball_xlogdb(staging_dir.strpath))
+
+        assert [name for _, name in entries] == [
+            "000000010000000000000001",
+            "000000010000000000000002",
+        ]
+
+    def test_xlogdb_metadata_match_identical_lines(self, import_env):
+        """Identical lines (every field equal) → match."""
+        backup_manager = import_env["backup_manager"]
+        line = "000000010000000000000001\t16\t1712994000.0\tgzip\tNone"
+        assert backup_manager._xlogdb_metadata_match(line, line) is True
+
+    def test_xlogdb_metadata_match_compression_only_diff(self, import_env):
+        """
+        Lines differ ONLY in the ``compression`` field → still a match.
+        See the docstring of ``_wal_conflicts_with_server`` for why
+        compression is excused (rebuild_xlogdb can't reconstruct it for
+        WALs that are both compressed and encrypted).
+        """
+        backup_manager = import_env["backup_manager"]
+        line_a = "000000010000000000000001\t16\t1712994000.0\tgzip\taes256"
+        line_b = "000000010000000000000001\t16\t1712994000.0\tNone\taes256"
+        assert backup_manager._xlogdb_metadata_match(line_a, line_b) is True
+
+    @pytest.mark.parametrize(
+        "line_a, line_b, diff_field",
+        [
+            (
+                "000000010000000000000001\t16\t1712994000.0\tgzip\tNone",
+                "000000010000000000000002\t16\t1712994000.0\tgzip\tNone",
+                "name",
+            ),
+            (
+                "000000010000000000000001\t16\t1712994000.0\tgzip\tNone",
+                "000000010000000000000001\t32\t1712994000.0\tgzip\tNone",
+                "size",
+            ),
+            (
+                "000000010000000000000001\t16\t1712994000.0\tgzip\tNone",
+                "000000010000000000000001\t16\t9999999999.0\tgzip\tNone",
+                "time",
+            ),
+            (
+                "000000010000000000000001\t16\t1712994000.0\tgzip\tNone",
+                "000000010000000000000001\t16\t1712994000.0\tgzip\taes256",
+                "encryption",
+            ),
+        ],
+    )
+    def test_xlogdb_metadata_match_non_compression_field_diff(
+        self, import_env, line_a, line_b, diff_field
+    ):
+        """Any non-``compression`` field difference → no match."""
+        backup_manager = import_env["backup_manager"]
+        assert backup_manager._xlogdb_metadata_match(line_a, line_b) is False
+
+    def test_wal_conflicts_with_server_clean_import(self, import_env):
+        """
+        Server has no xlog.db entry and no file for this WAL — the
+        helper must report no conflict.
+        """
+        backup_manager = import_env["backup_manager"]
+        tmpdir = import_env["tmpdir"]
+
+        assert (
+            backup_manager._wal_conflicts_with_server(
+                wal_name="000000010000000000000001",
+                tarball_line=("000000010000000000000001\t4\t1712994000.0\tNone\tNone"),
+                tarball_wal_path=tmpdir.join("tarball_wal").strpath,
+                server_line=None,
+                server_wal_path=tmpdir.join("nonexistent_server_wal").strpath,
+            )
+            is False
+        )
+
+    def test_wal_conflicts_with_server_idempotent(self, import_env):
+        """
+        Server has matching xlog.db line and byte-equal file — the
+        helper must report no conflict (idempotent re-import).
+        """
+        backup_manager = import_env["backup_manager"]
+        tmpdir = import_env["tmpdir"]
+
+        line = "000000010000000000000001\t4\t1712994000.0\tNone\tNone"
+        content = b"identical"
+        tarball_path = tmpdir.join("tarball_wal")
+        tarball_path.write_binary(content)
+        server_path = tmpdir.join("server_wal")
+        server_path.write_binary(content)
+
+        assert (
+            backup_manager._wal_conflicts_with_server(
+                wal_name="000000010000000000000001",
+                tarball_line=line,
+                tarball_wal_path=tarball_path.strpath,
+                server_line=line,
+                server_wal_path=server_path.strpath,
+            )
+            is False
+        )
+
+    def test_wal_conflicts_with_server_entry_only(self, import_env):
+        """
+        Server has the xlog.db entry but no file on disk — inconsistent
+        state, treat as conflict.
+        """
+        backup_manager = import_env["backup_manager"]
+        tmpdir = import_env["tmpdir"]
+
+        line = "000000010000000000000001\t4\t1712994000.0\tNone\tNone"
+        tarball_path = tmpdir.join("tarball_wal")
+        tarball_path.write_binary(b"x")
+
+        assert (
+            backup_manager._wal_conflicts_with_server(
+                wal_name="000000010000000000000001",
+                tarball_line=line,
+                tarball_wal_path=tarball_path.strpath,
+                server_line=line,
+                server_wal_path=tmpdir.join("nonexistent_server_wal").strpath,
+            )
+            is True
+        )
+
+    def test_wal_conflicts_with_server_file_only(self, import_env):
+        """
+        Server has the file but no matching xlog.db entry — inconsistent
+        state, treat as conflict.
+        """
+        backup_manager = import_env["backup_manager"]
+        tmpdir = import_env["tmpdir"]
+
+        tarball_path = tmpdir.join("tarball_wal")
+        tarball_path.write_binary(b"x")
+        server_path = tmpdir.join("server_wal_only")
+        server_path.write_binary(b"x")
+
+        assert (
+            backup_manager._wal_conflicts_with_server(
+                wal_name="000000010000000000000001",
+                tarball_line=("000000010000000000000001\t4\t1712994000.0\tNone\tNone"),
+                tarball_wal_path=tarball_path.strpath,
+                server_line=None,
+                server_wal_path=server_path.strpath,
+            )
+            is True
+        )
+
+    def test_wal_conflicts_with_server_xlogdb_line_differs(self, import_env):
+        """
+        Server has both artifacts but the xlog.db lines differ — treat
+        as conflict, even if the files happen to match.
+        """
+        backup_manager = import_env["backup_manager"]
+        tmpdir = import_env["tmpdir"]
+
+        content = b"identical"
+        tarball_path = tmpdir.join("tarball_wal")
+        tarball_path.write_binary(content)
+        server_path = tmpdir.join("server_wal")
+        server_path.write_binary(content)
+
+        assert (
+            backup_manager._wal_conflicts_with_server(
+                wal_name="000000010000000000000001",
+                tarball_line=("000000010000000000000001\t9\t1712994000.0\tNone\tNone"),
+                tarball_wal_path=tarball_path.strpath,
+                server_line=("000000010000000000000001\t9\t9999999999.0\tNone\tNone"),
+                server_wal_path=server_path.strpath,
+            )
+            is True
+        )
+
+    def test_wal_conflicts_with_server_file_content_differs(self, import_env):
+        """
+        Server has both artifacts with matching xlog.db line but the
+        file bodies differ — treat as conflict.
+        """
+        backup_manager = import_env["backup_manager"]
+        tmpdir = import_env["tmpdir"]
+
+        line = "000000010000000000000001\t9\t1712994000.0\tNone\tNone"
+        tarball_path = tmpdir.join("tarball_wal")
+        tarball_path.write_binary(b"version A")
+        server_path = tmpdir.join("server_wal")
+        server_path.write_binary(b"version B")
+
+        assert (
+            backup_manager._wal_conflicts_with_server(
+                wal_name="000000010000000000000001",
+                tarball_line=line,
+                tarball_wal_path=tarball_path.strpath,
+                server_line=line,
+                server_wal_path=server_path.strpath,
+            )
+            is True
+        )
+
+    def test_wal_conflicts_with_server_compression_differs_is_idempotent(
+        self, import_env
+    ):
+        """
+        Server has the same WAL with byte-equal contents and matching
+        metadata except for ``compression`` — treat as idempotent.
+
+        This is the encrypted-and-compressed corner case: if the
+        server's xlog.db has been rebuilt at some point between
+        export and import, the rebuild only sees the outer encryption
+        magic and clears the previously-correct compression field
+        (e.g. ``gzip`` → ``None``). The file itself is unchanged. We
+        recognize this as the same WAL.
+        """
+        backup_manager = import_env["backup_manager"]
+        tmpdir = import_env["tmpdir"]
+
+        content = b"identical"
+        tarball_path = tmpdir.join("tarball_wal")
+        tarball_path.write_binary(content)
+        server_path = tmpdir.join("server_wal")
+        server_path.write_binary(content)
+
+        # Tarball remembers the original compression metadata
+        tarball_line = "000000010000000000000001\t9\t1712994000.0\tgzip\taes256"
+        # Server's compression has been cleared by a later rebuild
+        server_line = "000000010000000000000001\t9\t1712994000.0\tNone\taes256"
+
+        assert (
+            backup_manager._wal_conflicts_with_server(
+                wal_name="000000010000000000000001",
+                tarball_line=tarball_line,
+                tarball_wal_path=tarball_path.strpath,
+                server_line=server_line,
+                server_wal_path=server_path.strpath,
+            )
+            is False
+        )
+
+    def test_wal_conflicts_with_server_encryption_differs_is_conflict(self, import_env):
+        """
+        Server has the same WAL name and file contents but the
+        ``encryption`` field differs — still a conflict. Only
+        ``compression`` is excused (encryption can't be silently lost
+        by a rebuild the way compression can).
+        """
+        backup_manager = import_env["backup_manager"]
+        tmpdir = import_env["tmpdir"]
+
+        content = b"identical"
+        tarball_path = tmpdir.join("tarball_wal")
+        tarball_path.write_binary(content)
+        server_path = tmpdir.join("server_wal")
+        server_path.write_binary(content)
+
+        tarball_line = "000000010000000000000001\t9\t1712994000.0\tNone\taes256"
+        server_line = "000000010000000000000001\t9\t1712994000.0\tNone\tNone"
+
+        assert (
+            backup_manager._wal_conflicts_with_server(
+                wal_name="000000010000000000000001",
+                tarball_line=tarball_line,
+                tarball_wal_path=tarball_path.strpath,
+                server_line=server_line,
+                server_wal_path=server_path.strpath,
+            )
+            is True
+        )
+
+    def test_wal_conflicts_with_server_different_name_in_server_line(self, import_env):
+        """
+        ``server_line`` is from a later WAL name (the caller didn't
+        advance past us; we're checking a tarball WAL that the server
+        doesn't have yet). Treat as clean (no entry for THIS name).
+        """
+        backup_manager = import_env["backup_manager"]
+        tmpdir = import_env["tmpdir"]
+
+        tarball_path = tmpdir.join("tarball_wal")
+        tarball_path.write_binary(b"x")
+
+        # server_line is for a different (later) WAL name
+        assert (
+            backup_manager._wal_conflicts_with_server(
+                wal_name="000000010000000000000001",
+                tarball_line=("000000010000000000000001\t1\t1712994000.0\tNone\tNone"),
+                tarball_wal_path=tarball_path.strpath,
+                server_line=("000000010000000000000099\t1\t1712994000.0\tNone\tNone"),
+                server_wal_path=tmpdir.join("nonexistent").strpath,
+            )
+            is False
+        )
+
+    def test_import_backup_wals_moves_files_and_merges_xlogdb(self, import_env):
+        """
+        Test that _import_backup_wals moves WAL files from staging to the
+        target wals directory and merges entries into the server's xlog.db.
+        """
+        # GIVEN a staging directory with WAL files and xlog.db
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        wals_dir = import_env["wals_dir"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        staging_dir = tmpdir.mkdir("staging_wals")
+        wals_staging = staging_dir.mkdir("wals").mkdir("0000000100000000")
+        wals_staging.join("000000010000000000000003").write_binary(b"wal3")
+        wals_staging.join("000000010000000000000004").write_binary(b"wal4")
+
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000003\t4\t1712994000.0\tNone\tNone\n"
+            "000000010000000000000004\t4\t1712994000.0\tNone\tNone\n"
+        )
+
+        # AND the server already has WALs 1 and 2 in its xlog.db
+        xlogdb_file.write(
+            "000000010000000000000001\t16\t1712994000.0\tNone\tNone\n"
+            "000000010000000000000002\t16\t1712994000.0\tNone\tNone\n"
+        )
+
+        # WHEN _import_backup_wals is called
+        rollback = backup_manager._import_backup_wals(staging_dir.strpath)
+
+        # THEN WAL files are moved to the target directory
+        hash_dir = os.path.join(wals_dir.strpath, "0000000100000000")
+        assert os.path.exists(os.path.join(hash_dir, "000000010000000000000003"))
+        assert os.path.exists(os.path.join(hash_dir, "000000010000000000000004"))
+
+        # AND the files are removed from staging
+        assert not os.path.exists(wals_staging.join("000000010000000000000003").strpath)
+        assert not os.path.exists(wals_staging.join("000000010000000000000004").strpath)
+
+        # AND the server's xlog.db contains all 4 entries in sorted order
+        xlogdb_content = xlogdb_file.read()
+        lines = [entry for entry in xlogdb_content.strip().split("\n") if entry]
+        assert len(lines) == 4
+        names = [entry.split("\t")[0] for entry in lines]
+        assert names == sorted(names)
+        assert "000000010000000000000003" in names
+        assert "000000010000000000000004" in names
+
+        # AND a rollback callable is returned
+        assert callable(rollback)
+
+    def test_import_backup_wals_merge_interleaves_correctly(self, import_env):
+        """
+        Test that the streaming merge correctly interleaves import entries
+        between existing entries (not just appending).
+        """
+        # GIVEN a server xlog.db with WALs 1, 3, 5
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        xlogdb_file.write(
+            "000000010000000000000001\t16\t1712994000.0\tNone\tNone\n"
+            "000000010000000000000003\t16\t1712994000.0\tNone\tNone\n"
+            "000000010000000000000005\t16\t1712994000.0\tNone\tNone\n"
+        )
+
+        # AND a staging dir with WALs 2 and 4 (which should interleave)
+        staging_dir = tmpdir.mkdir("staging_interleave")
+        wals_staging = staging_dir.mkdir("wals").mkdir("0000000100000000")
+        wals_staging.join("000000010000000000000002").write_binary(b"wal2")
+        wals_staging.join("000000010000000000000004").write_binary(b"wal4")
+
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000002\t4\t1712994000.0\tNone\tNone\n"
+            "000000010000000000000004\t4\t1712994000.0\tNone\tNone\n"
+        )
+
+        # WHEN _import_backup_wals is called
+        backup_manager._import_backup_wals(staging_dir.strpath)
+
+        # THEN the xlog.db has all 5 entries in correct sorted order
+        lines = [entry for entry in xlogdb_file.read().strip().split("\n") if entry]
+        names = [entry.split("\t")[0] for entry in lines]
+        assert names == [
+            "000000010000000000000001",
+            "000000010000000000000002",
+            "000000010000000000000003",
+            "000000010000000000000004",
+            "000000010000000000000005",
+        ]
+
+    def test_import_backup_wals_skips_idempotent_entries(self, import_env):
+        """
+        Test that when the tarball contains a WAL the server already
+        has (idempotent re-import, already verified by
+        ``_verify_staged_wals``), ``_import_backup_wals`` does NOT:
+
+        - overwrite the server's pre-existing WAL file (and consequently
+          mark it for rollback), and
+        - duplicate the WAL's xlog.db line in the merged xlog.db.
+
+        Both bugs are easy to introduce with a naive two-stream merge
+        that treats every tarball entry as a new import.
+        """
+        # GIVEN the server already has WAL 2 in both xlog.db and on disk
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+        wals_dir = import_env["wals_dir"]
+
+        idempotent_name = "000000010000000000000002"
+        new_name = "000000010000000000000003"
+        hash_subdir = "0000000100000000"
+        idempotent_line = "%s\t4\t1712994000.0\tNone\tNone\n" % idempotent_name
+        new_line = "%s\t4\t1712994000.0\tNone\tNone\n" % new_name
+        idempotent_content = b"wal2"
+        new_content = b"wal3"
+
+        xlogdb_file.write(idempotent_line)
+        server_idempotent_path = wals_dir.mkdir(hash_subdir).join(idempotent_name)
+        server_idempotent_path.write_binary(idempotent_content)
+
+        # AND the staging dir contains the same idempotent WAL plus a
+        # genuinely new WAL
+        staging_dir = tmpdir.mkdir("staging_idempotent_import")
+        wals_staging = staging_dir.mkdir("wals").mkdir(hash_subdir)
+        wals_staging.join(idempotent_name).write_binary(idempotent_content)
+        wals_staging.join(new_name).write_binary(new_content)
+        staging_dir.join("xlog.db").write(idempotent_line + new_line)
+
+        # WHEN _import_backup_wals is called
+        rollback = backup_manager._import_backup_wals(staging_dir.strpath)
+
+        # THEN the new WAL is in the server's wals_directory
+        server_new_path = os.path.join(wals_dir.strpath, hash_subdir, new_name)
+        assert os.path.exists(server_new_path)
+
+        # AND the idempotent WAL is still there with original content
+        assert os.path.exists(server_idempotent_path.strpath)
+        assert server_idempotent_path.read_binary() == idempotent_content
+
+        # AND the server's xlog.db has each entry exactly once
+        merged_lines = [
+            entry for entry in xlogdb_file.read().strip().split("\n") if entry
+        ]
+        merged_names = [entry.split("\t")[0] for entry in merged_lines]
+        assert merged_names == [idempotent_name, new_name]
+
+        # AND if rollback runs later, it must NOT delete the server's
+        # pre-existing idempotent WAL — only the genuinely-moved one.
+        rollback()
+        assert os.path.exists(server_idempotent_path.strpath)
+        assert server_idempotent_path.read_binary() == idempotent_content
+        assert not os.path.exists(server_new_path)
+
+    def test_import_backup_wals_into_empty_xlogdb(self, import_env):
+        """
+        Test that _import_backup_wals works when the server's xlog.db
+        is initially empty.
+        """
+        # GIVEN an empty server xlog.db
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        xlogdb_file.write("")
+
+        # AND a staging dir with WAL files
+        staging_dir = tmpdir.mkdir("staging_empty_xlogdb")
+        wals_staging = staging_dir.mkdir("wals").mkdir("0000000100000000")
+        wals_staging.join("000000010000000000000001").write_binary(b"wal1")
+
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000001\t4\t1712994000.0\tNone\tNone\n"
+        )
+
+        # WHEN _import_backup_wals is called
+        backup_manager._import_backup_wals(staging_dir.strpath)
+
+        # THEN xlog.db contains the imported entry
+        lines = [entry for entry in xlogdb_file.read().strip().split("\n") if entry]
+        assert len(lines) == 1
+        assert lines[0].startswith("000000010000000000000001")
+
+    def test_import_backup_wals_creates_hash_dirs(self, import_env):
+        """
+        Test that _import_backup_wals creates hash subdirectories in the
+        target wals directory when they don't already exist.
+        """
+        # GIVEN a server wals directory without the needed hash subdir
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        wals_dir = import_env["wals_dir"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        xlogdb_file.write("")
+
+        hash_subdir = os.path.join(wals_dir.strpath, "0000000100000000")
+        assert not os.path.exists(hash_subdir)
+
+        # AND a staging dir with a WAL file
+        staging_dir = tmpdir.mkdir("staging_create_hash")
+        wals_staging = staging_dir.mkdir("wals").mkdir("0000000100000000")
+        wals_staging.join("000000010000000000000001").write_binary(b"wal1")
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000001\t4\t1712994000.0\tNone\tNone\n"
+        )
+
+        # WHEN _import_backup_wals is called
+        backup_manager._import_backup_wals(staging_dir.strpath)
+
+        # THEN the hash subdirectory was created
+        assert os.path.isdir(hash_subdir)
+
+        # AND the WAL file is in it
+        assert os.path.exists(os.path.join(hash_subdir, "000000010000000000000001"))
+
+    def test_import_backup_wals_rollback_on_failure(self, import_env):
+        """
+        Test that _import_backup_wals rolls back moved files and rebuilds
+        xlog.db if an error occurs during the merge phase.
+        """
+        # GIVEN a staging dir with a WAL file
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        wals_dir = import_env["wals_dir"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        xlogdb_file.write("")
+
+        staging_dir = tmpdir.mkdir("staging_rollback")
+        wals_staging = staging_dir.mkdir("wals").mkdir("0000000100000000")
+        wals_staging.join("000000010000000000000001").write_binary(b"wal1")
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000001\t4\t1712994000.0\tNone\tNone\n"
+        )
+
+        # AND the xlogdb context manager is rigged to fail during merge
+
+        @contextmanager
+        def failing_xlogdb(mode="r"):
+            if "+" in mode or "w" in mode:
+                raise IOError("simulated disk failure")
+            with open(xlogdb_file.strpath, mode) as f:
+                yield f
+
+        backup_manager.server.xlogdb = failing_xlogdb
+
+        # WHEN _import_backup_wals is called
+        # THEN an ImportBackupException is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._import_backup_wals(staging_dir.strpath)
+
+        assert "Failed to import WAL files" in str(exc_info.value)
+
+        # AND the WAL file was cleaned up (rollback removed it)
+        hash_dir = os.path.join(wals_dir.strpath, "0000000100000000")
+        assert not os.path.exists(os.path.join(hash_dir, "000000010000000000000001"))
+
+        # AND rebuild_xlogdb was called
+        backup_manager.server.rebuild_xlogdb.assert_called_once_with(silent=True)
+
+    def test_rollback_wal_import_removes_files_and_dirs(self, import_env):
+        """
+        Test that _rollback_wal_import removes moved WAL files, empty
+        hash directories, and calls rebuild_xlogdb.
+        """
+        # GIVEN WAL files that were "imported" to target directory
+        backup_manager = import_env["backup_manager"]
+        wals_dir = import_env["wals_dir"]
+
+        hash_dir = wals_dir.mkdir("0000000100000000")
+        wal_path = hash_dir.join("000000010000000000000001")
+        wal_path.write_binary(b"wal1")
+
+        moved_files = [wal_path.strpath]
+        created_dirs = [hash_dir.strpath]
+
+        # WHEN _rollback_wal_import is called
+        backup_manager._rollback_wal_import(moved_files, created_dirs)
+
+        # THEN WAL file is removed
+        assert not os.path.exists(wal_path.strpath)
+
+        # AND the empty hash directory is removed
+        assert not os.path.exists(hash_dir.strpath)
+
+        # AND rebuild_xlogdb is called
+        backup_manager.server.rebuild_xlogdb.assert_called_once_with(silent=True)
+
+    def test_rollback_wal_import_preserves_non_empty_dirs(self, import_env):
+        """
+        Test that _rollback_wal_import does not remove hash directories
+        that still contain other files.
+        """
+        # GIVEN a hash directory with both an imported WAL and a pre-existing one
+        backup_manager = import_env["backup_manager"]
+        wals_dir = import_env["wals_dir"]
+
+        hash_dir = wals_dir.mkdir("0000000100000000")
+        imported_wal = hash_dir.join("000000010000000000000002")
+        imported_wal.write_binary(b"wal2")
+        preexisting_wal = hash_dir.join("000000010000000000000001")
+        preexisting_wal.write_binary(b"wal1")
+
+        moved_files = [imported_wal.strpath]
+        created_dirs = [hash_dir.strpath]
+
+        # WHEN _rollback_wal_import is called
+        backup_manager._rollback_wal_import(moved_files, created_dirs)
+
+        # THEN the imported WAL is removed
+        assert not os.path.exists(imported_wal.strpath)
+
+        # AND the directory is NOT removed (still has the pre-existing WAL)
+        assert os.path.isdir(hash_dir.strpath)
+        assert os.path.exists(preexisting_wal.strpath)
+
+    def test_rollback_wal_import_tolerates_already_removed_files(self, import_env):
+        """
+        Test that _rollback_wal_import does not fail if WAL files have
+        already been removed (e.g. partial failure scenario).
+        """
+        # GIVEN file paths that don't exist on disk
+        backup_manager = import_env["backup_manager"]
+        wals_dir = import_env["wals_dir"]
+
+        moved_files = [
+            os.path.join(wals_dir.strpath, "0000000100000000", "nonexistent_wal")
+        ]
+        created_dirs = []
+
+        # WHEN _rollback_wal_import is called
+        # THEN no exception is raised
+        backup_manager._rollback_wal_import(moved_files, created_dirs)
+
+        # AND rebuild_xlogdb is still called
+        backup_manager.server.rebuild_xlogdb.assert_called_once_with(silent=True)
+
+    def test_import_backup_wals_rollback_closure(self, import_env):
+        """
+        Test that the rollback closure returned by _import_backup_wals
+        removes imported WAL files and rebuilds xlog.db when called.
+        """
+        # GIVEN a successful WAL import
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        wals_dir = import_env["wals_dir"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        xlogdb_file.write("")
+
+        staging_dir = tmpdir.mkdir("staging_closure")
+        wals_staging = staging_dir.mkdir("wals").mkdir("0000000100000000")
+        wals_staging.join("000000010000000000000001").write_binary(b"wal1")
+        staging_dir.join("xlog.db").write(
+            "000000010000000000000001\t4\t1712994000.0\tNone\tNone\n"
+        )
+
+        rollback = backup_manager._import_backup_wals(staging_dir.strpath)
+
+        # AND the WAL file was moved
+        target_path = os.path.join(
+            wals_dir.strpath, "0000000100000000", "000000010000000000000001"
+        )
+        assert os.path.exists(target_path)
+
+        # WHEN the rollback closure is invoked
+        rollback()
+
+        # THEN the imported WAL file is removed
+        assert not os.path.exists(target_path)
+
+        # AND rebuild_xlogdb was called
+        backup_manager.server.rebuild_xlogdb.assert_called_with(silent=True)
+
+    def test_import_backup_full_success_with_wals(self, import_env):
+        """
+        Test the full import_backup flow including WAL import, verifying
+        that WAL files are moved and xlog.db is updated.
+        """
+        # GIVEN a valid export tarball with WALs
+        backup_manager = import_env["backup_manager"]
+        wals_dir = import_env["wals_dir"]
+        xlogdb_file = import_env["xlogdb_file"]
+        input_tarball = import_env["make_tarball"]()
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # AND the server's xlog.db is initially empty
+        xlogdb_file.write("")
+
+        # WHEN import_backup is called
+        backup_manager.import_backup(input_tarball, local_identity, "20240101T120000")
+
+        # THEN backup is registered
+        assert backup_manager.get_backup("20240101T120000") is not None
+
+        # AND WAL files are in the target directory
+        hash_dir = os.path.join(wals_dir.strpath, "0000000100000000")
+        assert os.path.exists(os.path.join(hash_dir, "000000010000000000000001"))
+        assert os.path.exists(os.path.join(hash_dir, "000000010000000000000002"))
+
+        # AND xlog.db contains the imported entries
+        xlogdb_content = xlogdb_file.read()
+        assert "000000010000000000000001" in xlogdb_content
+        assert "000000010000000000000002" in xlogdb_content
+
+        # AND the backup is marked as KEEP:STANDALONE
+        assert backup_manager.should_keep_backup("20240101T120000") is True
+        assert (
+            backup_manager.get_keep_target("20240101T120000")
+            == KeepManager.TARGET_STANDALONE
+        )
+
+    def test_import_backup_metadata_failure_rolls_back_wals(self, import_env):
+        """
+        Test that when _import_backup_metadata fails after WAL import, both
+        WAL files and backup data are rolled back.
+        """
+        # GIVEN a tarball that will fail at the metadata registration stage
+        # (backup.info loads fine but save() raises an error)
+        backup_manager = import_env["backup_manager"]
+        wals_dir = import_env["wals_dir"]
+        xlogdb_file = import_env["xlogdb_file"]
+
+        xlogdb_file.write("")
+
+        input_tarball = import_env["make_tarball"]()
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # AND _import_backup_metadata is patched to raise an error
+        with patch.object(
+            BackupManager,
+            "_import_backup_metadata",
+            side_effect=ImportBackupException("metadata registration failed"),
+        ):
+            # WHEN import_backup is called
+            # THEN it raises the exception
+            with pytest.raises(ImportBackupException) as exc_info:
+                backup_manager.import_backup(
+                    input_tarball, local_identity, "20240101T120000"
+                )
+
+            assert "metadata registration failed" in str(exc_info.value)
+
+        # AND WAL files are rolled back (removed)
+        hash_dir = os.path.join(wals_dir.strpath, "0000000100000000")
+        assert not os.path.exists(os.path.join(hash_dir, "000000010000000000000001"))
+
+        # AND rebuild_xlogdb was called to restore the catalog
+        backup_manager.server.rebuild_xlogdb.assert_called_with(silent=True)
+
+        # AND backup data directory is removed
+        target_dir = os.path.join(
+            backup_manager.config.basebackups_directory, "20240101T120000"
+        )
+        assert not os.path.exists(target_dir)
+
+    def test_import_backup_wal_import_failure_rolls_back_data(self, import_env):
+        """
+        Test that when ``_import_backup_wals`` fails after the basebackup
+        directory has been moved, the data directory is rolled back so
+        the import leaves no partial state on disk.
+        """
+        # GIVEN a valid tarball
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+        xlogdb_file.write("")
+
+        input_tarball = import_env["make_tarball"]()
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # AND _import_backup_wals is patched to raise after the data
+        # directory has already been moved by _import_backup_data
+        with patch.object(
+            BackupManager,
+            "_import_backup_wals",
+            side_effect=ImportBackupException("wal import failed"),
+        ):
+            # WHEN import_backup is called
+            # THEN it raises the exception
+            with pytest.raises(ImportBackupException) as exc_info:
+                backup_manager.import_backup(
+                    input_tarball, local_identity, "20240101T120000"
+                )
+
+            assert "wal import failed" in str(exc_info.value)
+
+        # AND the basebackup data directory is rolled back (removed)
+        target_dir = os.path.join(
+            backup_manager.config.basebackups_directory, "20240101T120000"
+        )
+        assert not os.path.exists(target_dir)
+
+        # AND no staging directory is left behind
+        base_dir = backup_manager.config.basebackups_directory
+        staging_dirs = [d for d in os.listdir(base_dir) if d.startswith(".import-")]
+        assert len(staging_dirs) == 0
+
+        # AND no backup is registered in the catalog
+        assert backup_manager.get_backup("20240101T120000") is None
+
+    def test_import_backup_missing_wals_directory_in_tarball(self, import_env):
+        """
+        Test that import raises ImportBackupException when the wals/
+        directory is missing from the tarball.
+        """
+        # GIVEN a tarball without wals/ directory
+        backup_manager = import_env["backup_manager"]
+        input_tarball = import_env["make_tarball"](include_wals=False)
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # WHEN import_backup is called
+        # THEN an ImportBackupException is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "'wals/' directory" in str(exc_info.value)
+
+    def test_import_backup_wal_conflict_blocks_import(self, import_env):
+        """
+        Test that import_backup fails when imported WALs conflict with
+        existing WALs in the server, before any data is moved.
+        """
+        # GIVEN a tarball with WALs that already exist in the server
+        backup_manager = import_env["backup_manager"]
+        xlogdb_file = import_env["xlogdb_file"]
+        input_tarball = import_env["make_tarball"]()
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # AND the server's xlog.db already has the WALs
+        xlogdb_file.write(
+            "000000010000000000000001\t16\t1712994000.0\tNone\tNone\n"
+            "000000010000000000000002\t16\t1712994000.0\tNone\tNone\n"
+        )
+
+        # WHEN import_backup is called
+        # THEN it raises an ImportBackupException
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "already exist" in str(exc_info.value).lower()
+
+        # AND no backup data was moved (conflict detected before data move)
+        target_dir = os.path.join(
+            backup_manager.config.basebackups_directory, "20240101T120000"
+        )
+        assert not os.path.exists(target_dir)
+
+    def test_import_backup_applies_keep_standalone_annotation(self, import_env):
+        """
+        Test that a successful import persists the KEEP:STANDALONE annotation
+        file in the meta directory.
+        """
+        # GIVEN a valid export tarball
+        backup_manager = import_env["backup_manager"]
+        input_tarball = import_env["make_tarball"]()
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # WHEN import_backup is called
+        backup_manager.import_backup(input_tarball, local_identity, "20240101T120000")
+
+        # THEN the annotation file exists in the meta directory
+        keep_file = os.path.join(
+            backup_manager.server.meta_directory, "20240101T120000-keep"
+        )
+        assert os.path.exists(keep_file)
+
+        # AND its content is "standalone"
+        with open(keep_file, "r") as f:
+            assert f.read().strip() == KeepManager.TARGET_STANDALONE
+
+    def test_import_backup_keep_failure_warns_but_succeeds(self, import_env, capsys):
+        """
+        Test that when keep_backup fails, the import still succeeds and a
+        warning is emitted.
+        """
+        # GIVEN a valid export tarball
+        backup_manager = import_env["backup_manager"]
+        input_tarball = import_env["make_tarball"]()
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # AND keep_backup is patched to raise an exception
+        with patch.object(
+            BackupManager,
+            "keep_backup",
+            side_effect=OSError("permission denied"),
+        ):
+            # WHEN import_backup is called
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        # THEN the import still succeeds (backup is registered)
+        assert backup_manager.get_backup("20240101T120000") is not None
+
+        # AND a warning about the annotation failure was emitted
+        _, err = capsys.readouterr()
+        assert "Failed to apply KEEP:STANDALONE" in err
+        assert "permission denied" in err
+
+        # AND the backup is NOT marked as kept (annotation was not applied)
+        assert backup_manager.should_keep_backup("20240101T120000") is False
