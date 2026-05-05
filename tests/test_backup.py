@@ -3811,6 +3811,13 @@ class TestImportBackup(object):
         staging_dirs = [d for d in os.listdir(base_dir) if d.startswith(".import-")]
         assert len(staging_dirs) == 0
 
+        # AND the backup is marked as KEEP:STANDALONE
+        assert backup_manager.should_keep_backup("20240101T120000") is True
+        assert (
+            backup_manager.get_keep_target("20240101T120000")
+            == KeepManager.TARGET_STANDALONE
+        )
+
     def test_import_backup_identity_mismatch(self, import_env):
         """
         Test that import raises ImportBackupException when systemid mismatches.
