@@ -2305,6 +2305,23 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
                 "Successfully imported backup '%s' into server '%s'"
                 % (backup_info.backup_id, self.config.name)
             )
+
+            # Apply KEEP:STANDALONE annotation to protect the imported backup
+            # from automatic deletion by retention policies. Failures are
+            # non-fatal: the import has already succeeded at this point.
+            try:
+                self.keep_backup(backup_info.backup_id, KeepManager.TARGET_STANDALONE)
+                output.debug(
+                    "Applied KEEP:STANDALONE annotation to backup '%s'"
+                    % backup_info.backup_id
+                )
+            except Exception as e:
+                output.warning(
+                    "Failed to apply KEEP:STANDALONE annotation to backup "
+                    "'%s' on server '%s': %s. The imported backup may be "
+                    "subject to retention policy deletion."
+                    % (backup_info.backup_id, self.config.name, e)
+                )
         finally:
             # Clean up the staging directory, removing leftovers
             # From successful or failed operations
