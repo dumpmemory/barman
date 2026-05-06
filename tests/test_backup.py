@@ -3409,6 +3409,79 @@ class TestExportBackup(object):
             assert "backup.info" in members
             assert "barman.json" in members
 
+    def test_export_backup_metadata_first_ordering(self, tmpdir):
+        """
+        Test that metadata entries are written at the expected positions
+        (identity.json, backup.info, barman.json) at the very start of the
+        export tarball, ahead of any bulk backup data or WAL entries.
+        """
+        # GIVEN a backup manager with a valid backup
+        backup_manager = build_backup_manager(
+            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
+        )
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=backup_manager.server,
+        )
+
+        # AND the backup directory exists with some data
+        build_backup_directories(backup_info)
+        data_dir = backup_info.get_data_directory()
+        test_file = os.path.join(data_dir, "test_file.txt")
+        with open(test_file, "w") as f:
+            f.write("test content")
+        backup_info.save()
+
+        # AND WAL files and xlog.db exist
+        wals_dir = tmpdir.mkdir("wals")
+        hash_dir = wals_dir.mkdir("0000000100000000")
+        wal_files = [
+            "000000010000000000000001",
+            "000000010000000000000002",
+        ]
+        xlog_db_content = ""
+        for wal in wal_files:
+            hash_dir.join(wal).write_binary(os.urandom(16))
+            xlog_db_content += f"{wal}\t16\t1712994000.0\tNone\tNone\n"
+        wals_dir.join("xlog.db").write(xlog_db_content)
+
+        backup_manager.server.config.wals_directory = wals_dir.strpath
+        backup_manager.server.xlogdb = Mock(
+            side_effect=lambda mode: open(wals_dir.join("xlog.db").strpath, mode)
+        )
+
+        # AND identity and barman data are provided
+        identity_data = {"systemid": "1234567890"}
+        barman_data = {"barman_ver": "3.10.0", "timestamp": "2024-01-01T12:00:00"}
+
+        # AND an output file path is defined
+        output_filepath = os.path.join(tmpdir.strpath, "export.tar")
+
+        # WHEN export_backup is called with patched required WAL segments
+        with patch.object(
+            type(backup_info),
+            "get_required_wal_segments",
+            return_value=iter(wal_files),
+        ):
+            backup_manager.export_backup(
+                backup_info, output_filepath, identity_data, barman_data
+            )
+
+        # THEN metadata entries occupy the first three positions, in order
+        with tarfile.open(output_filepath, "r") as tar:
+            members = tar.getnames()
+
+            assert members[0] == "identity.json"
+            assert members[1] == "backup.info"
+            assert members[2] == "barman.json"
+
+            # AND none of the metadata files appear again later in the tarball
+            metadata_files = {"identity.json", "backup.info", "barman.json"}
+            for name in members[3:]:
+                assert name not in metadata_files, (
+                    "metadata file '%s' must not appear after the metadata block" % name
+                )
+
     def test_add_wal_data_to_tar(self, wal_env):
         """
         Test that _add_wal_data_to_tar adds WAL files and xlog.db to the tarball,

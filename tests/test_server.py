@@ -5305,6 +5305,51 @@ class TestExportBackup(object):
         # AND no files are left in the export directory
         assert len(os.listdir(output_directory.strpath)) == 0
 
+    @pytest.mark.parametrize(
+        "lock_exception, expected_message",
+        [
+            (LockFileBusy(), "Another backup operation is already running"),
+            (LockFilePermissionDenied(), "Permission denied while acquiring"),
+            (LockFileException("disk full"), "Unable to acquire backup export lock"),
+        ],
+    )
+    def test_export_backup_lock_acquisition_failure(
+        self, tmpdir, capsys, lock_exception, expected_message
+    ):
+        """
+        Test that export_backup reports a clear error when acquiring the
+        source-backup lock fails, and does not propagate the exception.
+        """
+        # GIVEN a server with valid identity
+        backup_dir = tmpdir.mkdir("base")
+        output_directory = tmpdir.mkdir("export")
+
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "basebackups_directory": backup_dir.strpath,
+            },
+        )
+
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=server,
+        )
+
+        identity_data = {"systemid": "1234567890"}
+
+        # WHEN export_backup is called and acquiring ServerBackupIdLock raises
+        # the given LockFile* exception
+        with patch.object(server, "read_identity_file", return_value=identity_data):
+            with patch("barman.server.ServerBackupIdLock") as mock_lock_cls:
+                mock_lock_cls.return_value.__enter__.side_effect = lock_exception
+                # THEN no exception is propagated
+                server.export_backup(backup_info, output_directory.strpath)
+
+        # AND the right error message is reported
+        out, err = capsys.readouterr()
+        assert expected_message in err
+
 
 class TestImportBackup(object):
     """Test class for Server.import_backup."""
