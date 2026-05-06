@@ -1956,7 +1956,9 @@ class Server(RemoteStatusMixin):
             output.error("Permission denied, unable to access '%s'" % e)
             return False
 
-    def export_backup(self, backup_info, output_directory):
+    def export_backup(
+        self, backup_info, output_directory, compression=None, compression_level=None
+    ):
         """
         Export a backup to a portable tarball format.
 
@@ -1969,6 +1971,10 @@ class Server(RemoteStatusMixin):
 
         :param BackupInfo backup_info: the backup to export
         :param str output_directory: directory where the export file will be created
+        :param str|None compression: compression algorithm (``gzip``, ``bzip2``,
+            ``xz``) or ``None`` for no compression
+        :param int|None compression_level: compression level to pass to the
+            compressor, or ``None`` for the default level
         """
         # Cloud storage is not yet supported for backup export
         if self.use_backup_cloud_storage or self.use_wal_cloud_storage:
@@ -2012,19 +2018,27 @@ class Server(RemoteStatusMixin):
             ):
                 # Delegate core export work to backup_manager
                 self.backup_manager.export_backup(
-                    backup_info, temp_filepath, identity_data, barman_data
+                    backup_info,
+                    temp_filepath,
+                    identity_data,
+                    barman_data,
+                    compression=compression,
+                    compression_level=compression_level,
                 )
 
             # Calculate checksum of the completed tarball
             output.debug("Calculating checksum for integrity verification")
             checksum = file_hash(temp_filepath)[:8]
 
-            # Create final filename with checksum
-            export_filename = "backup-export-%s-%s-%s-%s.tar" % (
+            # Create final filename with checksum and correct extension
+            file_extensions = {"gzip": ".tar.gz", "bzip2": ".tar.bz2", "xz": ".tar.xz"}
+            file_ext = file_extensions.get(compression, ".tar")
+            export_filename = "backup-export-%s-%s-%s-%s%s" % (
                 self.config.name,
                 backup_info.backup_id,
                 iso_date,
                 checksum,
+                file_ext,
             )
             export_filepath = os.path.join(output_directory, export_filename)
 

@@ -2181,6 +2181,22 @@ def verify_backup(args):
             "output_directory",
             help="directory where the exported tarball will be saved",
         ),
+        argument(
+            "--compression",
+            choices=["gzip", "bzip2", "xz"],
+            default=None,
+            help="if specified, compress the exported tarball using the given "
+            "algorithm (default: no compression)",
+        ),
+        argument(
+            "--compression-level",
+            type=int,
+            default=None,
+            dest="compression_level",
+            help="compression level for the specified algorithm, if any. "
+            "Valid levels are 1-9 for gzip/bzip2, 0-9 for xz (default: algorithm "
+            "default level)",
+        ),
     ],
 )
 def export_backup(args):
@@ -2234,6 +2250,30 @@ def export_backup(args):
         )
         output.close_and_exit()
 
+    # Validate compression options
+    compression = args.compression
+    compression_level = args.compression_level
+
+    if compression is None and compression_level is not None:
+        output.error("--compression-level requires --compression to be set")
+        output.close_and_exit()
+
+    if compression_level is not None:
+        if compression == "xz":
+            valid_levels = range(0, 10)
+        else:
+            valid_levels = range(1, 10)
+
+        if compression_level not in valid_levels:
+            output.error(
+                "Invalid compression level '%s' for algorithm '%s'. "
+                "Valid levels are: %s",
+                compression_level,
+                compression,
+                ", ".join(str(level) for level in valid_levels),
+            )
+            output.close_and_exit()
+
     # Log the export operation
     output.info(
         "Exporting backup '%s' from server '%s' to '%s'",
@@ -2244,7 +2284,12 @@ def export_backup(args):
 
     # Delegate to server for orchestration
     with closing(server):
-        server.export_backup(backup_info, output_directory)
+        server.export_backup(
+            backup_info,
+            output_directory,
+            compression=compression,
+            compression_level=compression_level,
+        )
 
     output.close_and_exit()
 

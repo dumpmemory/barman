@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tarfile
 import tempfile
 from collections import defaultdict
@@ -2043,7 +2044,15 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             return
         output.info(pg_verifybackup.get_output()[0].strip())
 
-    def export_backup(self, backup_info, output_filepath, identity_data, barman_data):
+    def export_backup(
+        self,
+        backup_info,
+        output_filepath,
+        identity_data,
+        barman_data,
+        compression=None,
+        compression_level=None,
+    ):
         """
         Export a completed backup to a portable tarball format.
 
@@ -2068,16 +2077,65 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         :param str output_filepath: full path to the output tarball file
         :param dict identity_data: server identity information
         :param dict barman_data: system information for ``barman.json``
+        :param str|None compression: compression algorithm (``gzip``, ``bzip2``,
+            ``xz``) or ``None`` for no compression
+        :param int|None compression_level: compression level to pass to the
+            compressor, or ``None`` for the default level
         """
         output.debug("Starting export of backup '%s'" % backup_info.backup_id)
 
         # Get source backup directory
         backup_dir = backup_info.get_basebackup_directory()
 
+        # Given the CLI module already handles the validation of compression and
+        # compression_level parameters, this branch is not expected to be hit, but we
+        # add a defensive check here just in case.
+        if compression is None and compression_level is not None:
+            output.warning(
+                "Compression level specified without compression algorithm, ignoring "
+                "compression level"
+            )
+            compression_level = None
+
+        # Build tarfile mode string and keyword arguments for compression
+        compression_modes = {"gzip": "gz", "bzip2": "bz2", "xz": "xz"}
+        mode_suffix = compression_modes.get(compression, "")
+        tar_mode = "w|%s" % mode_suffix if mode_suffix else "w|"
+
+        # ``tarfile`` only accepts the compression-level keyword argument for
+        # streaming modes on recent interpreters: ``compresslevel`` for
+        # ``w|gz`` / ``w|bz2`` requires Python 3.12+, and ``preset`` for
+        # ``w|xz`` requires Python 3.14+. On older interpreters we warn and
+        # fall back to the algorithm's default level so the export still
+        # succeeds.
+        tar_kwargs = {}
+        if compression_level is not None:
+            if compression == "xz":
+                kwarg_name = "preset"
+                required_version = (3, 14)
+            else:
+                kwarg_name = "compresslevel"
+                required_version = (3, 12)
+
+            if sys.version_info < required_version:
+                output.warning(
+                    "Python %d.%d does not support '%s' for streaming tar mode '%s'; "
+                    "ignoring compression level and using the algorithm's default "
+                    "level. Requires Python %d.%d or later.",
+                    sys.version_info[0],
+                    sys.version_info[1],
+                    kwarg_name,
+                    tar_mode,
+                    required_version[0],
+                    required_version[1],
+                )
+            else:
+                tar_kwargs[kwarg_name] = compression_level
+
         # Create the export tarball
         output.debug("Creating export tarball at '%s'" % output_filepath)
 
-        with tarfile.open(output_filepath, "w|") as tar:
+        with tarfile.open(output_filepath, tar_mode, **tar_kwargs) as tar:
             # Add metadata files first so that the importer can validate
             # identity before reading the bulk data in streaming mode (r|*)
             self._add_metadata_to_tar(tar, identity_data, backup_info, barman_data)
