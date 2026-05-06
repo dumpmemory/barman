@@ -2003,10 +2003,17 @@ class Server(RemoteStatusMixin):
             # Collect system information for barman.json
             barman_data = get_barman_system_info()
 
-            # Delegate core export work to backup_manager
-            self.backup_manager.export_backup(
-                backup_info, temp_filepath, identity_data, barman_data
-            )
+            # Acquire a lock on the source backup to prevent concurrent
+            # deletion or modification during export
+            with ServerBackupIdLock(
+                self.config.barman_lock_directory,
+                self.config.name,
+                backup_info.backup_id,
+            ):
+                # Delegate core export work to backup_manager
+                self.backup_manager.export_backup(
+                    backup_info, temp_filepath, identity_data, barman_data
+                )
 
             # Calculate checksum of the completed tarball
             output.debug("Calculating checksum for integrity verification")
@@ -2026,6 +2033,24 @@ class Server(RemoteStatusMixin):
 
             output.info("Export completed successfully: %s" % export_filepath)
 
+        except LockFileBusy:
+            output.error(
+                "Another backup operation is already running on backup '%s' "
+                "for server '%s'" % (backup_info.backup_id, self.config.name)
+            )
+            return
+        except LockFilePermissionDenied:
+            output.error(
+                "Permission denied while acquiring backup export lock for backup "
+                "'%s' on server '%s'" % (backup_info.backup_id, self.config.name)
+            )
+            return
+        except LockFileException as e:
+            output.error(
+                "Unable to acquire backup export lock for backup '%s' on server "
+                "'%s': %s" % (backup_info.backup_id, self.config.name, force_str(e))
+            )
+            return
         except Exception:
             # Clean up temporary file if it exists
             if os.path.exists(temp_filepath):
