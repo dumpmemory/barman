@@ -5188,6 +5188,8 @@ class TestExportBackup(object):
         assert call_args[0][1].endswith(".tmp")
         assert call_args[0][2] == identity_data
         assert call_args[0][3] == {"barman_ver": "3.10.0"}
+        assert call_args[1]["compression"] is None
+        assert call_args[1]["compression_level"] is None
 
         # AND file_hash was called on the temp file
         mock_file_hash.assert_called_once()
@@ -5198,6 +5200,66 @@ class TestExportBackup(object):
         assert rename_args[0].endswith(".tmp")
         assert rename_args[1].endswith(".tar")
         assert "abc12345" in rename_args[1]
+
+    @pytest.mark.parametrize(
+        "compression,expected_ext",
+        [
+            (None, ".tar"),
+            ("gzip", ".tar.gz"),
+            ("bzip2", ".tar.bz2"),
+            ("xz", ".tar.xz"),
+        ],
+    )
+    @patch("os.rename")
+    @patch("barman.server.file_hash", return_value="abc12345")
+    @patch("barman.server.get_barman_system_info")
+    def test_export_backup_compression_extension(
+        self,
+        mock_get_system_info,
+        mock_file_hash,
+        mock_rename,
+        compression,
+        expected_ext,
+        tmpdir,
+    ):
+        """
+        Test that export_backup produces the correct file extension and forwards
+        compression options to backup_manager.export_backup.
+        """
+        # GIVEN a server with a valid backup
+        output_directory = tmpdir.mkdir("export")
+
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+        )
+
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=server,
+        )
+
+        # AND identity data and system info are available
+        identity_data = {"systemid": "1234567890"}
+        mock_get_system_info.return_value = {"barman_ver": "3.10.0"}
+
+        # WHEN export_backup is called with the specified compression
+        with patch.object(server, "read_identity_file", return_value=identity_data):
+            with patch.object(server.backup_manager, "export_backup") as mock_export:
+                server.export_backup(
+                    backup_info,
+                    output_directory.strpath,
+                    compression=compression,
+                    compression_level=5,
+                )
+
+        # THEN backup_manager.export_backup receives the compression arguments
+        call_kwargs = mock_export.call_args[1]
+        assert call_kwargs["compression"] == compression
+        assert call_kwargs["compression_level"] == 5
+
+        # AND os.rename produces a file with the correct extension
+        rename_args = mock_rename.call_args[0]
+        assert rename_args[1].endswith(expected_ext)
 
     def test_export_backup_no_identity_returns_error(self, tmpdir, capsys):
         """

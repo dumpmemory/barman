@@ -3292,6 +3292,8 @@ class TestExportBackup(object):
         args.server_name = "test_server"
         args.backup_id = "20240101T120000"
         args.output_directory = "/tmp/export"
+        args.compression = None
+        args.compression_level = None
 
         mock_server = Mock()
         mock_server.config.name = "test_server"
@@ -3306,10 +3308,180 @@ class TestExportBackup(object):
 
         # THEN server.export_backup is called with the correct arguments
         mock_server.export_backup.assert_called_once_with(
-            mock_backup_info, args.output_directory
+            mock_backup_info,
+            args.output_directory,
+            compression=None,
+            compression_level=None,
         )
         # AND close_and_exit is called
         mock_close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.os.access", return_value=True)
+    @patch("barman.cli.os.path.isdir", return_value=True)
+    @patch("barman.cli.os.path.exists", return_value=True)
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    def test_export_backup_compression_forwarded(
+        self,
+        mock_get_server,
+        mock_parse_backup,
+        mock_exists,
+        mock_isdir,
+        mock_access,
+        mock_close_and_exit,
+    ):
+        """
+        Test that --compression and --compression-level are forwarded to
+        server.export_backup.
+        """
+        # GIVEN a valid backup with gzip compression and level 6
+        args = Mock()
+        args.server_name = "test_server"
+        args.backup_id = "20240101T120000"
+        args.output_directory = "/tmp/export"
+        args.compression = "gzip"
+        args.compression_level = 6
+
+        mock_server = Mock()
+        mock_server.config.name = "test_server"
+        mock_get_server.return_value = mock_server
+
+        mock_backup_info = Mock()
+        mock_backup_info.status = BackupInfo.DONE
+        mock_parse_backup.return_value = mock_backup_info
+
+        # WHEN export_backup is called
+        export_backup(args)
+
+        # THEN server.export_backup is called with the compression arguments
+        mock_server.export_backup.assert_called_once_with(
+            mock_backup_info,
+            args.output_directory,
+            compression="gzip",
+            compression_level=6,
+        )
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.error")
+    @patch("barman.cli.os.access", return_value=True)
+    @patch("barman.cli.os.path.isdir", return_value=True)
+    @patch("barman.cli.os.path.exists", return_value=True)
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    def test_export_backup_compression_level_without_compression_errors(
+        self,
+        mock_get_server,
+        mock_parse_backup,
+        mock_exists,
+        mock_isdir,
+        mock_access,
+        mock_output_error,
+        mock_close_and_exit,
+    ):
+        """
+        Test that --compression-level without --compression produces an error.
+        """
+        # GIVEN a valid backup but compression level set without compression
+        args = Mock()
+        args.server_name = "test_server"
+        args.backup_id = "20240101T120000"
+        args.output_directory = "/tmp/export"
+        args.compression = None
+        args.compression_level = 5
+
+        mock_server = Mock()
+        mock_server.config.name = "test_server"
+        mock_get_server.return_value = mock_server
+
+        mock_backup_info = Mock()
+        mock_backup_info.status = BackupInfo.DONE
+        mock_parse_backup.return_value = mock_backup_info
+
+        # Mock close_and_exit to actually exit
+        mock_close_and_exit.side_effect = SystemExit(1)
+
+        # WHEN export_backup is called
+        with pytest.raises(SystemExit):
+            export_backup(args)
+
+        # THEN an error is reported
+        mock_output_error.assert_called_once_with(
+            "--compression-level requires --compression to be set"
+        )
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.error")
+    @patch("barman.cli.os.access", return_value=True)
+    @patch("barman.cli.os.path.isdir", return_value=True)
+    @patch("barman.cli.os.path.exists", return_value=True)
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    @pytest.mark.parametrize(
+        "compression,compression_level,expected_valid_levels",
+        [
+            # gzip and bzip2 share the same valid range (1-9): reject negatives,
+            # zero, and out-of-range values
+            ("gzip", -1, "1, 2, 3, 4, 5, 6, 7, 8, 9"),
+            ("gzip", 0, "1, 2, 3, 4, 5, 6, 7, 8, 9"),
+            ("gzip", 10, "1, 2, 3, 4, 5, 6, 7, 8, 9"),
+            ("bzip2", 0, "1, 2, 3, 4, 5, 6, 7, 8, 9"),
+            ("bzip2", 10, "1, 2, 3, 4, 5, 6, 7, 8, 9"),
+            # xz allows 0 but otherwise has the same range
+            ("xz", -1, "0, 1, 2, 3, 4, 5, 6, 7, 8, 9"),
+            ("xz", 10, "0, 1, 2, 3, 4, 5, 6, 7, 8, 9"),
+        ],
+    )
+    def test_export_backup_invalid_compression_level_errors(
+        self,
+        mock_get_server,
+        mock_parse_backup,
+        mock_exists,
+        mock_isdir,
+        mock_access,
+        mock_output_error,
+        mock_close_and_exit,
+        compression,
+        compression_level,
+        expected_valid_levels,
+    ):
+        """
+        Test that a --compression-level outside the valid range for the chosen
+        algorithm produces an error.
+        """
+        # GIVEN a valid backup but an out-of-range compression level for the
+        # chosen algorithm
+        args = Mock()
+        args.server_name = "test_server"
+        args.backup_id = "20240101T120000"
+        args.output_directory = "/tmp/export"
+        args.compression = compression
+        args.compression_level = compression_level
+
+        mock_server = Mock()
+        mock_server.config.name = "test_server"
+        mock_get_server.return_value = mock_server
+
+        mock_backup_info = Mock()
+        mock_backup_info.status = BackupInfo.DONE
+        mock_parse_backup.return_value = mock_backup_info
+
+        # Mock close_and_exit to actually exit
+        mock_close_and_exit.side_effect = SystemExit(1)
+
+        # WHEN export_backup is called
+        with pytest.raises(SystemExit):
+            export_backup(args)
+
+        # THEN an error is reported, naming the invalid level, the algorithm,
+        # and the valid range
+        mock_output_error.assert_called_once_with(
+            "Invalid compression level '%s' for algorithm '%s'. "
+            "Valid levels are: %s",
+            compression_level,
+            compression,
+            expected_valid_levels,
+        )
 
 
 class TestImportBackup(object):

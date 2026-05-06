@@ -3341,6 +3341,287 @@ class TestExportBackup(object):
             assert barman_content["barman_ver"] == "3.10.0"
             assert barman_content["timestamp"] == "2024-01-01T12:00:00"
 
+    @pytest.mark.parametrize(
+        "compression,read_mode",
+        [
+            (None, "r"),
+            ("gzip", "r:gz"),
+            ("bzip2", "r:bz2"),
+            ("xz", "r:xz"),
+        ],
+    )
+    @patch.object(BackupManager, "_add_wal_data_to_tar")
+    def test_export_backup_compression(
+        self, mock_add_wal, compression, read_mode, tmpdir
+    ):
+        """
+        Test that export_backup creates a tarball compressed with the specified
+        algorithm.
+        """
+        # GIVEN a backup manager with a valid backup
+        backup_manager = build_backup_manager(
+            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
+        )
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=backup_manager.server,
+        )
+
+        # AND the backup directory exists with some data
+        build_backup_directories(backup_info)
+        data_dir = backup_info.get_data_directory()
+        test_file = os.path.join(data_dir, "test_file.txt")
+        with open(test_file, "w") as f:
+            f.write("test content")
+        backup_info.save()
+
+        # AND identity and barman data are provided
+        identity_data = {"systemid": "1234567890"}
+        barman_data = {"barman_ver": "3.10.0"}
+
+        # AND an output file path is defined
+        output_filepath = os.path.join(tmpdir.strpath, "export.tar")
+
+        # WHEN export_backup is called with the specified compression
+        backup_manager.export_backup(
+            backup_info,
+            output_filepath,
+            identity_data,
+            barman_data,
+            compression=compression,
+        )
+
+        # THEN the tarball is created
+        assert os.path.exists(output_filepath)
+
+        # AND the tarball can be opened with the expected read mode
+        with tarfile.open(output_filepath, read_mode) as tar:
+            tar_members = tar.getnames()
+
+            # AND contains the expected backup data and metadata
+            assert any(name.startswith("backup/") for name in tar_members)
+            assert "identity.json" in tar_members
+            assert "backup.info" in tar_members
+            assert "barman.json" in tar_members
+
+    @pytest.mark.parametrize(
+        "compression,read_mode",
+        [
+            ("gzip", "r:gz"),
+            ("bzip2", "r:bz2"),
+            ("xz", "r:xz"),
+        ],
+    )
+    @patch.object(BackupManager, "_add_wal_data_to_tar")
+    def test_export_backup_compression_level_round_trip(
+        self, mock_add_wal, compression, read_mode, tmpdir
+    ):
+        """
+        Test that export_backup produces a valid compressed tarball when a
+        non-default compression level is set, by letting tarfile actually run
+        and reopening the result. On interpreters that accept the level kwarg
+        for the streaming mode, the level is forwarded; on older ones, the
+        version gate drops the level and the algorithm default is used. In
+        both cases the export must succeed and the tarball must be readable.
+        """
+        # GIVEN a backup manager with a valid backup
+        backup_manager = build_backup_manager(
+            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
+        )
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=backup_manager.server,
+        )
+
+        # AND the backup directory exists with some data
+        build_backup_directories(backup_info)
+        data_dir = backup_info.get_data_directory()
+        test_file = os.path.join(data_dir, "test_file.txt")
+        with open(test_file, "w") as f:
+            f.write("test content")
+        backup_info.save()
+
+        identity_data = {"systemid": "1234567890"}
+        barman_data = {"barman_ver": "3.10.0"}
+        output_filepath = os.path.join(tmpdir.strpath, "export.tar")
+
+        # WHEN export_backup is called with the chosen algorithm and an
+        # explicit non-default compression level
+        backup_manager.export_backup(
+            backup_info,
+            output_filepath,
+            identity_data,
+            barman_data,
+            compression=compression,
+            compression_level=1,
+        )
+
+        # THEN the tarball exists and can be opened with the matching read
+        # mode, regardless of whether the running interpreter honored the
+        # level kwarg or fell back to the algorithm's default via the gate
+        assert os.path.exists(output_filepath)
+        with tarfile.open(output_filepath, read_mode) as tar:
+            tar_members = tar.getnames()
+            assert any(name.startswith("backup/") for name in tar_members)
+            assert "identity.json" in tar_members
+            assert "backup.info" in tar_members
+            assert "barman.json" in tar_members
+
+    @pytest.mark.parametrize(
+        "compression,expected_kwarg",
+        [
+            ("gzip", "compresslevel"),
+            ("bzip2", "compresslevel"),
+            ("xz", "preset"),
+        ],
+    )
+    # Simulate an interpreter new enough that all three streaming modes accept
+    # their compression-level kwarg (compresslevel for gz/bz2: 3.12+; preset
+    # for xz: 3.14+). This keeps the test focused on the kwarg-routing logic
+    # independent of the version-gating fallback exercised below.
+    @patch("barman.backup.sys.version_info", (3, 99, 0))
+    @patch.object(BackupManager, "_add_wal_data_to_tar")
+    @patch.object(BackupManager, "_add_metadata_to_tar")
+    @patch("barman.backup.tarfile.open")
+    def test_export_backup_compression_level(
+        self,
+        mock_tar_open,
+        mock_add_metadata,
+        mock_add_wal,
+        compression,
+        expected_kwarg,
+        tmpdir,
+    ):
+        """
+        Test that export_backup forwards the compression level to tarfile.open
+        using the correct keyword argument for each algorithm.
+        """
+        # GIVEN a backup manager
+        backup_manager = build_backup_manager(
+            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
+        )
+
+        # AND tarfile.open returns a mock that supports context manager
+        mock_tar = mock.MagicMock()
+        mock_tar.name = os.path.join(tmpdir.strpath, "export.tar")
+        mock_tar_open.return_value.__enter__ = Mock(return_value=mock_tar)
+        mock_tar_open.return_value.__exit__ = Mock(return_value=False)
+
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=backup_manager.server,
+        )
+
+        # AND identity and barman data are provided
+        identity_data = {"systemid": "1234567890"}
+        barman_data = {"barman_ver": "3.10.0"}
+
+        output_filepath = os.path.join(tmpdir.strpath, "export.tar")
+
+        # WHEN export_backup is called with compression and a compression level
+        backup_manager.export_backup(
+            backup_info,
+            output_filepath,
+            identity_data,
+            barman_data,
+            compression=compression,
+            compression_level=5,
+        )
+
+        # THEN tarfile.open was called with the correct keyword argument
+        call_kwargs = mock_tar_open.call_args[1]
+        assert expected_kwarg in call_kwargs
+        assert call_kwargs[expected_kwarg] == 5
+
+    @pytest.mark.parametrize(
+        "compression,kwarg_name,running_version,required_version",
+        [
+            # compresslevel for gz/bz2 streaming requires Python 3.12+
+            ("gzip", "compresslevel", (3, 11, 0), (3, 12)),
+            ("bzip2", "compresslevel", (3, 11, 0), (3, 12)),
+            # preset for xz streaming requires Python 3.14+
+            ("xz", "preset", (3, 13, 0), (3, 14)),
+        ],
+    )
+    @patch.object(BackupManager, "_add_wal_data_to_tar")
+    @patch.object(BackupManager, "_add_metadata_to_tar")
+    @patch("barman.backup.tarfile.open")
+    @patch("barman.backup.output.warning")
+    def test_export_backup_compression_level_ignored_on_old_python(
+        self,
+        mock_warning,
+        mock_tar_open,
+        mock_add_metadata,
+        mock_add_wal,
+        compression,
+        kwarg_name,
+        running_version,
+        required_version,
+        tmpdir,
+    ):
+        """
+        Test that on Python versions that do not yet accept the compression
+        level kwarg for streaming tar mode, the level is silently dropped and
+        a warning is emitted instead of letting tarfile.open raise.
+        """
+        # GIVEN a backup manager
+        backup_manager = build_backup_manager(
+            name="TestServer", global_conf={"barman_home": tmpdir.strpath}
+        )
+
+        # AND tarfile.open returns a mock that supports context manager
+        mock_tar = mock.MagicMock()
+        mock_tar.name = os.path.join(tmpdir.strpath, "export.tar")
+        mock_tar_open.return_value.__enter__ = Mock(return_value=mock_tar)
+        mock_tar_open.return_value.__exit__ = Mock(return_value=False)
+
+        backup_info = build_test_backup_info(
+            backup_id="20240101T120000",
+            server=backup_manager.server,
+        )
+
+        identity_data = {"systemid": "1234567890"}
+        barman_data = {"barman_ver": "3.10.0"}
+        output_filepath = os.path.join(tmpdir.strpath, "export.tar")
+
+        # WHEN export_backup is called on an interpreter older than the one
+        # that added kwarg support for the chosen streaming mode
+        with patch("barman.backup.sys.version_info", running_version):
+            backup_manager.export_backup(
+                backup_info,
+                output_filepath,
+                identity_data,
+                barman_data,
+                compression=compression,
+                compression_level=5,
+            )
+
+        # THEN the level kwarg is NOT forwarded to tarfile.open
+        call_kwargs = mock_tar_open.call_args[1]
+        assert kwarg_name not in call_kwargs
+
+        # AND exactly one warning is emitted naming the kwarg, the running
+        # version, and the required version (other unrelated warnings from
+        # build_backup_manager are ignored). output.warning uses lazy
+        # %-formatting, so render the message before substring checks.
+        matching_calls = [
+            call for call in mock_warning.call_args_list if kwarg_name in call.args
+        ]
+        assert len(matching_calls) == 1
+        warning_args = matching_calls[0].args
+        rendered = warning_args[0] % warning_args[1:]
+        assert (
+            "Python %d.%d does not support" % (running_version[0], running_version[1])
+            in rendered
+        )
+        assert (
+            "Requires Python %d.%d or later"
+            % (required_version[0], required_version[1])
+            in rendered
+        )
+        assert "ignoring compression level" in rendered
+        assert "using the algorithm's default level" in rendered
+
     def test_export_backup_integration(self, tmpdir):
         """
         Test end-to-end export_backup without mocking _add_wal_data_to_tar.
