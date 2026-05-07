@@ -69,6 +69,7 @@ from barman.cloud_providers import (
     ObjectKeyAlreadyExists,
     get_cloud_interface,
     get_cloud_interface_from_server_config,
+    recognize_cloud_provider,
     validate_azure_blob_storage_url,
     validate_google_cloud_url,
     validate_s3_url,
@@ -5661,6 +5662,38 @@ def test_validate_google_cloud_url(url, is_valid):
 def test_validate_azure_blob_storage_url(url, is_valid):
     """Test the ``validate_azure_blob_storage_url`` function."""
     assert validate_azure_blob_storage_url(url) == is_valid
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_provider"),
+    (
+        # AWS S3 URLs
+        ("s3://my-bucket/my-object", "aws-s3"),
+        ("s3://bucket-name", "aws-s3"),
+        # Google Cloud Storage URLs
+        ("gs://my-bucket/my-object", "google-cloud-storage"),
+        ("gs://bucket-name", "google-cloud-storage"),
+        # Azure Blob Storage URLs
+        (
+            "https://myaccount.blob.core.windows.net/mycontainer/myblob",
+            "azure-blob-storage",
+        ),
+        (
+            "https://anotheraccount.blob.core.windows.net/container/blob",
+            "azure-blob-storage",
+        ),
+        # Invalid URLs
+        ("http://example.com/bucket", None),
+        ("ftp://my-bucket/my-object", None),
+        ("s3:/my-bucket/my-object", None),
+        ("gs:/my-bucket/my-object", None),
+        ("https://myaccount.blob.core.windows.com/mycontainer/myblob", None),
+        ("", None),
+    ),
+)
+def test_recognize_cloud_provider(url, expected_provider):
+    """Test the ``recognize_cloud_provider`` function."""
+    assert recognize_cloud_provider(url) == expected_provider
 
 
 class TestCloudWalDownloader:
