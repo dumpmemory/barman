@@ -3044,7 +3044,7 @@ class TestCloudWalRestoreCli:
             server_name="test-server",
             wal_name="0000000100000000000000A1",
             wal_dest="/var/lib/pgsql/17/data/pg_wal/0000000100000000000000A1",
-            parallel=0,
+            parallel=2,
             spool_dir="/path/to/spool",
         )
 
@@ -3058,10 +3058,13 @@ class TestCloudWalRestoreCli:
         with pytest.raises(SystemExit):
             cloud_wal_restore(mock_args)
 
-        mock_get_server.return_value.cloud_wal_restore.assert_called_once_with(
+        mock_server = mock_get_server.return_value
+
+        assert mock_server.config.cloud_wal_restore_parallel == 2
+
+        mock_server.cloud_wal_restore.assert_called_once_with(
             "0000000100000000000000A1",
             "/var/lib/pgsql/17/data/pg_wal/0000000100000000000000A1",
-            0,
             "/path/to/spool",
         )
 

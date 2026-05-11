@@ -4170,10 +4170,10 @@ class TestServer(object):
         server.backup_manager = Mock()
         mock_use_wal_cloud_storage.return_value = True
 
-        server.cloud_wal_restore("some_wal_file", "some_dest_path", 0, "/path/to/spool")
+        server.cloud_wal_restore("some_wal_file", "some_dest_path", "/path/to/spool")
 
         server.backup_manager.cloud_wal_restore.assert_called_once_with(
-            "some_wal_file", "some_dest_path", 0, "/path/to/spool"
+            "some_wal_file", "some_dest_path", "/path/to/spool"
         )
 
     @patch("barman.server.Server.use_wal_cloud_storage", new_callable=PropertyMock)
@@ -4189,7 +4189,7 @@ class TestServer(object):
         server.backup_manager = Mock()
         mock_use_wal_cloud_storage.return_value = False
 
-        server.cloud_wal_restore("some_wal_file", "some_dest_path", 0, "/path/to/spool")
+        server.cloud_wal_restore("some_wal_file", "some_dest_path", "/path/to/spool")
 
         server.backup_manager.cloud_wal_restore.assert_not_called()
         mock_output.error.assert_called_once_with(
