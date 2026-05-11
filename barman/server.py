@@ -3451,13 +3451,12 @@ class Server(RemoteStatusMixin):
             self.config.name,
         )
 
-    def cloud_wal_restore(self, wal_name, wal_dest, parallel, spool_dir):
+    def cloud_wal_restore(self, wal_name, wal_dest, spool_dir):
         """
         Restore a WAL file from a cloud object storage.
 
         :param str wal_name: the name of the WAL file to restore
         :param str wal_dest: the destination path where to restore the WAL file
-        :param int parallel: the number of files to download in parallel
         :param str spool_dir: the spool directory for extra WALs fetched in parallel
         """
         if not self.use_wal_cloud_storage:
@@ -3468,7 +3467,7 @@ class Server(RemoteStatusMixin):
             )
             return
 
-        self.backup_manager.cloud_wal_restore(wal_name, wal_dest, parallel, spool_dir)
+        self.backup_manager.cloud_wal_restore(wal_name, wal_dest, spool_dir)
 
     def cron(self, wals=True, retention_policies=True, keep_descriptors=False):
         """

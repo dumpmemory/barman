@@ -2693,7 +2693,7 @@ def cloud_wal_archive(args):
         argument(
             "-p",
             "--parallel",
-            default=0,
+            default=None,
             type=int,
             help="Specifies the number of files to peek and download in parallel. "
             "Default is 0 (disabled)",
@@ -2726,10 +2726,11 @@ def cloud_wal_restore(args):
         disabled_is_error=True,
     )
 
+    if args.parallel is not None:
+        server.config.cloud_wal_restore_parallel = args.parallel
+
     with closing(server):
-        server.cloud_wal_restore(
-            args.wal_name, args.wal_dest, args.parallel, args.spool_dir
-        )
+        server.cloud_wal_restore(args.wal_name, args.wal_dest, args.spool_dir)
 
     output.close_and_exit()
 

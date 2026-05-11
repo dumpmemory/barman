@@ -1362,16 +1362,16 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
         cloud_archiver = CloudWalArchiver(self)
         cloud_archiver.archive(wal_path, parallel)
 
-    def cloud_wal_restore(self, wal_name, wal_dest, parallel, spool_dir):
+    def cloud_wal_restore(self, wal_name, wal_dest, spool_dir):
         """
         Restore a WAL file from a cloud object storage.
 
         :param str wal_name: the name of the WAL file to restore
         :param str wal_dest: the destination path where to restore the WAL file
-        :param int parallel: the number of files to download in parallel
         :param str spool_dir: the spool directory for extra WALs fetched in parallel
         """
         cloud_interface = self.server.get_wal_cloud_interface()
+        parallel = self.config.cloud_wal_restore_parallel
         wal_downloader = CloudWalDownloader(
             cloud_interface, self.config.name, spool_dir
         )
