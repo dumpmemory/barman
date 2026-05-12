@@ -3111,6 +3111,7 @@ class TestExportBackup(object):
 
         mock_backup_info = Mock()
         mock_backup_info.status = BackupInfo.STARTED
+        mock_backup_info.is_incremental = False
         mock_parse_backup.return_value = mock_backup_info
 
         # Mock close_and_exit to actually exit
@@ -3128,6 +3129,55 @@ class TestExportBackup(object):
             BackupInfo.STARTED,
         )
         mock_close_and_exit.assert_called_once_with()
+
+    @patch("barman.cli.output.close_and_exit")
+    @patch("barman.cli.output.error")
+    @patch("barman.cli.parse_backup_id")
+    @patch("barman.cli.get_server")
+    def test_export_backup_incremental_refused(
+        self,
+        mock_get_server,
+        mock_parse_backup,
+        mock_output_error,
+        mock_close_and_exit,
+    ):
+        """
+        Test that export_backup refuses block-level incremental backups,
+        before any tarball output is produced.
+        """
+        # GIVEN a backup that is a PostgreSQL block-level incremental backup
+        args = Mock()
+        args.server_name = "test_server"
+        args.backup_id = "20240101T120000"
+        args.output_directory = "/tmp/export"
+
+        mock_server = Mock()
+        mock_server.config.name = "test_server"
+        mock_get_server.return_value = mock_server
+
+        mock_backup_info = Mock()
+        mock_backup_info.backup_id = args.backup_id
+        mock_backup_info.status = BackupInfo.DONE
+        mock_backup_info.is_incremental = True
+        mock_parse_backup.return_value = mock_backup_info
+
+        # AND close_and_exit actually exits
+        mock_close_and_exit.side_effect = SystemExit(1)
+
+        # WHEN export_backup is called
+        with pytest.raises(SystemExit):
+            export_backup(args)
+
+        # THEN an error naming the operation and the parent-chain reason
+        # is reported and the command exits
+        mock_output_error.assert_called_once_with(
+            "Cannot export backup %s from server %s: it is an incremental backup.\n"
+            "Only full backups are eligible for exporting."
+            % (args.backup_id, mock_server.config.name)
+        )
+        mock_close_and_exit.assert_called_once_with()
+        # AND the server-level export is never invoked
+        mock_server.export_backup.assert_not_called()
 
     @patch("barman.cli.output.close_and_exit")
     @patch("barman.cli.output.error")
@@ -3157,6 +3207,7 @@ class TestExportBackup(object):
 
         mock_backup_info = Mock()
         mock_backup_info.status = BackupInfo.DONE
+        mock_backup_info.is_incremental = False
         mock_parse_backup.return_value = mock_backup_info
 
         # Mock close_and_exit to actually exit
@@ -3203,6 +3254,7 @@ class TestExportBackup(object):
 
         mock_backup_info = Mock()
         mock_backup_info.status = BackupInfo.DONE
+        mock_backup_info.is_incremental = False
         mock_parse_backup.return_value = mock_backup_info
 
         # Mock close_and_exit to actually exit
@@ -3252,6 +3304,7 @@ class TestExportBackup(object):
 
         mock_backup_info = Mock()
         mock_backup_info.status = BackupInfo.DONE
+        mock_backup_info.is_incremental = False
         mock_parse_backup.return_value = mock_backup_info
 
         # Mock close_and_exit to actually exit
@@ -3301,6 +3354,7 @@ class TestExportBackup(object):
 
         mock_backup_info = Mock()
         mock_backup_info.status = BackupInfo.DONE
+        mock_backup_info.is_incremental = False
         mock_parse_backup.return_value = mock_backup_info
 
         # WHEN export_backup is called
@@ -3396,6 +3450,7 @@ class TestExportBackup(object):
 
         mock_backup_info = Mock()
         mock_backup_info.status = BackupInfo.DONE
+        mock_backup_info.is_incremental = False
         mock_parse_backup.return_value = mock_backup_info
 
         # Mock close_and_exit to actually exit
@@ -3464,6 +3519,7 @@ class TestExportBackup(object):
 
         mock_backup_info = Mock()
         mock_backup_info.status = BackupInfo.DONE
+        mock_backup_info.is_incremental = False
         mock_parse_backup.return_value = mock_backup_info
 
         # Mock close_and_exit to actually exit

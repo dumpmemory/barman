@@ -4358,6 +4358,53 @@ class TestImportBackup(object):
         assert "already exists" in str(exc_info.value)
         assert "20240101T120000" in str(exc_info.value)
 
+    def test_import_backup_incremental_refused(self, import_env):
+        """
+        Test that import_backup refuses block-level incremental backups
+        (defense-in-depth) before any catalog state is mutated.
+        """
+        # GIVEN a tarball whose embedded backup.info advertises a parent
+        # backup, i.e. it is a PostgreSQL block-level incremental backup
+        backup_manager = import_env["backup_manager"]
+        backup_info_content = (
+            "server_name=TestServer\n"
+            "status=DONE\n"
+            "begin_wal=000000010000000000000001\n"
+            "end_wal=000000010000000000000002\n"
+            "parent_backup_id=20231231T120000\n"
+        )
+        input_tarball = import_env["make_tarball"](
+            backup_info_content=backup_info_content
+        )
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # AND the meta directory exists
+        os.makedirs(backup_manager.server.meta_directory, exist_ok=True)
+
+        # WHEN import_backup is called
+        # THEN an ImportBackupException naming the operation and the
+        # parent-chain reason is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager.import_backup(
+                input_tarball, local_identity, "20240101T120000"
+            )
+
+        assert "incremental backup" in str(exc_info.value)
+        assert "20240101T120000" in str(exc_info.value)
+        assert "Only full backups are eligible for importing." in str(exc_info.value)
+
+        # AND no catalog state has been mutated: the backup is not
+        # registered, no basebackup directory exists for it, and the
+        # staging directory has been cleaned up.
+        assert backup_manager.get_backup("20240101T120000") is None
+        target_dir = os.path.join(
+            backup_manager.config.basebackups_directory, "20240101T120000"
+        )
+        assert not os.path.exists(target_dir)
+        base_dir = backup_manager.config.basebackups_directory
+        staging_dirs = [d for d in os.listdir(base_dir) if d.startswith(".import-")]
+        assert len(staging_dirs) == 0
+
     def test_import_backup_cleanup_on_failure(self, import_env):
         """
         Test that staging directory is cleaned up on any failure that occurs
