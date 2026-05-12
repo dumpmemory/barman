@@ -2218,6 +2218,17 @@ def export_backup(args):
     # Get output directory from CLI
     output_directory = args.output_directory
 
+    # Refuse incremental backups: a block-level incremental backup is only
+    # meaningful as part of its parent chain, so an exported tarball of a
+    # single incremental backup cannot be cleanly restored standalone.
+    if backup_info.is_incremental:
+        output.error(
+            "Cannot export backup %s from server %s: it is an incremental backup.\n"
+            "Only full backups are eligible for exporting."
+            % (backup_info.backup_id, server.config.name)
+        )
+        output.close_and_exit()
+
     # Validate backup status is DONE
     if backup_info.status != BackupInfo.DONE:
         output.error(

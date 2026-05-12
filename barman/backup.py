@@ -2336,6 +2336,19 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             # and saves later).
             self._verify_staging(staging_dir, backup_info)
 
+            # Refuse incremental backups: a block-level incremental backup is
+            # only meaningful as part of its parent chain. Importing one in
+            # isolation would leave the catalog referencing a parent that
+            # may not exist on the target server.
+            # Given export-backup disallows incremental backups, this branch should
+            # never be exercised, but we add a safeguard just in case.
+            if backup_info.is_incremental:
+                raise ImportBackupException(
+                    "Cannot import backup %s into server %s: it is an "
+                    "incremental backup.\nOnly full backups are eligible "
+                    "for importing." % (backup_info.backup_id, self.config.name)
+                )
+
             # Move backup data to its target location
             self._import_backup_data(staging_dir, backup_info)
 
