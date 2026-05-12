@@ -104,6 +104,11 @@ from barman.wal_archiver import CloudWalArchiver, CloudWalStorageStrategy
 
 _logger = logging.getLogger(__name__)
 
+# Prefix for pg_tblspc symlinks in exported tarballs. Members matching
+# this prefix exactly (no further '/') are skipped by _extract_tarball
+# and reconstructed by _reconstruct_tablespace_symlinks.
+_PG_TBLSPC_TARBALL_PREFIX = "backup/data/pg_tblspc/"
+
 
 class BackupManager(RemoteStatusMixin, KeepManagerMixin):
     """Manager of the backup archive for a server"""
@@ -2349,6 +2354,11 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
                     "for importing." % (backup_info.backup_id, self.config.name)
                 )
 
+            # Recreate pg_tblspc symlinks that were skipped during tar
+            # extraction.  Must run after _verify_staging so that
+            # backup_info.tablespaces is populated from backup.info.
+            self._reconstruct_tablespace_symlinks(staging_dir, backup_info)
+
             # Move backup data to its target location
             self._import_backup_data(staging_dir, backup_info)
 
@@ -2413,7 +2423,9 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
 
         :param str input_tarball: path to the tarball
         :param str staging_dir: target directory for extraction
-        :raises ImportBackupException: if extraction fails
+        :raises ImportBackupException: if extraction fails or an unsafe member
+            is encountered. Symlinks under ``backup/data/pg_tblspc/`` are
+            skipped rather than rejected.
         """
         try:
             with tarfile.open(input_tarball, "r|*") as tar:
@@ -2433,7 +2445,26 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
                         )
                     # Security: reject links and other special file types.
                     # Only regular files and directories are expected in an
-                    # exported backup tarball.
+                    # exported backup tarball, with the single exception of
+                    # pg_tblspc symlinks (see below).
+                    if member.issym():
+                        # pg_basebackup emits tablespace entries as symlinks
+                        # directly under ``data/pg_tblspc/``.  These are
+                        # legitimate — skip them here and let
+                        # ``_reconstruct_tablespace_symlinks`` recreate them
+                        # with the correct destination-catalog paths after
+                        # ``backup.info`` has been loaded.
+                        # Any other symlink (including nested paths such as
+                        # ``backup/data/pg_tblspc/oid/something``) is still
+                        # rejected as a potential path-traversal vector.
+                        if (
+                            member.name.startswith(_PG_TBLSPC_TARBALL_PREFIX)
+                            and "/" not in member.name[len(_PG_TBLSPC_TARBALL_PREFIX) :]
+                        ):
+                            continue
+                        raise ImportBackupException(
+                            "Tarball contains unsafe member type: '%s'" % member.name
+                        )
                     if not (member.isdir() or member.isreg()):
                         raise ImportBackupException(
                             "Tarball contains unsafe member type: '%s'" % member.name
@@ -2443,6 +2474,72 @@ class BackupManager(RemoteStatusMixin, KeepManagerMixin):
             raise ImportBackupException(
                 "Failed to extract tarball '%s': %s" % (input_tarball, e)
             )
+
+    def _reconstruct_tablespace_symlinks(self, staging_dir, backup_info):
+        """
+        Recreate ``pg_tblspc`` symlinks in the staging directory after tarball
+        extraction.
+
+        ``pg_basebackup`` emits tablespace entries as symlinks directly under
+        ``data/pg_tblspc/<oid>``.  :meth:`_extract_tarball` skips these
+        members to avoid the broad symlink-rejection check.  This method
+        recreates them pointing to the correct destination-catalog paths
+        (``backup_info.get_data_directory(oid)``) before the staging
+        ``backup/`` tree is moved to its final location by
+        :meth:`_import_backup_data`.
+
+        This is a no-op when *backup_info* carries no tablespaces.
+
+        :param str staging_dir: path to the staging directory
+        :param LocalBackupInfo backup_info: backup info whose
+            ``tablespaces`` attribute provides the OID list
+        :raises ImportBackupException: if a symlink cannot be created
+        """
+        if not backup_info.tablespaces:
+            return
+
+        pg_tblspc_dir = os.path.join(staging_dir, "backup", "data", "pg_tblspc")
+        if not os.path.isdir(pg_tblspc_dir):
+            try:
+                os.makedirs(pg_tblspc_dir)
+            except OSError as e:
+                raise ImportBackupException(
+                    "Failed to create pg_tblspc directory '%s': %s" % (pg_tblspc_dir, e)
+                )
+
+        for tablespace in backup_info.tablespaces:
+            link_path = os.path.join(pg_tblspc_dir, str(tablespace.oid))
+            target_path = backup_info.get_data_directory(tablespace.oid)
+
+            # ``lexists`` (not ``exists``) so that a broken symlink — one
+            # whose target no longer exists — still enters this branch and
+            # is inspected. ``exists`` follows links and would skip such an
+            # entry, leaving it in place to break the ``os.symlink`` call
+            # below. Refuse to remove a real directory: ``os.path.isdir``
+            # follows symlinks, so pairing it with ``not islink`` isolates
+            # the real-directory case (suspicious, abort) from the symlink-
+            # to-directory case (a stale link from a previous import, safe
+            # to replace).
+            if os.path.lexists(link_path):
+                if os.path.isdir(link_path) and not os.path.islink(link_path):
+                    raise ImportBackupException(
+                        "Cannot replace existing directory at tablespace link "
+                        "path '%s'" % link_path
+                    )
+                try:
+                    os.unlink(link_path)
+                except OSError as e:
+                    raise ImportBackupException(
+                        "Failed to remove existing tablespace link path "
+                        "'%s': %s" % (link_path, e)
+                    )
+            try:
+                os.symlink(target_path, link_path)
+            except OSError as e:
+                raise ImportBackupException(
+                    "Failed to create tablespace symlink '%s' -> '%s': %s"
+                    % (link_path, target_path, e)
+                )
 
     def _read_identity_from_tarball(self, input_tarball):
         """
