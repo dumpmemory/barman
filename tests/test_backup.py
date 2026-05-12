@@ -51,7 +51,7 @@ from barman.exceptions import (
     ImportBackupException,
     RecoveryInvalidTargetException,
 )
-from barman.infofile import BackupInfo, load_datetime_tz
+from barman.infofile import BackupInfo, LocalBackupInfo, Tablespace, load_datetime_tz
 from barman.lockfile import ServerBackupIdLock
 from barman.retention_policies import RetentionPolicyFactory
 from barman.wal_archiver import CloudWalStorageStrategy, LocalWalStorageStrategy
@@ -4539,6 +4539,251 @@ class TestImportBackup(object):
 
         assert "unsafe member type" in str(exc_info.value).lower()
         assert "evil_link" in str(exc_info.value)
+
+    def test_extract_tarball_skips_pg_tblspc_symlinks(self, import_env):
+        """
+        Test that symlinks directly under ``backup/data/pg_tblspc/`` are
+        skipped during extraction rather than being rejected.
+
+        ``pg_basebackup`` emits tablespace entries as symlinks at exactly this
+        path.  They are skipped here and recreated by
+        ``_reconstruct_tablespace_symlinks`` with correct destination paths.
+        """
+        # GIVEN a staging directory
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        staging_dir = tmpdir.mkdir("staging_tblspc").strpath
+
+        # AND a tarball containing a pg_tblspc symlink (OID 16384)
+        input_tarball = os.path.join(tmpdir.strpath, "with_tblspc_symlink.tar")
+        with tarfile.open(input_tarball, "w") as tar:
+            data = b"test"
+            info = tarfile.TarInfo(name="backup/data/test_file.txt")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+            symlink_info = tarfile.TarInfo(name="backup/data/pg_tblspc/16384")
+            symlink_info.type = tarfile.SYMTYPE
+            symlink_info.linkname = "/var/lib/barman/server/base/backup_id/16384"
+            tar.addfile(symlink_info)
+
+        # WHEN _extract_tarball is called
+        # THEN it succeeds (no ImportBackupException)
+        backup_manager._extract_tarball(input_tarball, staging_dir)
+
+        # AND the regular file was extracted
+        assert os.path.isfile(
+            os.path.join(staging_dir, "backup", "data", "test_file.txt")
+        )
+
+        # AND the symlink was NOT extracted (will be reconstructed later)
+        assert not os.path.lexists(
+            os.path.join(staging_dir, "backup", "data", "pg_tblspc", "16384")
+        )
+
+    def test_extract_tarball_rejects_nested_pg_tblspc_symlink(self, import_env):
+        """
+        Test that a symlink nested deeper under ``pg_tblspc/`` (e.g.
+        ``backup/data/pg_tblspc/16384/something``) is still rejected.
+
+        Only the direct OID entry is legitimate; anything nested inside it
+        could be a path-traversal attempt.
+        """
+        # GIVEN a staging directory
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        staging_dir = tmpdir.mkdir("staging_nested").strpath
+
+        # AND a tarball with a symlink nested under pg_tblspc/<oid>/
+        input_tarball = os.path.join(tmpdir.strpath, "nested_tblspc_symlink.tar")
+        with tarfile.open(input_tarball, "w") as tar:
+            symlink_info = tarfile.TarInfo(name="backup/data/pg_tblspc/16384/something")
+            symlink_info.type = tarfile.SYMTYPE
+            symlink_info.linkname = "/etc/passwd"
+            tar.addfile(symlink_info)
+
+        # WHEN _extract_tarball is called
+        # THEN an ImportBackupException is raised
+        with pytest.raises(ImportBackupException) as exc_info:
+            backup_manager._extract_tarball(input_tarball, staging_dir)
+
+        assert "unsafe member type" in str(exc_info.value).lower()
+
+    def test_reconstruct_tablespace_symlinks_creates_links(self, import_env):
+        """
+        Test that ``_reconstruct_tablespace_symlinks`` creates a symlink
+        under ``staging/backup/data/pg_tblspc/<oid>`` pointing to
+        ``backup_info.get_data_directory(oid)`` for each tablespace.
+        """
+        # GIVEN a staging directory with the expected backup/data/pg_tblspc/ tree
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        staging_dir = tmpdir.mkdir("staging_reconstruct").strpath
+        pg_tblspc_dir = os.path.join(staging_dir, "backup", "data", "pg_tblspc")
+        os.makedirs(pg_tblspc_dir)
+
+        # AND a backup_info populated with one tablespace (OID 16384)
+
+        backup_info = LocalBackupInfo(
+            backup_manager.server, backup_id="20240101T120000"
+        )
+        backup_info.tablespaces = [Tablespace(oid=16384, name="mytbs", location="/tbs")]
+        backup_info.backup_version = 2
+
+        # WHEN _reconstruct_tablespace_symlinks is called
+        backup_manager._reconstruct_tablespace_symlinks(staging_dir, backup_info)
+
+        # THEN a symlink exists at staging/backup/data/pg_tblspc/16384
+        link_path = os.path.join(pg_tblspc_dir, "16384")
+        assert os.path.islink(link_path)
+
+        # AND it points to backup_info.get_data_directory(16384)
+        expected_target = backup_info.get_data_directory(16384)
+        assert os.readlink(link_path) == expected_target
+
+    def test_reconstruct_tablespace_symlinks_noop_when_no_tablespaces(self, import_env):
+        """
+        Test that ``_reconstruct_tablespace_symlinks`` is a no-op when
+        ``backup_info.tablespaces`` is None or empty.
+        """
+        # GIVEN a staging directory without any pg_tblspc subtree
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        staging_dir = tmpdir.mkdir("staging_no_tbs").strpath
+
+        # AND a backup_info with no tablespaces
+
+        backup_info = LocalBackupInfo(
+            backup_manager.server, backup_id="20240101T120000"
+        )
+        backup_info.tablespaces = None
+
+        # WHEN _reconstruct_tablespace_symlinks is called
+        # THEN it returns without error and creates no pg_tblspc directory
+        backup_manager._reconstruct_tablespace_symlinks(staging_dir, backup_info)
+
+        assert not os.path.exists(
+            os.path.join(staging_dir, "backup", "data", "pg_tblspc")
+        )
+
+    def test_reconstruct_tablespace_symlinks_raises_on_existing_directory(
+        self, import_env
+    ):
+        """
+        Test that ``_reconstruct_tablespace_symlinks`` raises
+        ``ImportBackupException`` when a real directory (not a symlink) already
+        exists at the expected link path.
+        """
+        # GIVEN a staging directory with a real directory at the oid path
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        staging_dir = tmpdir.mkdir("staging_dir_conflict").strpath
+        pg_tblspc_dir = os.path.join(staging_dir, "backup", "data", "pg_tblspc")
+        os.makedirs(os.path.join(pg_tblspc_dir, "16384"))
+
+        # AND a backup_info populated with that tablespace OID
+
+        backup_info = LocalBackupInfo(
+            backup_manager.server, backup_id="20240101T120000"
+        )
+        backup_info.tablespaces = [Tablespace(oid=16384, name="mytbs", location="/tbs")]
+        backup_info.backup_version = 2
+
+        # WHEN _reconstruct_tablespace_symlinks is called
+        # THEN it raises ImportBackupException
+        with pytest.raises(ImportBackupException, match="Cannot replace existing"):
+            backup_manager._reconstruct_tablespace_symlinks(staging_dir, backup_info)
+
+    def test_import_backup_with_tablespaces(self, import_env):
+        """
+        Test that ``import_backup`` succeeds end-to-end when the exported
+        tarball contains a pg_tblspc symlink for a custom tablespace.
+
+        Verifies that after import the catalog contains a symlink at
+        ``<basebackup>/data/pg_tblspc/<oid>`` pointing to the correct
+        destination-catalog tablespace directory.
+        """
+        # GIVEN a backup_info content that declares one tablespace (OID 16384).
+        # Note: backup_version is a runtime attribute detected from the directory
+        # structure, not a Field written to backup.info.  Omitting it here
+        # ensures the backup_info loaded from staging correctly defaults to 2.
+        backup_info_content = (
+            "server_name=TestServer\n"
+            "status=DONE\n"
+            "begin_wal=000000010000000000000001\n"
+            "end_wal=000000010000000000000002\n"
+            "tablespaces=[('mytbs', 16384, '/original/tbs')]\n"
+        )
+
+        backup_manager = import_env["backup_manager"]
+        tmpdir = import_env["tmpdir"]
+
+        # AND a tarball that includes the pg_tblspc symlink
+        input_tarball = os.path.join(tmpdir.strpath, "tblspc_export.tar")
+        with tarfile.open(input_tarball, "w") as tar:
+            # identity.json
+            identity = json.dumps({"systemid": "1234567890", "version": "15"}).encode(
+                "utf-8"
+            )
+            info = tarfile.TarInfo(name="identity.json")
+            info.size = len(identity)
+            tar.addfile(info, io.BytesIO(identity))
+
+            # backup.info
+            info_bytes = backup_info_content.encode("utf-8")
+            info = tarfile.TarInfo(name="backup.info")
+            info.size = len(info_bytes)
+            tar.addfile(info, io.BytesIO(info_bytes))
+
+            # backup/data/test_file.txt
+            data = b"pgdata content"
+            info = tarfile.TarInfo(name="backup/data/test_file.txt")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+            # backup/data/pg_tblspc/16384 (symlink — as emitted by pg_basebackup)
+            sym = tarfile.TarInfo(name="backup/data/pg_tblspc/16384")
+            sym.type = tarfile.SYMTYPE
+            sym.linkname = "/var/lib/barman/source/base/20240101T120000/16384"
+            tar.addfile(sym)
+
+            # wals and xlog.db
+            for wal in ["000000010000000000000001", "000000010000000000000002"]:
+                from barman import xlog as xlog_mod
+
+                wal_data = os.urandom(16)
+                wal_path = "wals/%s/%s" % (xlog_mod.hash_dir(wal), wal)
+                info = tarfile.TarInfo(name=wal_path)
+                info.size = len(wal_data)
+                tar.addfile(info, io.BytesIO(wal_data))
+            xlogdb = (
+                "000000010000000000000001\t16\t1712994000.0\tNone\tNone\n"
+                "000000010000000000000002\t16\t1712994000.0\tNone\tNone\n"
+            ).encode("utf-8")
+            info = tarfile.TarInfo(name="xlog.db")
+            info.size = len(xlogdb)
+            tar.addfile(info, io.BytesIO(xlogdb))
+
+        local_identity = {"systemid": "1234567890", "version": "15"}
+
+        # WHEN import_backup is called
+        backup_manager.import_backup(input_tarball, local_identity, "20240101T120000")
+
+        # THEN a symlink exists at <basebackup>/data/pg_tblspc/16384.
+        # With backup_version auto-detected as 2 from the imported directory
+        # layout, PGDATA lives under "data/" and tablespace dirs under
+        # "<oid>/".  Use explicit paths so the assertion is independent of the
+        # backup_version auto-detection logic in LocalBackupInfo.__init__.
+        base = os.path.join(
+            backup_manager.config.basebackups_directory, "20240101T120000"
+        )
+        pg_tblspc_link = os.path.join(base, "data", "pg_tblspc", "16384")
+        assert os.path.islink(pg_tblspc_link), "Expected symlink at %s" % pg_tblspc_link
+
+        # AND the symlink points to the destination-catalog tablespace directory
+        # (i.e. <basebackup>/<oid>/, where tablespace data lives for v2 backups)
+        expected_target = os.path.join(base, "16384")
+        assert os.readlink(pg_tblspc_link) == expected_target
 
     def test_import_backup_invalid_tarball(self, import_env):
         """
