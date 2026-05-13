@@ -525,6 +525,21 @@ class TestServer(object):
         # AND no error was emitted
         mock_output.error.assert_not_called()
 
+    @patch("barman.backup.BackupManager.get_latest_archived_wals_info")
+    def test_get_latest_timeline(self, mock_get_latest_archived_wals_info):
+        """Test that _get_latest_timeline returns the maximum timeline ID from the archived WALs"""
+        # GIVEN a server with mocked get_latest_archived_wals_info method
+        server = build_real_server()
+        mock_get_latest_archived_wals_info.return_value = {
+            "00000001": [],
+            "00000009": [],
+            "0000000B": [],
+        }
+        # WHEN _get_latest_timeline is called
+        latest_timeline = server._get_latest_timeline()
+        # THEN the maximum timeline ID is returned
+        assert latest_timeline == 11
+
     @pytest.mark.parametrize(
         [
             "wal_info_files",
@@ -766,6 +781,7 @@ class TestServer(object):
             global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
             main_conf={"wals_directory": wals_dir.strpath},
         )
+        server.postgres = mock.Mock(server_version=90000)
 
         # Prepare input string
         walstring = get_wal_lines_from_wal_list(wal_info_files)
@@ -873,6 +889,7 @@ class TestServer(object):
                 "streaming_wals_directory": streaming_dir.strpath,
             },
         )
+        server.postgres = mock.Mock(server_version=90000)
         # AND an empty xlogdb (so end stays at backup.end_wal = segment 4,
         # making the next expected segment 5)
         wals_dir.join(server.xlogdb_file_name).write("")
@@ -920,6 +937,7 @@ class TestServer(object):
                 "streaming_wals_directory": streaming_dir.strpath,
             },
         )
+        server.postgres = mock.Mock(server_version=90000)
         # AND a WAL in the archive after end_wal with a timestamp beyond target_time
         wal_after_target = create_fake_info_file("000000020000000000000005", 42, 50)
         walstring = get_wal_lines_from_wal_list([wal_after_target])
@@ -1016,6 +1034,7 @@ class TestServer(object):
                 "streaming_wals_directory": streaming_dir.strpath,
             },
         )
+        server.postgres = mock.Mock(server_version=90000)
         # AND an xlogdb with an optional WAL entry to advance ``end``
         xlogdb = wals_dir.join(server.xlogdb_file_name)
         if xlogdb_wal:
@@ -1069,6 +1088,7 @@ class TestServer(object):
                 "streaming_wals_directory": streaming_dir.strpath,
             },
         )
+        server.postgres = mock.Mock(server_version=90000)
         # AND an empty xlogdb
         wals_dir.join(server.xlogdb_file_name).write("")
         # AND a .partial file in the streaming directory on the correct timeline
@@ -1115,6 +1135,7 @@ class TestServer(object):
                 "streaming_wals_directory": streaming_dir.strpath,
             },
         )
+        server.postgres = mock.Mock(server_version=90000)
         # AND an empty xlogdb (so end stays at backup.end_wal = tli=1 segment 4)
         wals_dir.join(server.xlogdb_file_name).write("")
         # AND a .partial file on the OLD timeline (tli=1) in the streaming dir
@@ -1204,6 +1225,7 @@ class TestServer(object):
                 "streaming_wals_directory": streaming_dir.strpath,
             },
         )
+        server.postgres = mock.Mock(server_version=90000)
         # AND xlogdb contains both a regular WAL and a .partial WAL
         regular_wal = create_fake_info_file("000000020000000000000005", 42, 50)
         partial_wal = create_fake_info_file("000000020000000000000006.partial", 42, 51)
@@ -1225,6 +1247,122 @@ class TestServer(object):
         # THEN both the regular WAL and the .partial WAL are returned
         assert "000000020000000000000005" in wal_names
         assert "000000020000000000000006.partial" in wal_names
+
+    @patch("barman.server.Server._get_latest_timeline")
+    def test_get_required_xlog_files_timeline_is_latest_if_doing_pitr_and_postgres_at_least_12(
+        self,
+        mock_get_latest_timeline,
+        tmpdir,
+    ):
+        """
+        Test that when doing PITR without specifying target_tli and Postgres >= 12,
+        get_required_xlog_files defaults to the latest timeline from xlogdb.
+
+        PostgreSQL 12+ changed the default for recovery_target_timeline from
+        'current' to 'latest'. PITR options (target_time, target_xid) don't
+        change the timeline selection — they only affect which WAL content is
+        needed for recovery.
+        """
+        wals_dir = tmpdir.mkdir("wals")
+        streaming_dir = tmpdir.mkdir("streaming")
+
+        # GIVEN a backup on timeline 1
+        backup = build_test_backup_info(
+            begin_wal="000000010000000000000001",
+            end_wal="000000010000000000000003",
+            timeline=1,
+        )
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "wals_directory": wals_dir.strpath,
+                "streaming_wals_directory": streaming_dir.strpath,
+            },
+        )
+        # AND Postgres version is 12 or later
+        server.postgres = mock.Mock(server_version=120000)
+        # AND xlogdb contains WAL files on timeline 1 and timeline 2 (latest)
+        wal_tli1_1 = create_fake_info_file("000000010000000000000001", 42, 50)
+        wal_tli1_2 = create_fake_info_file("000000010000000000000002", 42, 51)
+        wal_tli1_3 = create_fake_info_file("000000010000000000000003", 42, 52)
+        history_tli2 = create_fake_info_file("00000002.history", 10, 53)
+        wal_tli2_1 = create_fake_info_file("000000020000000000000003", 42, 54)
+        wal_tli2_2 = create_fake_info_file("000000020000000000000004", 42, 55)
+        walstring = get_wal_lines_from_wal_list(
+            [wal_tli1_1, wal_tli1_2, wal_tli1_3, history_tli2, wal_tli2_1, wal_tli2_2]
+        )
+        wals_dir.join(server.xlogdb_file_name).write(walstring)
+        mock_get_latest_timeline.return_value = 2
+
+        # WHEN get_required_xlog_files runs with PITR options but no target_tli
+        wals = list(
+            server.get_required_xlog_files(backup, target_time="2024-01-01 12:00:00")
+        )
+        wal_names = [w.name for w in wals]
+
+        # THEN WAL files from both timeline 1 and timeline 2 are returned
+        # (because latest timeline is 2, and PITR options don't restrict timeline)
+        assert "000000010000000000000001" in wal_names
+        assert "000000010000000000000002" in wal_names
+        assert "000000010000000000000003" in wal_names
+        assert "00000002.history" in wal_names
+        assert "000000020000000000000003" in wal_names
+        assert "000000020000000000000004" in wal_names
+
+    def test_get_required_xlog_files_timeline_is_current_if_postgres_less_than_12(
+        self,
+        tmpdir,
+    ):
+        """
+        Test that when target_tli is not specified and Postgres < 12, the
+        get_required_xlog_files method defaults to the backup's timeline.
+
+        PostgreSQL versions before 12 defaulted recovery_target_timeline to
+        'current', meaning the timeline of the backup being restored.
+        """
+        wals_dir = tmpdir.mkdir("wals")
+        streaming_dir = tmpdir.mkdir("streaming")
+
+        # GIVEN a backup on timeline 1
+        backup = build_test_backup_info(
+            begin_wal="000000010000000000000001",
+            end_wal="000000010000000000000003",
+            timeline=1,
+        )
+        server = build_real_server(
+            global_conf={"barman_lock_directory": tmpdir.mkdir("lock").strpath},
+            main_conf={
+                "wals_directory": wals_dir.strpath,
+                "streaming_wals_directory": streaming_dir.strpath,
+            },
+        )
+        # AND Postgres version is older than 12
+        server.postgres = mock.Mock(server_version=110000)
+        # AND xlogdb contains WAL files on timeline 1 and timeline 2
+        wal_tli1_1 = create_fake_info_file("000000010000000000000001", 42, 50)
+        wal_tli1_2 = create_fake_info_file("000000010000000000000002", 42, 51)
+        wal_tli1_3 = create_fake_info_file("000000010000000000000003", 42, 52)
+        history_tli2 = create_fake_info_file("00000002.history", 10, 53)
+        wal_tli2_1 = create_fake_info_file("000000020000000000000003", 42, 54)
+        wal_tli2_2 = create_fake_info_file("000000020000000000000004", 42, 55)
+        walstring = get_wal_lines_from_wal_list(
+            [wal_tli1_1, wal_tli1_2, wal_tli1_3, history_tli2, wal_tli2_1, wal_tli2_2]
+        )
+        wals_dir.join(server.xlogdb_file_name).write(walstring)
+
+        # WHEN get_required_xlog_files runs WITHOUT specifying target_tli
+        wals = list(server.get_required_xlog_files(backup))
+        wal_names = [w.name for w in wals]
+
+        # THEN only WAL files from timeline 1 (backup's timeline) are returned
+        assert "000000010000000000000001" in wal_names
+        assert "000000010000000000000002" in wal_names
+        assert "000000010000000000000003" in wal_names
+        # AND history files are always included
+        assert "00000002.history" in wal_names
+        # AND WAL files from timeline 2 are NOT returned
+        assert "000000020000000000000003" not in wal_names
+        assert "000000020000000000000004" not in wal_names
 
     @pytest.mark.parametrize(
         "wal_info_files,expected_indices",
