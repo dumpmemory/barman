@@ -61,6 +61,7 @@ quickly navigate to it.
 .. include:: commands/barman/check_backup.inc.rst
 .. include:: commands/barman/check.inc.rst
 .. include:: commands/barman/cloud_wal_archive.inc.rst
+.. include:: commands/barman/cloud_wal_restore.inc.rst
 .. include:: commands/barman/config_switch.inc.rst
 .. include:: commands/barman/config_update.inc.rst
 .. include:: commands/barman/cron.inc.rst

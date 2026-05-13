@@ -340,6 +340,33 @@ the :ref:`commands-barman-cli-barman-wal-restore` command reference.
   removing the original. Be mindful of the filesystem locations to optimize WAL file
   management efficiency.
 
+
+.. _recovery-recovering-cloud-wal-restore:
+
+Using ``cloud-wal-restore`` for cloud recovery
+""""""""""""""""""""""""""""""""""""""""""""""
+
+When restoring from a cloud backup, whether taken with ``backup_method = local-to-cloud``
+or ``backup_method = postgres``, ``barman cloud-wal-restore`` can be used as the
+``restore_command`` to retrieve WAL files directly from the configured cloud provider,
+bypassing the Barman server.
+
+.. note::
+
+  Restoring a cloud backup in ``--no-get-wal`` mode (default) is not supported. Hence,
+  the only way to restore WALs stored in the cloud is by using ``cloud-wal-restore``
+  as the ``restore_command``. An attempt to use ``--no-get-wal`` in ``barman restore``
+  for a cloud backup will be ignored and warned.
+
+An example of a ``restore_command`` for cloud recovery is as follows:
+
+.. code-block:: text
+
+  restore_command = 'barman cloud-wal-restore --parallel 5 SERVER_NAME %f %p'
+
+It goes without saying that ``wals_directory`` must point to the cloud location where
+WAL files are stored, e.g., ``wals_directory = s3://barman/wals``.
+
 .. _recovery-recovering-encrypted-backups:
 
 Recovering Encrypted Backups
@@ -559,6 +586,78 @@ When ``staging_location=local``, all operations are executed on the Barman serve
 the order differs slightly: the rsync copy is deferred to the end. The combine operation
 uses its own ``staging_path``, and the final step is to transfer the synthetic backup to
 the restore destination on the remote node.
+
+.. _recovering-backups-from-the-cloud:
+
+Recovering Backups from the Cloud
+---------------------------------
+
+Restoring a cloud backup, whether taken with ``backup_method = local-to-cloud``
+or ``backup_method = postgres``, follows the same process as restoring a local backup: a
+simple ``barman restore`` command. The main difference is that it offers some
+alternative restore flows, as described in the following sections.
+
+For cloud WAL restore, check the :ref:`recovery-recovering-cloud-wal-restore` section.
+
+.. _recovery-restoring-cloud-backups-setting-a-new-server:
+
+Restoring Cloud Backups on a New Server
+"""""""""""""""""""""""""""""""""""""""
+
+The most efficient way to restore a cloud backup is to pull it directly to where your
+cluster will run, bypassing any centralized Barman server. To do this, run
+``barman restore`` directly on the destination host where your cluster is going to be
+started.
+
+In this approach, a Barman instance is installed and configured with the only purpose
+of restoring a cloud backup, being inactive for any other task. A minimal configuration
+for this Barman instance could look like the following:
+
+.. code-block:: ini
+
+  [pg]
+  description = "Minimal configuration for cloud backup restore"
+  wals_directory = s3://barman/backups
+  basebackups_directory = s3://barman/backups
+  active = off
+
+.. note::
+  ``basebackups_directory`` and ``wals_directory`` must point to an existing cloud
+  location where your backups and WAL files are stored, respectively.
+
+.. important::
+  You MUST set ``active = off`` to prevent this Barman instance from running maintenance
+  tasks that could interfere with your data. Without this setting, Barman refuses to
+  search for any backups in the cloud.
+
+.. _recovery-restoring-cloud-backups-from-barman-server:
+
+Restoring Cloud Backups from the same Barman Server
+"""""""""""""""""""""""""""""""""""""""""""""""""""
+
+The easiest way to restore a cloud backup is by triggering the restore from the same
+Barman server that triggered the backup. This approach is as straightforward as running:
+
+.. code-block:: bash
+
+  barman restore SERVER_NAME BACKUP_ID /path/to/destination
+
+Naturally, this is only useful if you want to start your cluster on the same host where
+the Barman instance that triggered the backup is installed.
+
+To restore it to a different host, you can use the ``--remote-ssh-command`` option and
+perform a remote copy via SSH:
+
+.. code-block:: bash
+
+  barman restore SERVER_NAME BACKUP_ID /path/to/destination --remote-ssh-command "ssh postgres@target-server"
+
+.. warning::
+
+  This approach routes backup data through the Barman server: the backup is first
+  pulled from the cloud to the Barman host and then transferred to the target host.
+  This can lead to increased restore times and higher bandwidth usage on the Barman
+  server.
 
 .. _recovery-limitation-of-partial-wal-files:
 

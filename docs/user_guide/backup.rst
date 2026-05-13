@@ -167,19 +167,16 @@ its location can be configured with the options ``cloud_staging_max_size`` and
 
 This is an experimental feature. For this reason, a few limitations apply:
 
-1. Restoring backups taken with this method is currently not supported directly in
-   Barman, and it's the user's responsibility to perform this manually or through
-   custom scripts/processes. Restoring such backups will come in a future release;
-2. Currently, only S3-compatible storages are supported as destination;
-3. Encryption of backups and WALs is not supported;
-4. Compression of backups is not supported. WAL compression is supported except when
+1. Currently, only S3-compatible storages are supported as destination;
+2. Encryption of backups and WALs is not supported;
+3. Compression of backups is not supported. WAL compression is supported except when
    using ``pigz`` or ``custom`` as compression methods;
-5. Barman subcommands which require access to the backup or WAL files, such as
+4. Barman subcommands which require access to the backup or WAL files, such as
    ``verify-backup``, ``generate-manifest``, ``rebuild-xlogdb`` and ``get-wal``, are
    not supported and will fail if executed;
-6. The Barman :ref:`geographical-redundancy` feature and its related commands are not
+5. The Barman :ref:`geographical-redundancy` feature and its related commands are not
    supported.
-7. For now this feature works only on Linux-based distributions and is not
+6. For now this feature works only on Linux-based distributions and is not
    supported on BSD-derived systems (such as FreeBSD or OpenBSD).
 
 
@@ -326,11 +323,6 @@ as it is read from disk.
     * Network access to a properly configured S3 or S3-compatible object storage
       bucket.
 
-.. important::
-    **Recovery functionality for the local-to-cloud method is not yet implemented**.
-    Support for restoring backups taken with this method will be introduced in a future
-    version of Barman.
-
 To configure local-to-cloud backups, set the ``backup_method`` to ``local-to-cloud`` and
 configure cloud storage path URLs:
 
@@ -419,7 +411,6 @@ The ``local-to-cloud`` backup method has the following limitations:
   and Google Cloud Storage support will be added in future versions.
 * It requires local filesystem access to PGDATA (unlike ``rsync`` or ``postgres``
   methods for remote servers).
-* Recovery is currently not implemented and will be available in a future version.
 
 Example Configuration
 ^^^^^^^^^^^^^^^^^^^^^
