@@ -2577,16 +2577,27 @@ class Server(RemoteStatusMixin):
         """
         begin = backup.begin_wal
         end = backup.end_wal
+        is_pitr = any(
+            [target_tli, target_time, target_xid, target_lsn, target_immediate]
+        )
 
         # Calculate the integer value of TLI if a keyword is provided
         calculated_target_tli = parse_target_tli(
             self.backup_manager, target_tli, backup
         )
 
-        # If timeline isn't specified, assume it is the same timeline
-        # of the backup
+        # If timeline isn't specified, the default depends on the Postgres version
+        # and on whether this is a PITR or not
         if not target_tli:
-            target_tli, _, _ = xlog.decode_segment_name(end)
+            # If this is a PITR and version is newer than 12, then the default timeline
+            # is the latest one. This mimics the behavior of Postgres >= 12 (which has
+            # recovery_target_timeline = 'latest' as default)
+            if is_pitr and self.postgres.server_version >= 120000:
+                target_tli = self._get_latest_timeline()
+            # For older versions or when not doing PITR, the default timeline is that
+            # of the current backup (i.e. the timeline of the end WAL segment)
+            else:
+                target_tli, _, _ = xlog.decode_segment_name(end)
             calculated_target_tli = target_tli
 
         # If a target LSN was specified, get the name of the last WAL file that is
@@ -2670,6 +2681,17 @@ class Server(RemoteStatusMixin):
                         self.config.name,
                         partial_path,
                     )
+
+    def _get_latest_timeline(self):
+        """
+        Get the latest timeline available in the archived WALs.
+
+        :return int: the latest timeline ID, or ``1`` if no archived WALs are found
+        """
+        latest_timeline = max(
+            self.backup_manager.get_latest_archived_wals_info().keys(), default=None
+        )
+        return int(latest_timeline, 16) if latest_timeline else 1
 
     # TODO: merge with the previous
     def get_wal_until_next_backup(self, backup, include_history=False):
