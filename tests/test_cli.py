@@ -3690,6 +3690,15 @@ class TestImportBackup(object):
         )
         mock_close_and_exit.assert_called_once_with()
 
+    @pytest.mark.parametrize(
+        "filename, mode",
+        [
+            ("backup.tar", "w"),
+            ("backup.tar.gz", "w:gz"),
+            ("backup.tar.bz2", "w:bz2"),
+            ("backup.tar.xz", "w:xz"),
+        ],
+    )
     @patch("barman.cli.output.close_and_exit")
     @patch("barman.cli.output.info")
     @patch("barman.cli.get_server")
@@ -3698,18 +3707,21 @@ class TestImportBackup(object):
         mock_get_server,
         mock_output_info,
         mock_close_and_exit,
+        filename,
+        mode,
         args,
         mock_server,
         tmpdir,
     ):
         """
         Test that import_backup logs info message and exits when all
-        validations pass.
+        validations pass, for each supported tarball format (including the
+        compressed variants produced by ``export-backup``).
         """
-        # GIVEN a valid (empty) tarball file
+        # GIVEN a valid (empty) tarball file using the given compression
         mock_get_server.return_value = mock_server
-        tar_path = tmpdir.join("backup.tar").strpath
-        with tarfile.open(tar_path, "w"):
+        tar_path = tmpdir.join(filename).strpath
+        with tarfile.open(tar_path, mode):
             pass
         args.input_tarball = tar_path
 

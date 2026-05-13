@@ -4502,6 +4502,46 @@ class TestImportBackup(object):
 
         assert "unsafe path" in str(exc_info.value).lower()
 
+    @pytest.mark.parametrize(
+        "filename, mode",
+        [
+            ("export.tar", "w"),
+            ("export.tar.gz", "w:gz"),
+            ("export.tar.bz2", "w:bz2"),
+            ("export.tar.xz", "w:xz"),
+        ],
+    )
+    def test_extract_tarball_supports_compressed_formats(
+        self, import_env, filename, mode
+    ):
+        """
+        Test that ``_extract_tarball`` transparently handles the compressed
+        tarball formats produced by ``export-backup`` (gzip, bzip2, xz) in
+        addition to plain uncompressed tar.
+        """
+        # GIVEN a tarball written using the given compression mode, holding
+        # a regular file and a directory entry
+        tmpdir = import_env["tmpdir"]
+        backup_manager = import_env["backup_manager"]
+        input_tarball = os.path.join(tmpdir.strpath, filename)
+        with tarfile.open(input_tarball, mode) as tar:
+            data = b"hello world"
+            info = tarfile.TarInfo(name="dir/file.txt")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        # AND a freshly created staging directory
+        staging_dir = tmpdir.mkdir("staging-" + filename.replace(".", "_")).strpath
+
+        # WHEN _extract_tarball is called
+        backup_manager._extract_tarball(input_tarball, staging_dir)
+
+        # THEN the file is extracted with its original contents
+        extracted = os.path.join(staging_dir, "dir", "file.txt")
+        assert os.path.isfile(extracted)
+        with open(extracted, "rb") as fh:
+            assert fh.read() == b"hello world"
+
     def test_import_backup_unsafe_member_type_rejected(self, import_env):
         """
         Test that a tarball containing a non-regular-file/non-directory entry

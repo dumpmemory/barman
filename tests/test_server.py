@@ -5540,10 +5540,15 @@ class TestImportBackup(object):
         # THEN backup_manager.import_backup was NOT called
         mock_import.assert_not_called()
 
-    def test_validate_import_tarball_name_valid(self, tmpdir):
+    @pytest.mark.parametrize(
+        "extension",
+        [".tar", ".tar.gz", ".tar.bz2", ".tar.xz"],
+    )
+    def test_validate_import_tarball_name_valid(self, tmpdir, extension):
         """
         Test that _validate_import_tarball_name returns the backup_id for a
-        tarball with a valid filename and matching checksum.
+        tarball with a valid filename and matching checksum, for each of the
+        supported tarball extensions.
         """
         # GIVEN a server
         server = build_real_server(
@@ -5552,7 +5557,7 @@ class TestImportBackup(object):
 
         # AND a tarball with a valid export filename and matching checksum
         tarball_path = tmpdir.join(
-            "backup-export-main-20240101T120000-20240101T130000-abcd1234.tar"
+            "backup-export-main-20240101T120000-20240101T130000-abcd1234" + extension
         ).strpath
         with open(tarball_path, "wb") as f:
             f.write(b"test content")
@@ -5626,7 +5631,8 @@ class TestImportBackup(object):
         [
             "backup-export-.tar",
             "backup-export-main-20240101T120000-abcd1234.tar",
-            "backup-export-main-20240101T120000-20240101T130000-abcd1234.tar.gz",
+            "backup-export-main-20240101T120000-20240101T130000-abcd1234.zip",
+            "backup-export-main-20240101T120000-20240101T130000-abcd1234.tar.zst",
             "not-an-export.tar",
         ],
     )
