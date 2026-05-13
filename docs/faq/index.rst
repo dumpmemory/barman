@@ -52,11 +52,6 @@ server configuration file. Retention policies can be based on time
 (e.g. ``RECOVERY WINDOW OF 30 DAYS``) or number of base backups
 (e.g. ``REDUNDANCY 3``).
 
-**Can I specify different retention policies for base backups and WAL segments?**
-
-Yes, definitely. It might happen for instance that you want to keep base backups of the
-last 12 months and keep WALs for Point-In-Time-Recovery for the last month only.
-
 **Does Barman guarantee data protection and security?**
 
 Barman communicates with your remote/local Postgres server using SSH connections (for
