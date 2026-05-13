@@ -2160,7 +2160,7 @@ class Server(RemoteStatusMixin):
 
         Expected format::
 
-            backup-export-{SERVER_NAME}-{BACKUP_ID}-{TIMESTAMP}-{CHECKSUM}.tar
+            backup-export-{SERVER_NAME}-{BACKUP_ID}-{TIMESTAMP}-{CHECKSUM}.tar[.gz|.bz2|.xz]
 
         Where BACKUP_ID and TIMESTAMP are ``YYYYMMDDTHHMMSS`` and CHECKSUM is
         8 lowercase hex characters.
@@ -2177,11 +2177,22 @@ class Server(RemoteStatusMixin):
             % filename
         )
 
-        filename, extension = os.path.splitext(filename)
-
-        if extension != ".tar":
-            output.error(f"{base_error}. Expected a .tar file extension.")
+        # Match against accepted extensions, longest first so that ``.tar``
+        # does not pre-match ``.tar.gz`` and friends.
+        accepted_extensions = (".tar.gz", ".tar.bz2", ".tar.xz", ".tar")
+        matched_extension = next(
+            (ext for ext in accepted_extensions if filename.endswith(ext)),
+            None,
+        )
+        if matched_extension is None:
+            output.error(
+                f"{base_error}. Expected a .tar, .tar.gz, .tar.bz2, "
+                "or .tar.xz file extension."
+            )
             return None
+
+        # Strip the matched extension to get the descriptive part of the name
+        filename = filename[: -len(matched_extension)]
 
         prefix = "backup-export-%s-" % self.config.name
 
