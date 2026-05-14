@@ -6061,6 +6061,43 @@ class TestCloudWalDownloader:
         # THEN an empty list is returned
         assert result == []
 
+    @mock.patch(
+        "barman.cloud.CloudWalDownloader._validate_wal_path",
+        new=lambda self, x, no_partial: False,  # always returns false
+    )
+    def test_get_wals_to_download_exits_early_when_requested_wal_is_invalid(self):
+        """
+        Test that _get_wals_to_download returns an empty list when the requested
+        WAL is invalid (a backup file in this test).
+
+        Example scenario:
+            A user requests a WAL like 00000001000000030000001A with parallel
+            pre-fetching, but only 00000001000000030000001A.00000028.backup exists in
+            cloud storage. The method should exit immediately without returning any
+            subsequent WAL files.
+        """
+        # GIVEN a cloud bucket where the requested WAL only exists as a backup file
+        mock_cloud_interface = MagicMock()
+        mock_cloud_interface.path = "bucket/barman"
+        wal_dir = "0000000100000003"
+        source_dir = "bucket/barman/test_server/wals/{}/".format(wal_dir)
+        mock_cloud_interface.list_bucket.return_value = [
+            source_dir + "00000001000000030000001A.00000028.backup",
+            source_dir + "00000001000000030000001B",
+            source_dir + "00000001000000030000001C",
+        ]
+
+        # AND a CloudWalDownloader
+        downloader = CloudWalDownloader(mock_cloud_interface, "test_server")
+
+        # WHEN _get_wals_to_download is called for the WAL that only exists as backup
+        result = downloader._get_wals_to_download(
+            "00000001000000030000001A", no_partial=False, parallel=3
+        )
+
+        # THEN an empty list is returned (doesn't include the following WALs)
+        assert result == []
+
     def test_get_wals_to_download_mixed_file_types(self):
         """
         Test that _get_wals_to_download correctly handles a directory containing a

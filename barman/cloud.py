@@ -2930,7 +2930,7 @@ class CloudWalDownloader(object):
 
         # If the requested WAL is not found or no WAL is found at all, error out
         if not wals_to_download or wal_name not in wals_to_download[0]:
-            _logger.info(
+            _logger.error(
                 "WAL file %s for server %s does not exist", wal_name, self.server_name
             )
             raise OperationErrorExit()
@@ -3006,9 +3006,13 @@ class CloudWalDownloader(object):
             is_requested_wal = path.startswith(requested_wal_path)
             if is_requested_wal or (path > requested_wal_path and count < parallel):
                 if not self._validate_wal_path(path, no_partial):
+                    if is_requested_wal:
+                        # If the requested WAL itself is not valid we can exit immediately
+                        break
                     continue
+                filename = os.path.basename(path)
                 _logger.info(
-                    "Found WAL %s for server %s as %s", wal_name, self.server_name, path
+                    "Found WAL %s for server %s as %s", filename, self.server_name, path
                 )
                 wals_to_download.append(path)
                 count += 1
