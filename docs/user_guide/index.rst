@@ -27,6 +27,7 @@ DBAs during the recovery phase.
    catalog
    recovery
    retention_policies
+   export_import
    diagnose_and_troubleshooting
    configuration
    commands

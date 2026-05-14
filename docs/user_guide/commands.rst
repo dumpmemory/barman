@@ -66,8 +66,10 @@ quickly navigate to it.
 .. include:: commands/barman/cron.inc.rst
 .. include:: commands/barman/delete.inc.rst
 .. include:: commands/barman/diagnose.inc.rst
+.. include:: commands/barman/export_backup.inc.rst
 .. include:: commands/barman/generate_manifest.inc.rst
 .. include:: commands/barman/get_wal.inc.rst
+.. include:: commands/barman/import_backup.inc.rst
 .. include:: commands/barman/keep.inc.rst
 .. include:: commands/barman/list_backups.inc.rst
 .. include:: commands/barman/list_files.inc.rst

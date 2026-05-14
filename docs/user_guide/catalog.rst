@@ -64,6 +64,10 @@ the :ref:`sub commands <commands-sub-commands>` section, including two important
 which are ``list-backups`` and ``show-backup``. These commands can be found below with
 an example.
 
+.. note::
+  Backups can also be added to the catalog by importing a previously exported tarball
+  with :ref:`commands-barman-import-backup`.
+
 .. _catalog-usage-list-backups:
 
 ``list-backups``
