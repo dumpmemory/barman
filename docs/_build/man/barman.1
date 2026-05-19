@@ -28,7 +28,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "BARMAN" "1" "mar 12, 2026" "3.18" "Barman"
+.TH "BARMAN" "1" "May 20, 2026" "3.19" "Barman"
 .SH NAME
 barman \- Barman Commands
 .sp
@@ -537,6 +537,111 @@ T}	T{
 All available servers
 T}
 .TE
+.SS \fBbarman cloud\-wal\-archive\fP
+.SS Synopsis
+.INDENT 0.0
+.INDENT 3.5
+.sp
+.EX
+cloud\-wal\-archive
+    [ { \-h | \-\-help } ]
+    [ { \-p | \-\-parallel } PARALLEL ]
+    SERVER_NAME WAL_PATH
+.EE
+.UNINDENT
+.UNINDENT
+.SS Description
+.sp
+Push a WAL file from the local disk to a configured cloud object storage. This command
+is intended to be used in the \fBarchive_command\fP of a Postgres server when using the
+\fBlocal\-to\-cloud\fP backup method for taking base backups.
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+The compression algorithm and level used for the WAL files can be configured in the
+Barman server configuration file. If not specified, the WAL file will be uploaded
+without compression.
+.UNINDENT
+.UNINDENT
+.SS Parameters
+.INDENT 0.0
+.TP
+.B \fBSERVER_NAME\fP
+The name of the Postgres server for which the WAL file is being archived.
+.TP
+.B \fBWAL_PATH\fP
+The value of the \fB%p\fP keyword (according to \fBarchive_command\fP).
+.TP
+.B \fB\-h\fP / \fB\-\-help\fP
+Show a help message and exit. Provides information about command usage.
+.TP
+.B \fB\-p\fP / \fB\-\-parallel\fP
+Number of WALs to archive in parallel. When set to a value greater than \fB1\fP,
+up to \fBparallel \- 1\fP additional WAL files that are ready in
+\fBpg_wal/archive_status\fP are uploaded concurrently in background processes after
+the primary WAL has been successfully archived. This can reduce WAL archival backlog
+during periods of high WAL generation. Defaults to the
+\fBcloud_wal_archive_parallel\fP server configuration value, which itself defaults
+to \fB0\fP (disabled).
+.UNINDENT
+.SS \fBbarman cloud\-wal\-restore\fP
+.SS Synopsis
+.INDENT 0.0
+.INDENT 3.5
+.sp
+.EX
+cloud\-wal\-restore
+    [ { \-h | \-\-help } ]
+    [ { \-p | \-\-parallel } PARALLEL ]
+    [ \-\-spool\-dir SPOOL_DIR ]
+    SERVER_NAME WAL_NAME WAL_DEST
+.EE
+.UNINDENT
+.UNINDENT
+.SS Description
+.sp
+Pull a WAL file from a configured cloud object storage to the local disk. This command
+is intended to be used as \fBrestore_command\fP in Postgres when restoring WALs from a
+cloud object storage.
+.sp
+This command requires the server to have cloud storage configured via \fBwals_directory\fP
+pointing to a cloud URL (e.g., \fBs3://barman/wals\fP).
+.SS Parameters
+.INDENT 0.0
+.TP
+.B \fBSERVER_NAME\fP
+The name of the Postgres server for which the WAL file is being restored.
+.TP
+.B \fBWAL_NAME\fP
+The value of the \fB%f\fP keyword (according to \fBrestore_command\fP).
+.TP
+.B \fBWAL_DEST\fP
+The value of the \fB%p\fP keyword (according to \fBrestore_command\fP).
+.TP
+.B \fB\-h\fP / \fB\-\-help\fP
+Show a help message and exit.
+.TP
+.B \fB\-p\fP / \fB\-\-parallel\fP
+Specifies the number of WAL files to peek and download in parallel. When set to a
+value greater than \fB1\fP, fetches the requested WAL file along with the next
+\fBN \- 1\fP files simultaneously. The additional files are staged in the spool
+directory so that subsequent restore requests can be served immediately from local
+storage. Default is \fB0\fP (disabled).
+.TP
+.B \fB\-\-spool\-dir\fP
+Directory used for staging extra WALs fetched when using \fB\-\-parallel\fP\&. Default is
+\fB/var/tmp/walrestore\fP\&.
+.UNINDENT
+.sp
+\fBTIP:\fP
+.INDENT 0.0
+.INDENT 3.5
+When using \fB\-\-parallel\fP and both the \fBpg_wal\fP directory and the spool directory
+are on the same filesystem, WAL files are served faster because they are renamed
+rather than copied.
+.UNINDENT
+.UNINDENT
 .SS \fBbarman config\-switch\fP
 .SS Synopsis
 .INDENT 0.0
@@ -737,6 +842,72 @@ Show a help message and exit. Provides information about command usage.
 Include the source file which provides the effective value for each configuration
 option.
 .UNINDENT
+.SS \fBbarman export\-backup\fP
+.SS Synopsis
+.INDENT 0.0
+.INDENT 3.5
+.sp
+.EX
+export\-backup
+    [ { \-h | \-\-help } ]
+    [ \-\-compression { gzip | bzip2 | xz } ]
+    [ \-\-compression\-level COMPRESSION_LEVEL ]
+    SERVER_NAME BACKUP_ID OUTPUT_DIRECTORY
+.EE
+.UNINDENT
+.UNINDENT
+.SS Description
+.sp
+Export the specified backup as a single tarball, suitable for hand\-off to an
+external archival system. The tarball is self\-contained: it bundles the
+backup data files, any tablespaces, the WAL segments required to bring the
+backup to a consistent state, and the Barman metadata needed to re\-register
+the backup with \fI\%barman import\-backup\fP later.
+.sp
+The generated file is named using the pattern
+\fBbackup\-export\-SERVER_NAME\-BACKUP_ID\-TIMESTAMP\-CHECKSUM.tar[.gz|.bz2|.xz]\fP\&.
+The filename is part of the integrity contract — do not rename the tarball,
+or \fI\%barman import\-backup\fP will refuse it.
+.sp
+Only full backups in \fBDONE\fP state on a server using local storage can be
+exported. See \fI\%Backup export and import\fP for the full feature
+description.
+.SS Parameters
+.INDENT 0.0
+.TP
+.B \fBSERVER_NAME\fP
+Name of the server in barman node.
+.TP
+.B \fBBACKUP_ID\fP
+Id of the backup in barman catalog.
+.TP
+.B \fBOUTPUT_DIRECTORY\fP
+Existing directory where the exported tarball will be written. Must be
+writable and executable by the user running Barman.
+.TP
+.B \fB\-\-compression {gzip | bzip2 | xz}\fP
+Compress the outer tarball using the given algorithm. By default the
+tarball is not compressed. Compression applies only to the outer
+tarball; data files and WAL segments stored inside are not recompressed,
+and any pre\-existing WAL compression is preserved through the
+associated \fBxlog.db\fP metadata.
+.TP
+.B \fB\-\-compression\-level COMPRESSION_LEVEL\fP
+Compression level to pass to the chosen algorithm. Valid levels are
+\fB1\fP\-\fB9\fP for \fBgzip\fP and \fBbzip2\fP, and \fB0\fP\-\fB9\fP for \fBxz\fP\&.
+Defaults to the algorithm\(aqs own default level. Requires
+\fB\-\-compression\fP to be set.
+.sp
+\fBNOTE:\fP
+.INDENT 7.0
+.INDENT 3.5
+Passing an explicit \fB\-\-compression\-level\fP requires Python 3.12 or
+newer for \fBgzip\fP/\fBbzip2\fP and Python 3.14 or newer for \fBxz\fP\&. On
+older interpreters the option is accepted, a warning is emitted, and
+the algorithm\(aqs default level is used instead.
+.UNINDENT
+.UNINDENT
+.UNINDENT
 .SS \fBbarman generate\-manifest\fP
 .SS Synopsis
 .INDENT 0.0
@@ -871,6 +1042,47 @@ argument is disregarded.
 removed in the future. For WAL compression, please make sure to enable it directly
 on the Barman server via the \fBcompression\fP configuration option.
 .UNINDENT
+.UNINDENT
+.SS \fBbarman import\-backup\fP
+.SS Synopsis
+.INDENT 0.0
+.INDENT 3.5
+.sp
+.EX
+import\-backup
+    [ { \-h | \-\-help } ]
+    SERVER_NAME INPUT_TARBALL
+.EE
+.UNINDENT
+.UNINDENT
+.SS Description
+.sp
+Register a previously exported backup tarball back into the Barman catalog of
+\fBSERVER_NAME\fP\&. The tarball is expected to be the output of
+\fI\%barman export\-backup\fP (or a file restored to disk verbatim by
+an external archival system from such an export). After a successful import,
+the backup is fully usable: it appears in \fI\%barman list\-backups\fP,
+its metadata is available via \fI\%barman show\-backup\fP, and it can
+be restored with \fI\%barman restore\fP\&.
+.sp
+Imported backups are automatically protected from retention by applying the
+\fBKEEP:STANDALONE\fP annotation (see \fI\%barman keep\fP). If you want
+the imported backup to participate in retention again, remove the annotation
+explicitly.
+.sp
+Import is performed atomically: the tarball is extracted into a staging
+directory under \fBbasebackups_directory\fP, verified end\-to\-end, and only
+then moved into place. If any step fails, the staging area is cleaned up
+and the catalog and WAL archive are left untouched. See this section
+\fI\%Backup export and import\fP for the full feature description.
+.SS Parameters
+.INDENT 0.0
+.TP
+.B \fBSERVER_NAME\fP
+Name of the server in barman node.
+.TP
+.B \fBINPUT_TARBALL\fP
+Path to the export tarball to import.
 .UNINDENT
 .SS \fBbarman keep\fP
 .SS Synopsis
@@ -1122,14 +1334,14 @@ list\-processes
 .UNINDENT
 .SS Description
 .sp
-The \fBlist\-processes\fP sub\-command outputs all active subprocesses for a Barman server.
+The \fBlist\-processes\fP sub\-command outputs all active subprocesses for a Postgres server.
 It displays the process identifier (PID) and the corresponding barman task for each active
 subprocess.
 .SS Parameters
 .INDENT 0.0
 .TP
 .B \fBSERVER_NAME\fP
-Name of the server for which to list active subprocesses.
+Name of the Postgres server for which to list active subprocesses.
 .TP
 .B \fB\-h\fP / \fB\-\-help\fP
 Displays a help message and exits.
@@ -1345,6 +1557,7 @@ restore
     [ \-\-local\-staging\-path PATH ]
     [ { \-\-network\-compression | \-\-no\-network\-compression } ]
     [ \-\-no\-retry ]
+    [ \-\-partial\-wal ]
     [ \-\-recovery\-conf\-filename FILENAME ]
     [ \-\-recovery\-staging\-path PATH ]
     [ \-\-staging\-path STAGING_PATH ]
@@ -1421,6 +1634,28 @@ configuration.
 .B \fB\-\-get\-wal\fP / \fB\-\-no\-get\-wal\fP
 Enable/disable usage of \fBget\-wal\fP for WAL fetching during recovery. Default is based on
 \fBrecovery_options\fP setting.
+.sp
+\fBNOTE:\fP
+.INDENT 7.0
+.INDENT 3.5
+When \fBwals_directory\fP is configured to use cloud storage (e.g. S3, Azure,
+GCS), restores always require \fBget\-wal\fP for WAL fetching. If you specify
+\fB\-\-no\-get\-wal\fP or omit \fBget\-wal\fP from \fBrecovery_options\fP, Barman will
+automatically enable \fBget\-wal\fP for the restore operation and issue a
+warning.
+.UNINDENT
+.UNINDENT
+.TP
+.B \fB\-\-partial\-wal\fP
+Copy \fB\&.partial\fP WAL files to the recovery destination with the \fB\&.partial\fP
+suffix stripped. Barman considers two sources: \fB\&.partial\fP files in the
+\fBstreaming_wals_directory\fP (written by \fBpg_receivewal\fP) and \fB\&.partial\fP
+files in the main WAL archive (archived during standby promotion, possibly
+compressed or encrypted). Only applicable when using \fB\-\-no\-get\-wal\fP\&. When
+\fB\-\-get\-wal\fP is used, \fB\&.partial\fP files are already handled transparently and
+this option has no effect. The flag also has no effect when \fB\-\-target\-immediate\fP
+is used, since recovery stops at the first consistent state before any partial WAL
+would be needed. See \fI\%Partial WAL files during recovery\fP for details.
 .TP
 .B \fB\-h\fP / \fB\-\-help\fP
 Show a help message and exit. Provides information about command usage.
@@ -2338,11 +2573,15 @@ Pause for \fBSECONDS\fP after a failed \fBget\-wal\fP request (defaults to \fB0\
 wait).
 .TP
 .B \fB\-p\fP / \fB\-\-parallel\fP
-Indicate the number of files to \fBpeek\fP and transfer simultaneously (defaults to
-\fB0\fP \- disabled).
+Specifies the number of WAL files to fetch in parallel. Default is \fB0\fP (disabled).
+When set to a value greater than \fB1\fP, fetches the requested WAL file along with the
+next \fBN \- 1\fP files simultaneously. The additional files are staged in a local spool
+directory (see \fB\-\-spool\-dir\fP) so that subsequent restore requests can be served
+immediately from local storage.
 .TP
 .B \fB\-\-spool\-dir\fP
-Specify the spool directory for WAL files (defaults to \fB/var/tmp/walrestore\fP).
+Directory used for staging extra WALs fetched when using \fB\-\-parallel\fP\&. Default is
+\fB/var/tmp/walrestore\fP\&.
 .TP
 .B \fB\-P\fP /  \fB\-\-partial\fP
 Include partial WAL files (.partial) in the retrieval.

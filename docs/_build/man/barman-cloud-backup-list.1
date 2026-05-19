@@ -27,7 +27,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "BARMAN-CLOUD-BACKUP-LIST" "1" "mar 12, 2026" "3.18" "Barman"
+.TH "BARMAN-CLOUD-BACKUP-LIST" "1" "May 20, 2026" "3.19" "Barman"
 .SH NAME
 barman-cloud-backup-list \- Barman-cloud Commands
 .sp
@@ -59,10 +59,18 @@ barman\-cloud\-backup\-list
 This script lists backups stored in the cloud that were created using the
 \fBbarman\-cloud\-backup\fP command.
 .sp
+Backups in any state are included in the listing. Completed backups
+(status \fBDONE\fP) show their end time and, where applicable, their archival
+keep target (e.g. \fBKEEP:FULL\fP). In\-progress or failed backups show their
+status (e.g. \fBSTARTED\fP) in the \fIArchival Status\fP column and an empty
+\fIEnd Time\fP\&.
+.sp
 \fBNOTE:\fP
 .INDENT 0.0
 .INDENT 3.5
 For GCP, only authentication with \fBGOOGLE_APPLICATION_CREDENTIALS\fP env is supported.
+To use an alternative GCP universe (e.g. S3NS/T\-Systems), set the
+\fBGOOGLE_CLOUD_UNIVERSE_DOMAIN\fP environment variable to the desired universe domain.
 .UNINDENT
 .UNINDENT
 .sp

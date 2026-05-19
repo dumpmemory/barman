@@ -27,7 +27,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "BARMAN-CLOUD-WAL-RESTORE" "1" "mar 12, 2026" "3.18" "Barman"
+.TH "BARMAN-CLOUD-WAL-RESTORE" "1" "May 20, 2026" "3.19" "Barman"
 .SH NAME
 barman-cloud-wal-restore \- Barman-cloud Commands
 .sp
@@ -50,6 +50,8 @@ barman\-cloud\-wal\-restore
                 [ { \-\-azure\-credential | \-\-credential } { azure\-cli | managed\-identity
                   | default } ]
                 [ \-\-no\-partial ]
+                [ { \-p, \-\-parallel } PARALLEL ]
+                [ \-\-spool\-dir SPOOL_DIR ]
                 SOURCE_URL SERVER_NAME WAL_NAME WAL_DEST
 .EE
 .UNINDENT
@@ -64,6 +66,29 @@ standby server, bypassing the Barman server.
 This script is used to download WAL files that were previously archived with the
 \fBbarman\-cloud\-wal\-archive\fP command. Disable automatic download of \fB\&.partial\fP files by
 calling \fB\-\-no\-partial\fP option.
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Partial WAL files (with a \fB\&.partial\fP suffix) can appear in the object store
+when a standby server is archiving WAL segments and is then promoted to primary.
+At the moment of promotion, the in\-progress WAL segment has not been completed
+yet, so Postgres archives it as a \fB\&.partial\fP file before switching to a new
+timeline. These files represent an incomplete segment and are not suitable for
+crash recovery on their own.
+.sp
+In most cases, downloading \fB\&.partial\fP files during WAL restore is harmless,
+because Postgres knows how to handle them correctly. However, when running
+\fBbarman\-cloud\-wal\-restore\fP on a cluster that has experienced a promotion, the
+\fBrestore_command\fP may retrieve a \fB\&.partial\fP (after renaming it without
+the suffix) file where a complete WAL is expected.
+.sp
+Use \fB\-\-no\-partial\fP to suppress the download of \fB\&.partial\fP files in this
+scenario, which will cause \fBrestore_command\fP to signal to Postgres that the
+WAL is not available, prompting it to switch to the correct timeline via a
+timeline history file (\fB\&.history\fP) instead.
+.UNINDENT
+.UNINDENT
 .sp
 \fBIMPORTANT:\fP
 .INDENT 0.0
@@ -80,6 +105,8 @@ no performance gain in that case.
 .INDENT 0.0
 .INDENT 3.5
 For GCP, only authentication with \fBGOOGLE_APPLICATION_CREDENTIALS\fP env is supported.
+To use an alternative GCP universe (e.g. S3NS/T\-Systems), set the
+\fBGOOGLE_CLOUD_UNIVERSE_DOMAIN\fP environment variable to the desired universe domain.
 .UNINDENT
 .UNINDENT
 .sp
@@ -128,6 +155,17 @@ Allowed options are:
 .TP
 .B \fB\-\-no\-partial\fP
 Do not download partial WAL files
+.TP
+.B \fB\-p\fP / \fB\-\-parallel\fP
+Specifies the number of WAL files to fetch in parallel. Default is \fB0\fP (disabled).
+When set to a value greater than \fB1\fP, fetches the requested WAL file along with the
+next \fBN \- 1\fP files simultaneously. The additional files are staged in a local spool
+directory (see \fB\-\-spool\-dir\fP) so that subsequent restore requests can be served
+immediately from local storage.
+.TP
+.B \fB\-\-spool\-dir\fP
+Directory used for staging extra WALs fetched when using \fB\-\-parallel\fP\&. Default is
+\fB/var/tmp/walrestore\fP\&.
 .UNINDENT
 .sp
 \fBExtra options for the AWS cloud provider\fP

@@ -28,7 +28,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "BARMAN-RESTORE" "1" "mar 12, 2026" "3.18" "Barman"
+.TH "BARMAN-RESTORE" "1" "May 20, 2026" "3.19" "Barman"
 .SH NAME
 barman-restore \- Barman Sub-Commands
 .SH SYNOPSIS
@@ -50,6 +50,7 @@ restore
     [ \-\-local\-staging\-path PATH ]
     [ { \-\-network\-compression | \-\-no\-network\-compression } ]
     [ \-\-no\-retry ]
+    [ \-\-partial\-wal ]
     [ \-\-recovery\-conf\-filename FILENAME ]
     [ \-\-recovery\-staging\-path PATH ]
     [ \-\-staging\-path STAGING_PATH ]
@@ -126,6 +127,28 @@ configuration.
 .B \fB\-\-get\-wal\fP / \fB\-\-no\-get\-wal\fP
 Enable/disable usage of \fBget\-wal\fP for WAL fetching during recovery. Default is based on
 \fBrecovery_options\fP setting.
+.sp
+\fBNOTE:\fP
+.INDENT 7.0
+.INDENT 3.5
+When \fBwals_directory\fP is configured to use cloud storage (e.g. S3, Azure,
+GCS), restores always require \fBget\-wal\fP for WAL fetching. If you specify
+\fB\-\-no\-get\-wal\fP or omit \fBget\-wal\fP from \fBrecovery_options\fP, Barman will
+automatically enable \fBget\-wal\fP for the restore operation and issue a
+warning.
+.UNINDENT
+.UNINDENT
+.TP
+.B \fB\-\-partial\-wal\fP
+Copy \fB\&.partial\fP WAL files to the recovery destination with the \fB\&.partial\fP
+suffix stripped. Barman considers two sources: \fB\&.partial\fP files in the
+\fBstreaming_wals_directory\fP (written by \fBpg_receivewal\fP) and \fB\&.partial\fP
+files in the main WAL archive (archived during standby promotion, possibly
+compressed or encrypted). Only applicable when using \fB\-\-no\-get\-wal\fP\&. When
+\fB\-\-get\-wal\fP is used, \fB\&.partial\fP files are already handled transparently and
+this option has no effect. The flag also has no effect when \fB\-\-target\-immediate\fP
+is used, since recovery stops at the first consistent state before any partial WAL
+would be needed. See \fI\%Partial WAL files during recovery\fP for details.
 .TP
 .B \fB\-h\fP / \fB\-\-help\fP
 Show a help message and exit. Provides information about command usage.

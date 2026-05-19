@@ -27,7 +27,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "BARMAN-WAL-RESTORE" "1" "mar 12, 2026" "3.18" "Barman"
+.TH "BARMAN-WAL-RESTORE" "1" "May 20, 2026" "3.19" "Barman"
 .SH NAME
 barman-wal-restore \- Barman-cli Commands
 .SH SYNOPSIS
@@ -104,11 +104,15 @@ Pause for \fBSECONDS\fP after a failed \fBget\-wal\fP request (defaults to \fB0\
 wait).
 .TP
 .B \fB\-p\fP / \fB\-\-parallel\fP
-Indicate the number of files to \fBpeek\fP and transfer simultaneously (defaults to
-\fB0\fP \- disabled).
+Specifies the number of WAL files to fetch in parallel. Default is \fB0\fP (disabled).
+When set to a value greater than \fB1\fP, fetches the requested WAL file along with the
+next \fBN \- 1\fP files simultaneously. The additional files are staged in a local spool
+directory (see \fB\-\-spool\-dir\fP) so that subsequent restore requests can be served
+immediately from local storage.
 .TP
 .B \fB\-\-spool\-dir\fP
-Specify the spool directory for WAL files (defaults to \fB/var/tmp/walrestore\fP).
+Directory used for staging extra WALs fetched when using \fB\-\-parallel\fP\&. Default is
+\fB/var/tmp/walrestore\fP\&.
 .TP
 .B \fB\-P\fP /  \fB\-\-partial\fP
 Include partial WAL files (.partial) in the retrieval.

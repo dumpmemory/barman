@@ -28,7 +28,7 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .\" new: \\n[rst2man-indent\\n[rst2man-indent-level]]
 .in \\n[rst2man-indent\\n[rst2man-indent-level]]u
 ..
-.TH "BARMAN" "5" "mar 12, 2026" "3.18" "Barman"
+.TH "BARMAN" "5" "May 20, 2026" "3.19" "Barman"
 .SH NAME
 barman \- Barman Configurations
 .sp
@@ -67,8 +67,8 @@ the \fB\&.conf\fP suffix. You may have one or multiple files for servers. You ca
 default location by setting the \fBconfiguration_files_directory\fP option in the global
 configuration file and placing the files in that particular location.
 .sp
-3. \fBModel Configuration\fP: It comprises one or more files with a set of
-configurations overrides that can be applied to Barman servers within the same cluster as
+3. \fBModel Configuration\fP: It comprises one or more files with a set of configuration
+overrides that can be applied to backups of Postgres servers within the same cluster as
 the model. These overrides can be implemented using the barman \fBconfig\-switch\fP command.
 Default location is \fB/etc/barman.d\fP and must use the \fB\&.conf\fP suffix. The same
 \fBconfiguration_files_directory\fP override option from the server configuration applies for
@@ -262,6 +262,15 @@ This is a libpq connection string. Commonly used keys include: \fBhost\fP, \fBho
 \fBport\fP, \fBdbname\fP, \fBuser\fP and \fBpassword\fP\&. See the
 \X'tty: link https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING'\fI\%libpq\-connstring\fP\X'tty: link'
 PostgreSQL documentation for details.
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Multi\-host connection strings (e.g. \fBhost=primary_db,replica_db\fP) and
+\fBtarget_session_attrs\fP are not supported. Each connection string must point
+to a single, specific host.
+.UNINDENT
+.UNINDENT
 .sp
 Scope: Server / Model.
 .sp
@@ -457,6 +466,13 @@ Scope: Server / Model.
 Connection string for Barman to connect to the primary Postgres server during a
 standby backup.
 .sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Multi\-host connection strings are not supported. See \fBconninfo\fP for details.
+.UNINDENT
+.UNINDENT
+.sp
 Scope: Server / Model.
 .sp
 \fBprimary_ssh_command\fP
@@ -515,6 +531,13 @@ Scope: Global / Server / Model.
 \fBstreaming_conninfo\fP
 .sp
 Connection string for streaming replication protocol. Defaults to \fBconninfo\fP\&.
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Multi\-host connection strings are not supported. See \fBconninfo\fP for details.
+.UNINDENT
+.UNINDENT
 .sp
 Scope: Server / Model.
 .sp
@@ -716,6 +739,20 @@ Destination for base backup files. It can be a local path if storing backups loc
 or a cloud storage URL if streaming backups to the cloud as described in
 \fI\%Streaming backups to the cloud\fP\&. Defaults to \fB<backup_directory>/base\fP\&.
 .sp
+\fBWARNING:\fP
+.INDENT 0.0
+.INDENT 3.5
+Changing the value of \fBbasebackups_directory\fP on an active server is discouraged.
+Even if done with care, by deactivating the server, moving existing data to the new
+location, and reactivating it, there are potential risks of data loss or
+misconfiguration.
+.sp
+Instead, the safe option is to create a new server configuration with the new value
+for \fBbasebackups_directory\fP, perform a new full backup to the new server, and then
+decommission the old server once the new one is fully operational.
+.UNINDENT
+.UNINDENT
+.sp
 Scope: Server.
 .sp
 \fBbasebackup_retry_sleep\fP
@@ -826,6 +863,23 @@ the AWS region where the S3 bucket is located.
 Only supported when \fBbackup_method = snapshot\fP and \fBsnapshot_provider = aws\fP, or
 when \fBbackup_method\fP is \fBpostgres\fP or \fBlocal\-to\-cloud\fP and
 \fBbasebackups_directory\fP and/or \fBwals_directory\fP point to S3.
+.UNINDENT
+.UNINDENT
+.sp
+Scope: Global / Server / Model.
+.sp
+\fBaws_check_object_lock\fP
+.sp
+When set to \fBtrue\fP, Barman will check for S3 Object Lock before attempting to
+delete base backup files from S3 storage. If an object is locked, the deletion
+is aborted. Defaults to \fBfalse\fP\&.
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+Only supported when \fBbackup_method\fP is \fBpostgres\fP or \fBlocal\-to\-cloud\fP,
+and \fBbasebackups_directory\fP points to S3. If enabled with a non\-S3 provider,
+a warning will be logged and no lock checks will be performed.
 .UNINDENT
 .UNINDENT
 .sp
@@ -1560,6 +1614,24 @@ level is used. The default value is \fBmedium\fP\&.
 .sp
 Scope: Global / Server / Model.
 .sp
+\fBcloud_wal_archive_parallel\fP
+.sp
+Controls the number of WAL files that \fBbarman cloud\-wal\-archive\fP will upload in
+parallel. When set to \fBN\fP (where N > 1), up to \fBN \- 1\fP additional WAL files that
+are ready in \fBpg_wal/archive_status\fP are uploaded concurrently in background
+processes after the primary WAL has been successfully archived. Defaults to \fB0\fP
+(disabled).
+.sp
+\fBNOTE:\fP
+.INDENT 0.0
+.INDENT 3.5
+This option only applies when using the \fBlocal\-to\-cloud\fP backup method with
+\fBbarman cloud\-wal\-archive\fP as the \fBarchive_command\fP\&.
+.UNINDENT
+.UNINDENT
+.sp
+Scope: Global / Server.
+.sp
 \fBincoming_wals_directory\fP
 .sp
 Specifies the directory where incoming WAL files are archived. Requires \fBarchiver\fP to
@@ -1636,6 +1708,19 @@ Scope: Server / Model.
 Destination for archived WAL files. It can be a local path if storing WAL files locally,
 or a cloud storage URL if storing WAL files in the cloud as described in
 \fI\%Streaming backups to the cloud\fP\&. Defaults to \fB<backup_directory>/wals\fP\&.
+.sp
+\fBWARNING:\fP
+.INDENT 0.0
+.INDENT 3.5
+Changing the value of \fBwals_directory\fP on an active server is discouraged. Even if
+done with care, by deactivating the server, moving existing data to the new location,
+and reactivating it, there are potential risks of data loss or misconfiguration.
+.sp
+Instead, the safe option is to create a new server configuration with the new value
+for \fBwals_directory\fP, perform a new full backup to the new server, and then
+decommission the old server once the new one is fully operational.
+.UNINDENT
+.UNINDENT
 .sp
 Scope: Server.
 .sp
@@ -1831,7 +1916,7 @@ the identifiers of server sections and model sections.
 .sp
 To apply a configuration model, execute the
 \fBbarman config\-switch SERVER_NAME MODEL_NAME\fP\&. This command facilitates the application
-of the model\(aqs overrides to the relevant Barman server associated with the specified
+of the model\(aqs overrides to the relevant Postgres server associated with the specified
 cluster name.
 .sp
 If you wish to remove the overrides, the deletion of the model configuration file alone
@@ -1853,7 +1938,7 @@ available configurations to determine which settings apply to models.
 .SS Benefits
 .INDENT 0.0
 .IP \(bu 2
-Consistency: Ensures uniform configuration across multiple Barman servers within a
+Consistency: Ensures uniform configuration across multiple Postgres servers within a
 cluster.
 .IP \(bu 2
 Efficiency: Simplifies configuration management by allowing centralized updates and
