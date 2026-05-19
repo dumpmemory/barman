@@ -2,6 +2,205 @@
 
 © Copyright EnterpriseDB UK Limited 2025 - All rights reserved.
 
+## 3.19.0 (2026-05-20)
+
+### Notable changes
+
+- Add support for restoring backups from cloud storage
+
+  Barman can now restore backups taken with `backup_method = local-to-cloud`
+  or `backup_method = postgres` when stored in cloud object storage.
+
+  The standard `barman restore` command can be used to restore such backups.
+
+  For WAL restore, a new `barman cloud-wal-restore` command was introduced to fetch
+  WAL files directly from cloud storage during recovery. This command can be
+  used as the `restore_command` in PostgreSQL and supports parallel
+  fetching for improved performance.
+
+  Also, when a server has `wals_directory` configured to use cloud storage,
+  `get-wal` is now always required for restore operations. If `--no-get-wal`
+  is specified or `get-wal` is absent from `recovery_options`, Barman will
+  automatically enable `get-wal` and issue a warning so the restore can
+  proceed without interruption.
+
+  This completes the cloud backup lifecycle, enabling seamless backup and recovery
+  workflows entirely in the cloud.
+
+  References: BAR-929.
+
+- Add new barman export-backup command for exporting backups to tarball
+
+  Introduced a new `barman export-backup` command that exports a backup to a
+  tarball format. The command takes a server name, backup ID, and destination
+  directory as arguments, and creates a tarball containing the backup data.
+  This provides an easy way to share or archive backups.
+
+  References: BAR-1180.
+
+- Add the `barman import-backup` command for importing backups from tarball
+
+  Introduced a new `barman import-backup` command that imports a backup from a
+  tarball format. The command takes a server name and tarball path as arguments,
+  and provides a way to register previously exported backups back into a Barman
+  catalog.
+
+  References: BAR-1223.
+
+### Minor changes
+
+- Support alternative GCP universes via GOOGLE_CLOUD_UNIVERSE_DOMAIN environment variable
+
+  Barman now supports alternative GCP universes (e.g. S3NS/T-Systems) by
+  reading the `GOOGLE_CLOUD_UNIVERSE_DOMAIN` environment variable. When set,
+  the value is passed as `client_options` to the GCS storage client, allowing
+  `barman-cloud-*` commands to operate against non-standard GCP endpoints.
+  This feature was contributed by community member @mgarstecki.
+
+  References: BAR-1017.
+
+- Add support for parallel WAL restore in `barman-cloud-wal-restore`
+
+  Support for parallelism has been added to the `barman-cloud-wal-restore`
+  command, allowing users to specify a number of WALs to be downloaded in parallel
+  during the recovery of WALs. This enhancement improves the overall performance of WAL
+  restoration by prefetching multiple WAL files concurrently. Check the documentation
+  of `barman-cloud-wal-restore` for more details.
+
+  References: BAR-1253.
+
+- Add aws_check_object_lock config option to check S3 object lock before deletion
+
+  Introduced a new `aws_check_object_lock` configuration option. When enabled,
+  Barman checks for S3 Object Lock before attempting to delete base backup files
+  from S3 storage. If an object is locked, the deletion is aborted. This aligns
+  Barman's behavior with `barman-cloud-delete` for locked objects. Only applies
+  to S3 storage; a warning is logged if this option is enabled with a non-S3
+  cloud provider.
+
+  References: BAR-1113.
+
+- Make in-progress cloud backups visible in the backup catalog
+
+  In-progress cloud backups are now immediately visible in
+  `barman-cloud-backup-list` with `STARTED` in the archival status column
+  and an empty end time. Previously, a backup only became visible once it
+  completed successfully. `barman-cloud-backup-delete`,
+  `barman-cloud-restore`, and the `last`/`latest`/`first`/`oldest`
+  shortcuts all treat in-progress backups safely by excluding them from
+  redundancy counts, auto-restore selection, and shortcut resolution
+  respectively.
+
+  References: BAR-1235.
+
+- Removed setuptools as a runtime dependency
+
+  Setuptools is no longer required as a runtime dependency for Barman. Setuptools
+  was previously included to provide the deprecated distutils module for Python 3.12+
+  compatibility, but it has been replaced with another implementation. Setuptools
+  remains available during build time for packaging purposes.
+
+  References: BAR-1170.
+
+- Add --partial-wal flag to barman restore for opt-in .partial WAL file copying
+
+  A new `--partial-wal` flag has been added to `barman restore
+  --no-get-wal`. When set, Barman includes `.partial` WAL files in
+  the recovery, stripping the `.partial` suffix so that PostgreSQL can
+  find them during replay. Two sources are supported:
+
+  - The streaming WALs directory: the in-progress segment being written
+    by `pg_receivewal` at the time of the restore. Including it reduces
+    RPO by making any transactions written since the last completed WAL
+    segment available during recovery.
+  - The WAL archive (`wals/`): segments archived with the `.partial`
+    suffix, e.g. when a standby is promoted and PostgreSQL calls
+    `archive_command` with an in-progress segment. Compressed and
+    encrypted files are handled transparently.
+
+  The flag has no effect when `--get-wal` is used, as `.partial`
+  files are already handled transparently in that case.
+
+  References: BAR-695.
+
+- Add parallel WAL archiving support to `barman cloud-wal-archive`
+
+  `barman cloud-wal-archive` now supports a `--parallel` flag (and the
+  corresponding `cloud_wal_archive_parallel` configuration option) that enables
+  opportunistic prefetching of additional WAL files during archival. When
+  `--parallel N` is set (N > 1), up to N - 1 extra WAL files that are ready in
+  `pg_wal/archive_status` are identified and uploaded concurrently in background
+  worker processes after the primary WAL has been successfully archived. This can
+  significantly reduce WAL archival backlog during periods of high WAL generation.
+  If a WAL file was already uploaded by a previous invocation, subsequent calls to
+  `archive_command` for that WAL will detect it and exit immediately with 0,
+  avoiding redundant uploads.
+
+  References: BAR-1101.
+
+### Bugfixes
+
+- Fix backup metadata not being updated in the cloud storage
+
+  NOTE: This fix is for the cloud integration of Barman servers i.e. those configured
+  with `backup_method = local-to-cloud` or `backup_method = postgres` which uses
+  a cloud storage as backup destination. This is not an issue in the `barman-cloud-*`
+  scripts (e.g. barman-cloud-backup).
+
+  Backup metadata (backup.info files) was not being updated in the cloud storage, which
+  led, for example, to the status of the backup in the cloud being outdated compared
+  to the local one. This can be a problem during the restore phase, where the metadata
+  from the cloud might be the primary source of information. This issue is now fixed.
+
+  References: BAR-1227.
+
+- Fix `barman restore --no-get-wal` copying unusable .partial WAL files
+
+  When running `barman restore --no-get-wal`, `.partial` WAL files
+  present in the WAL archive were copied to the recovery destination.
+  However, the `restore_command` generated by Barman uses `cp` from
+  the `barman_wal` directory, which does not account for `.partial`
+  suffixes — so these files were never used by PostgreSQL during
+  recovery. Barman now skips `.partial` files by default. To
+  explicitly include them (with the suffix stripped so PostgreSQL can
+  find them), use the new `--partial-wal` flag.
+
+  References: BAR-1265.
+
+- Fix `--no-get-wal` restore not copying WALs from newer timelines on PostgreSQL 12+
+
+  Since PostgreSQL 12, the default for `recovery_target_timeline` changed from
+  `current` to `latest`. When restoring with PITR options (e.g., `--target-time`)
+  in `--no-get-wal` mode, Barman was only copying WAL files from the backup's
+  original timeline. This could cause restores to fail when the recovery target
+  is on a newer timeline.
+
+  Barman now correctly copies WAL files from all timelines up to the latest
+  available when performing PITR on PostgreSQL 12+, matching the default
+  Postgres recovery behavior.
+
+  References: BAR-1054.
+
+- Fix multiple warnings about intermediary files not being removed
+
+  When using WAL compression, Barman creates intermediary files in the
+  archive directory during the compression process. Intermediary file paths
+  are stored in a list and removed at the end of the file archival.
+
+  However, when archiving multiple files in batch, the list of intermediary
+  files was not being cleared after each processed file, causing later
+  archivals to attempt to remove files that no longer exist, resulting in
+  warnings like the below:
+
+  ```text
+  WARNING: Could not remove intermediary file /home/gustavo/pg/streaming/0000000100000013000000FD: [Errno 2] No such file or directory: '/home/gustavo/pg/streaming/0000000100000013000000FD'
+  ```
+
+  This bug was introduced in version 3.18, commit 5db8ca9b. It is now fixed and such
+  warnings should no longer occur.
+
+  References: BAR-1228, CP-59700.
+
 ## 3.18.0 (2026-03-12)
 
 ### Notable changes
